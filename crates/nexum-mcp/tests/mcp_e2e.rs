@@ -58,7 +58,13 @@ impl Mcp {
     fn call(&mut self, id: i64, name: &str, args: Value) -> Value {
         self.send(json!({"jsonrpc":"2.0","id":id,"method":"tools/call",
             "params":{"name":name,"arguments":args}}));
-        self.recv()
+        // Correlate by id rather than assuming the next id-bearing message is ours.
+        loop {
+            let v = self.recv();
+            if v["id"] == json!(id) {
+                return v;
+            }
+        }
     }
 }
 
@@ -143,7 +149,11 @@ fn enforces_session_cap() {
 
 #[test]
 fn rejects_key_path_traversal_generically() {
-    let mut m = Mcp::start(&[]);
+    // Use a real, existing key_dir so the rejection exercises the bounds check
+    // specifically (not the "key_dir missing" branch, which shares the message).
+    let key_dir = std::env::temp_dir().join(format!("nexum_kd_{}", std::process::id()));
+    std::fs::create_dir_all(&key_dir).unwrap();
+    let mut m = Mcp::start(&[("NEXUM_MCP_KEY_DIR", key_dir.to_str().unwrap())]);
     let r = m.call(
         3,
         "session_create",
@@ -153,4 +163,5 @@ fn rejects_key_path_traversal_generically() {
     let t = result_text(&r);
     assert!(t.contains("not permitted"), "{t}");
     assert!(!t.contains("passwd"), "must not leak the path: {t}");
+    let _ = std::fs::remove_dir_all(&key_dir);
 }

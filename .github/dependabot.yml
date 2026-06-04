@@ -1,0 +1,12 @@
+version: 2
+updates:
+  # Keep GitHub Actions current (and proposes pinning/bumping action refs).
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+  # Keep Rust dependencies current (security + bug fixes).
+  - package-ecosystem: cargo
+    directory: /
+    schedule:
+      interval: weekly

@@ -19,6 +19,7 @@ jobs:
   test:
     name: fmt · clippy · build · test
     runs-on: ubuntu-latest
+    timeout-minutes: 25 # backstop: a hung test fails fast, never burns the 6h default
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
@@ -46,6 +47,7 @@ jobs:
   ssh-e2e:
     name: SSH end-to-end (real sshd)
     runs-on: ubuntu-latest
+    timeout-minutes: 25
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
@@ -62,6 +64,9 @@ jobs:
             docker logs sshd 2>&1 | grep -q "Server listening" && { echo "sshd up"; break; }
             sleep 1
           done
+          # Fail loudly if sshd never came up, instead of running against nothing.
+          docker logs sshd 2>&1 | grep -q "Server listening" \
+            || { echo "ERROR: sshd did not start"; docker logs sshd; exit 1; }
 
       - name: Run SSH smoke + drop-after-timeout regression
         env:
@@ -75,10 +80,14 @@ jobs:
   audit:
     name: cargo audit (advisories)
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
       - uses: taiki-e/install-action@v2
         with:
           tool: cargo-audit
-      - run: cargo audit
+      # RUSTSEC-2023-0071: Marvin timing side-channel in `rsa`, pulled
+      # transitively via russh -> ssh-key -> rsa. No fixed release exists yet
+      # (revisit when russh updates). Every OTHER advisory still gates CI.
+      - run: cargo audit --ignore RUSTSEC-2023-0071
