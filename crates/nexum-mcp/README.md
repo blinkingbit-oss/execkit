@@ -8,7 +8,7 @@ Cursor, Gemini CLI, and others.
 
 | Tool | Args | Returns |
 |---|---|---|
-| `session_create` | `transport` (`"local"`/`"ssh"`), and for ssh: `host`, `user`, `password` or `key_path`, optional `port`; optional `allow`/`deny` command lists, `audit_path` | `{ "session_id": "..." }` |
+| `session_create` | `transport` (`"local"`/`"ssh"`), and for ssh: `host`, `user`, `password` or `key_path`, optional `port`, `fingerprint` (pin host key); optional `allow`/`deny` command lists | `{ "session_id": "..." }` |
 | `session_exec` | `session_id`, `command` | structured `ExecResult` JSON: `stdout`, `stderr` (split!), `exit_code`, `duration_ms`, `cwd`, `truncated` |
 | `session_destroy` | `session_id` | `{ "destroyed": true }` |
 
@@ -48,12 +48,28 @@ Then the agent can call `session_create` → `session_exec` → `session_destroy
 //       "exit_code":1,"duration_ms":3420,"cwd":"/home/u/app","truncated":false}
 ```
 
-## Security notes
+## Security model
 
+The agent driving these tools can be prompt-injected, so tool arguments are
+**untrusted**. Anything dangerous to the host/filesystem is therefore controlled
+by the **operator at startup** (env vars), not by per-call agent arguments:
+
+| Env var | Purpose | Default |
+|---|---|---|
+| `NEXUM_MCP_AUDIT` | append a JSONL audit log of every command here | off |
+| `NEXUM_MCP_KEY_DIR` | SSH `key_path` must canonicalize to inside this dir | `~/.ssh` |
+| `NEXUM_MCP_KNOWN_HOSTS` | SSH host-key verification file (TOFU; rejects changed keys) | `~/.ssh/known_hosts` |
+| `NEXUM_MCP_INSECURE_ACCEPT_ANY_HOSTKEY` | **DANGEROUS** — disable host-key checks | unset |
+
+- **Host keys are verified by default** (TOFU against known_hosts; a changed key
+  is rejected as a likely MITM). Pass a `fingerprint` to require an exact key, or
+  set the insecure env var only for throwaway/test hosts.
+- **`key_path` is sandboxed** to `NEXUM_MCP_KEY_DIR`; out-of-bounds/traversal paths
+  are rejected with a generic error (no path-existence leak).
+- **Audit destination is operator-chosen**, never a tool argument (prevents an
+  injected agent from writing to arbitrary files).
 - The server speaks MCP on **stdout**; all diagnostics go to **stderr**.
-- For SSH, `session_create` currently uses a permissive host-key policy
-  (`AcceptAny`) for convenience — pin a known-hosts file before using it against
-  hosts you care about (planned). Run the agent and SSH user with least privilege.
-- Use `allow`/`deny` and `audit_path` for a basic safety + audit posture.
+- Use `allow`/`deny` for a command fence, and run the agent + SSH user with least
+  privilege. The fence is advisory — defense in depth, not a sandbox.
 
 Apache-2.0.

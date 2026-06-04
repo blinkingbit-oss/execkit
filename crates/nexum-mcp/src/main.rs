@@ -6,8 +6,21 @@
 //! stateful and outlive a single tool call; `session_exec` returns the
 //! structured `ExecResult` as JSON (split stdout/stderr, exit code, cwd, ...),
 //! already policy-checked, secret-redacted, and bounded.
+//!
+//! ## Threat model
+//!
+//! The agent driving these tools can be prompt-injected, so tool arguments are
+//! treated as untrusted. Anything that affects the host or filesystem in a
+//! dangerous way is configured by the **operator at startup** (env vars), not by
+//! per-call agent arguments:
+//!   - `NEXUM_MCP_AUDIT`       — append a JSONL audit log here (all sessions).
+//!   - `NEXUM_MCP_KEY_DIR`     — dir SSH private keys must live under (default ~/.ssh).
+//!   - `NEXUM_MCP_KNOWN_HOSTS` — SSH known_hosts file (default ~/.ssh/known_hosts).
+//!   - `NEXUM_MCP_INSECURE_ACCEPT_ANY_HOSTKEY=1` — DANGEROUS: disable host-key
+//!     verification. Never in production.
 
 use std::collections::HashMap;
+use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 
@@ -25,6 +38,32 @@ use nexum::{AuditLog, HostKeyVerification, Policy, Session, SshAuth, SshConfig};
 type SessionRef = Arc<Mutex<Session>>;
 type Sessions = Arc<Mutex<HashMap<String, SessionRef>>>;
 
+/// Operator-controlled configuration (from env), NOT settable per tool call.
+struct Config {
+    audit_path: Option<PathBuf>,
+    key_dir: PathBuf,
+    known_hosts: PathBuf,
+    insecure_accept_any: bool,
+}
+
+impl Config {
+    fn from_env() -> Self {
+        let home = std::env::var("HOME").unwrap_or_else(|_| "/root".into());
+        let ssh = Path::new(&home).join(".ssh");
+        Config {
+            audit_path: std::env::var_os("NEXUM_MCP_AUDIT").map(PathBuf::from),
+            key_dir: std::env::var_os("NEXUM_MCP_KEY_DIR")
+                .map(PathBuf::from)
+                .unwrap_or_else(|| ssh.clone()),
+            known_hosts: std::env::var_os("NEXUM_MCP_KNOWN_HOSTS")
+                .map(PathBuf::from)
+                .unwrap_or_else(|| ssh.join("known_hosts")),
+            insecure_accept_any: std::env::var_os("NEXUM_MCP_INSECURE_ACCEPT_ANY_HOSTKEY")
+                .is_some(),
+        }
+    }
+}
+
 #[derive(Clone)]
 struct NexumServer {
     // Read by the code the #[tool_handler] macro generates; Rust's dead-code
@@ -32,6 +71,7 @@ struct NexumServer {
     #[allow(dead_code)]
     tool_router: ToolRouter<NexumServer>,
     sessions: Sessions,
+    config: Arc<Config>,
 }
 
 #[derive(Deserialize, JsonSchema)]
@@ -50,18 +90,20 @@ struct CreateParams {
     /// SSH password auth.
     #[serde(default)]
     password: Option<String>,
-    /// SSH private-key path auth (alternative to password).
+    /// SSH private-key path (must live under the operator's key dir).
     #[serde(default)]
     key_path: Option<String>,
+    /// Optional pinned host-key fingerprint ("SHA256:..."). If set, the server
+    /// requires the host key to match exactly. Otherwise the operator's
+    /// known_hosts file is used.
+    #[serde(default)]
+    fingerprint: Option<String>,
     /// Optional command allowlist (program names). If set, only these run.
     #[serde(default)]
     allow: Vec<String>,
     /// Optional command denylist (program names).
     #[serde(default)]
     deny: Vec<String>,
-    /// Optional path to append a JSONL audit log of every command.
-    #[serde(default)]
-    audit_path: Option<String>,
 }
 
 #[derive(Deserialize, JsonSchema)]
@@ -80,24 +122,27 @@ struct SessionIdParams {
 
 #[tool_router]
 impl NexumServer {
-    fn new() -> Self {
+    fn new(config: Config) -> Self {
         Self {
             tool_router: Self::tool_router(),
             sessions: Arc::new(Mutex::new(HashMap::new())),
+            config: Arc::new(config),
         }
     }
 
     #[tool(
         description = "Open a stateful shell session. transport is \"local\" or \"ssh\" \
-                       (ssh needs host, user, and password or key_path). Optional allow/deny \
-                       command lists and an audit_path. Returns a session_id."
+                       (ssh needs host, user, and password or key_path). Optional fingerprint \
+                       (pin host key), allow/deny command lists. Returns a session_id."
     )]
     async fn session_create(
         &self,
         Parameters(p): Parameters<CreateParams>,
     ) -> Result<CallToolResult, ErrorData> {
-        let built =
-            tokio::task::spawn_blocking(move || build_session(p)).await.map_err(internal)?;
+        let config = self.config.clone();
+        let built = tokio::task::spawn_blocking(move || build_session(p, &config))
+            .await
+            .map_err(internal)?;
         match built {
             Ok(session) => {
                 let id = next_id();
@@ -168,7 +213,7 @@ impl ServerHandler for NexumServer {
     }
 }
 
-fn build_session(p: CreateParams) -> Result<Session, nexum::Error> {
+fn build_session(p: CreateParams, config: &Config) -> Result<Session, nexum::Error> {
     let mut session = match p.transport.as_str() {
         "ssh" => {
             let host = p
@@ -180,15 +225,26 @@ fn build_session(p: CreateParams) -> Result<Session, nexum::Error> {
             let auth = if let Some(pw) = p.password {
                 SshAuth::Password(pw)
             } else if let Some(key) = p.key_path {
-                SshAuth::Key { path: key.into(), passphrase: None }
+                // Constrain to the operator's key dir; generic error so the path's
+                // existence/parseability never leaks to the (untrusted) caller.
+                let path = validated_key_path(&key, &config.key_dir)?;
+                SshAuth::Key { path, passphrase: None }
             } else {
                 return Err(nexum::Error::Transport(
                     "ssh: 'password' or 'key_path' required".into(),
                 ));
             };
-            // NOTE: AcceptAny is convenient but unsafe; a future revision should
-            // take a known_hosts path from the caller.
-            let mut cfg = SshConfig::new(host, user, auth, HostKeyVerification::AcceptAny);
+            // Host-key policy: pin if a fingerprint is supplied (safe — no file
+            // I/O on a caller path); otherwise verify against the operator's
+            // known_hosts; AcceptAny ONLY via explicit insecure opt-in.
+            let host_key = if let Some(fp) = p.fingerprint {
+                HostKeyVerification::Pinned(fp)
+            } else if config.insecure_accept_any {
+                HostKeyVerification::AcceptAny
+            } else {
+                HostKeyVerification::KnownHosts(config.known_hosts.clone())
+            };
+            let mut cfg = SshConfig::new(host, user, auth, host_key);
             if let Some(port) = p.port {
                 cfg.port = port;
             }
@@ -199,10 +255,25 @@ fn build_session(p: CreateParams) -> Result<Session, nexum::Error> {
     if !p.allow.is_empty() || !p.deny.is_empty() {
         session = session.with_policy(Policy { allow: p.allow, deny: p.deny });
     }
-    if let Some(path) = p.audit_path {
+    // Audit destination is operator-controlled (startup), never a tool arg.
+    if let Some(path) = &config.audit_path {
         session = session.with_audit(AuditLog::new(path));
     }
     Ok(session)
+}
+
+/// Resolve a caller-supplied key path and require it to live under `key_dir`.
+/// Uses canonicalization (resolves `..` and symlinks) and returns a single
+/// generic error so a not-found vs. out-of-bounds path is indistinguishable.
+fn validated_key_path(raw: &str, key_dir: &Path) -> Result<PathBuf, nexum::Error> {
+    let deny = || nexum::Error::Transport("ssh: key_path not permitted".into());
+    let dir = std::fs::canonicalize(key_dir).map_err(|_| deny())?;
+    let path = std::fs::canonicalize(raw).map_err(|_| deny())?;
+    if path.starts_with(&dir) {
+        Ok(path)
+    } else {
+        Err(deny())
+    }
 }
 
 fn text(s: String) -> CallToolResult {
@@ -225,8 +296,15 @@ fn internal<E: std::fmt::Display>(e: E) -> ErrorData {
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     // stdout is the MCP channel — all diagnostics go to stderr.
+    let config = Config::from_env();
     eprintln!("nexum-mcp: starting MCP server on stdio");
-    let service = NexumServer::new().serve(rmcp::transport::stdio()).await?;
+    if config.insecure_accept_any {
+        eprintln!(
+            "nexum-mcp: WARNING NEXUM_MCP_INSECURE_ACCEPT_ANY_HOSTKEY is set — \
+             SSH host-key verification is DISABLED (MITM possible). Do not use in production."
+        );
+    }
+    let service = NexumServer::new(config).serve(rmcp::transport::stdio()).await?;
     service.waiting().await?;
     Ok(())
 }
