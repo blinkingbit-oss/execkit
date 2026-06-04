@@ -1,6 +1,6 @@
 [workspace]
 resolver = "2"
-members = ["crates/nexum"]
+members = ["crates/nexum", "crates/nexum-mcp"]
 
 [workspace.package]
 version = "0.1.0"
