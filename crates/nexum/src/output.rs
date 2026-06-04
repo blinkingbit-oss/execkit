@@ -41,7 +41,10 @@ pub fn strip_ansi(s: &str) -> String {
 
 /// Normalize PTY output: strip ANSI, drop CRs (ONLCR), trim surrounding blanks.
 pub fn clean(s: &str) -> String {
-    strip_ansi(s).replace('\r', "").trim_matches('\n').to_string()
+    strip_ansi(s)
+        .replace('\r', "")
+        .trim_matches('\n')
+        .to_string()
 }
 
 /// Bound output to roughly `max` characters using a head+tail keep with an

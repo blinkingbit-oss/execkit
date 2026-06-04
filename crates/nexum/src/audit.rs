@@ -24,7 +24,10 @@ impl AuditLog {
     /// Append one result. One line of JSON; safe to `tail -f`.
     pub fn record(&self, result: &ExecResult) -> Result<()> {
         let line = serde_json::to_string(result)?;
-        let mut f = OpenOptions::new().create(true).append(true).open(&self.path)?;
+        let mut f = OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(&self.path)?;
         writeln!(f, "{line}")?;
         Ok(())
     }

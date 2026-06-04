@@ -173,8 +173,10 @@ impl NexumServer {
         }
     }
 
-    #[tool(description = "Run a command in a session; returns a structured ExecResult JSON \
-                          (stdout, stderr, exit_code, duration_ms, cwd, truncated).")]
+    #[tool(
+        description = "Run a command in a session; returns a structured ExecResult JSON \
+                          (stdout, stderr, exit_code, duration_ms, cwd, truncated)."
+    )]
     async fn session_exec(
         &self,
         Parameters(p): Parameters<ExecParams>,
@@ -245,7 +247,10 @@ fn build_session(p: CreateParams, config: &Config) -> Result<Session, nexum::Err
                 // Constrain to the operator's key dir; generic error so the path's
                 // existence/parseability never leaks to the (untrusted) caller.
                 let path = validated_key_path(&key, &config.key_dir)?;
-                SshAuth::Key { path, passphrase: None }
+                SshAuth::Key {
+                    path,
+                    passphrase: None,
+                }
             } else {
                 return Err(nexum::Error::Transport(
                     "ssh: 'password' or 'key_path' required".into(),
@@ -270,7 +275,10 @@ fn build_session(p: CreateParams, config: &Config) -> Result<Session, nexum::Err
         _ => Session::local()?,
     };
     if !p.allow.is_empty() || !p.deny.is_empty() {
-        session = session.with_policy(Policy { allow: p.allow, deny: p.deny });
+        session = session.with_policy(Policy {
+            allow: p.allow,
+            deny: p.deny,
+        });
     }
     // Audit destination is operator-controlled (startup), never a tool arg.
     if let Some(path) = &config.audit_path {
@@ -327,7 +335,9 @@ async fn main() -> anyhow::Result<()> {
              SSH host-key verification is DISABLED (MITM possible). Do not use in production."
         );
     }
-    let service = NexumServer::new(config).serve(rmcp::transport::stdio()).await?;
+    let service = NexumServer::new(config)
+        .serve(rmcp::transport::stdio())
+        .await?;
     service.waiting().await?;
     Ok(())
 }

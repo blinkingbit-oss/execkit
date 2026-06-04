@@ -41,9 +41,10 @@ fn secrets_are_redacted_in_output() {
 
 #[test]
 fn policy_blocks_before_execution() {
-    let mut s = Session::local()
-        .unwrap()
-        .with_policy(Policy { allow: vec![], deny: vec!["rm".into()] });
+    let mut s = Session::local().unwrap().with_policy(Policy {
+        allow: vec![],
+        deny: vec!["rm".into()],
+    });
     let err = s.exec("rm -rf /tmp/should_not_run").unwrap_err();
     assert!(matches!(err, nexum::Error::PolicyDenied(_)));
 }

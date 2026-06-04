@@ -29,7 +29,12 @@ impl LocalPty {
     /// by the session via [`super::shell_init`].
     pub fn spawn(shell: &str, args: &[&str]) -> Result<Self> {
         let pair = native_pty_system()
-            .openpty(PtySize { rows: 24, cols: 120, pixel_width: 0, pixel_height: 0 })
+            .openpty(PtySize {
+                rows: 24,
+                cols: 120,
+                pixel_width: 0,
+                pixel_height: 0,
+            })
             .map_err(|e| Error::Transport(e.to_string()))?;
 
         let mut cmd = CommandBuilder::new(shell);
@@ -64,7 +69,12 @@ impl LocalPty {
             }
         });
 
-        Ok(LocalPty { writer, rx, _master: pair.master, child })
+        Ok(LocalPty {
+            writer,
+            rx,
+            _master: pair.master,
+            child,
+        })
     }
 }
 

@@ -1,0 +1,84 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  test:
+    name: fmt · clippy · build · test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Format
+        run: cargo fmt --all --check
+
+      - name: Clippy (all features)
+        run: cargo clippy --workspace --all-targets --all-features -- -D warnings
+
+      - name: Clippy (nexum, no default features — lean local-only build)
+        run: cargo clippy -p nexum --no-default-features --all-targets -- -D warnings
+
+      - name: Build
+        run: cargo build --workspace --all-targets
+
+      # Includes the MCP stdio E2E (drives the built binary) and the local PTY
+      # tests. ssh_smoke self-skips without NEXUM_TEST_SSH.
+      - name: Test
+        run: cargo test --workspace
+
+  ssh-e2e:
+    name: SSH end-to-end (real sshd)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Start sshd (alpine container)
+        run: |
+          docker run -d --name sshd -p 127.0.0.1:2222:22 alpine sh -c \
+            "apk add --no-cache openssh >/dev/null 2>&1 && ssh-keygen -A && \
+             echo 'root:testpw' | chpasswd && \
+             sed -i 's/^#\?PermitRootLogin.*/PermitRootLogin yes/' /etc/ssh/sshd_config && \
+             /usr/sbin/sshd -D -e"
+          for i in $(seq 1 40); do
+            docker logs sshd 2>&1 | grep -q "Server listening" && { echo "sshd up"; break; }
+            sleep 1
+          done
+
+      - name: Run SSH smoke + drop-after-timeout regression
+        env:
+          NEXUM_TEST_SSH: root:testpw@127.0.0.1:2222
+        run: cargo test -p nexum --test ssh_smoke -- --nocapture
+
+      - name: Stop sshd
+        if: always()
+        run: docker rm -f sshd || true
+
+  audit:
+    name: cargo audit (advisories)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-audit
+      - run: cargo audit

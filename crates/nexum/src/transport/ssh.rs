@@ -27,7 +27,13 @@ impl SshConfig {
         auth: SshAuth,
         host_key: HostKeyVerification,
     ) -> Self {
-        Self { host: host.into(), port: 22, user: user.into(), auth, host_key }
+        Self {
+            host: host.into(),
+            port: 22,
+            user: user.into(),
+            auth,
+            host_key,
+        }
     }
 }
 
@@ -35,7 +41,10 @@ impl SshConfig {
 #[derive(Clone)]
 pub enum SshAuth {
     Password(String),
-    Key { path: PathBuf, passphrase: Option<String> },
+    Key {
+        path: PathBuf,
+        passphrase: Option<String>,
+    },
 }
 
 // Manual Debug so secrets never land in logs.
@@ -106,7 +115,10 @@ fn verify_known_hosts(path: &Path, host: &str, fingerprint: &str) -> Result<bool
     // Unseen host: trust on first use and pin it. One atomic O_APPEND write so a
     // concurrent reader never sees a partial line.
     use std::io::Write;
-    let mut f = std::fs::OpenOptions::new().create(true).append(true).open(path)?;
+    let mut f = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(path)?;
     f.write_all(format!("{host} {fingerprint}\n").as_bytes())?;
     Ok(true)
 }
@@ -230,9 +242,14 @@ mod imp {
         }
     }
 
-    async fn establish(cfg: &SshConfig) -> Result<(client::Handle<Handler>, russh::Channel<client::Msg>)> {
+    async fn establish(
+        cfg: &SshConfig,
+    ) -> Result<(client::Handle<Handler>, russh::Channel<client::Msg>)> {
         let config = Arc::new(client::Config::default());
-        let handler = Handler { policy: cfg.host_key.clone(), host: cfg.host.clone() };
+        let handler = Handler {
+            policy: cfg.host_key.clone(),
+            host: cfg.host.clone(),
+        };
         let mut handle = client::connect(config, (cfg.host.as_str(), cfg.port), handler)
             .await
             .map_err(|e| Error::Transport(format!("ssh connect: {e}")))?;
