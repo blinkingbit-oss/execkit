@@ -1,0 +1,39 @@
+// SPDX-License-Identifier: Apache-2.0
+//! Real end-to-end SSH smoke test. Self-skips unless a server is provided via
+//!   NEXUM_TEST_SSH="user:password@host:port"
+//! e.g. NEXUM_TEST_SSH="root:pw@127.0.0.1:2222" cargo test --test ssh_smoke
+//!
+//! Uses AcceptAny host-key policy (test only). There is no sshd in CI by
+//! default, so without the env var this test passes trivially.
+#![cfg(feature = "ssh")]
+
+use nexum::{HostKeyVerification, Session, SshAuth, SshConfig};
+
+fn parse(spec: &str) -> Option<(String, String, String, u16)> {
+    // user:password@host:port
+    let (creds, hostport) = spec.split_once('@')?;
+    let (user, pass) = creds.split_once(':')?;
+    let (host, port) = hostport.split_once(':')?;
+    Some((user.into(), pass.into(), host.into(), port.parse().ok()?))
+}
+
+#[test]
+fn ssh_echo_roundtrip() {
+    let Ok(spec) = std::env::var("NEXUM_TEST_SSH") else {
+        eprintln!("skip: set NEXUM_TEST_SSH=\"user:pass@host:port\" to run");
+        return;
+    };
+    let (user, pass, host, port) = parse(&spec).expect("NEXUM_TEST_SSH=user:pass@host:port");
+
+    let mut cfg = SshConfig::new(host, user, SshAuth::Password(pass), HostKeyVerification::AcceptAny);
+    cfg.port = port;
+
+    let mut s = Session::ssh(cfg).expect("ssh connect");
+    let r = s.exec("echo hello").expect("exec");
+    assert_eq!(r.stdout, "hello");
+    assert_eq!(r.exit_code, 0);
+
+    // State persists over SSH too.
+    s.exec("cd /tmp").unwrap();
+    assert_eq!(s.exec("pwd").unwrap().cwd, "/tmp");
+}

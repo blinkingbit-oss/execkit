@@ -1,10 +1,11 @@
 // SPDX-License-Identifier: Apache-2.0
-//! A persistent session: frame each command with an unguessable sentinel that
-//! carries exit code + cwd, split stderr to a side channel, then apply policy,
-//! redaction, bounding, and audit.
+//! A persistent session: frame each command with unguessable start/end sentinels
+//! that carry exit code + cwd, and dump the command's stderr back *through the
+//! channel* between them — so the framing is identical for local and remote
+//! transports (no local-filesystem dependency). Then apply policy, redaction,
+//! bounding, and audit.
 
 use std::io::Read;
-use std::os::unix::fs::OpenOptionsExt;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
@@ -14,15 +15,14 @@ use crate::exec::ExecResult;
 use crate::output::{bound, clean};
 use crate::policy::Policy;
 use crate::redact::redact;
-use crate::transport::local::LocalPty;
+use crate::transport::{self, local::LocalPty, Transport};
 
 const US: u8 = 0x1f; // unit separator
 
 /// A live, stateful shell session.
 pub struct Session {
-    pty: LocalPty,
+    io: Box<dyn Transport>,
     token: String,
-    errpath: String,
     policy: Option<Policy>,
     audit: Option<AuditLog>,
     timeout: Duration,
@@ -36,22 +36,23 @@ impl Session {
     /// Open a session backed by a local `bash` PTY.
     pub fn local() -> Result<Self> {
         let pty = LocalPty::spawn("bash", &["--norc", "--noprofile"])?;
-        let token = unique_token();
-        let errpath = std::env::temp_dir()
-            .join(format!("nexum_err_{token}"))
-            .to_string_lossy()
-            .into_owned();
-        // O_EXCL + owner-only: defeats symlink pre-creation attacks and keeps
-        // captured stderr (pre-redaction) unreadable by others in shared /tmp.
-        std::fs::OpenOptions::new()
-            .write(true)
-            .create_new(true)
-            .mode(0o600)
-            .open(&errpath)?;
+        Self::from_transport(Box::new(pty))
+    }
+
+    /// Open a session over SSH.
+    #[cfg(feature = "ssh")]
+    pub fn ssh(config: crate::transport::ssh::SshConfig) -> Result<Self> {
+        let t = crate::transport::ssh::SshTransport::connect(config)?;
+        Self::from_transport(Box::new(t))
+    }
+
+    /// Build a session over any transport: run the readiness handshake and set
+    /// up the per-session sentinel token.
+    fn from_transport(mut io: Box<dyn Transport>) -> Result<Self> {
+        transport::shell_init(io.as_mut())?;
         Ok(Self {
-            pty,
-            token,
-            errpath,
+            io,
+            token: unique_token(),
             policy: None,
             audit: None,
             timeout: Duration::from_secs(30),
@@ -93,8 +94,7 @@ impl Session {
     /// Run a command and return a structured [`ExecResult`].
     ///
     /// On a completion timeout this returns [`Error::StillRunning`] and poisons
-    /// the session (subsequent calls return [`Error::SessionPoisoned`]), because
-    /// the still-running command's later output would corrupt framing.
+    /// the session (subsequent calls return [`Error::SessionPoisoned`]).
     pub fn exec(&mut self, command: &str) -> Result<ExecResult> {
         if self.poisoned {
             return Err(Error::SessionPoisoned);
@@ -105,30 +105,29 @@ impl Session {
             }
         }
 
-        // Truncate-reset our owned 0600 side channel.
-        std::fs::OpenOptions::new()
-            .write(true)
-            .truncate(true)
-            .open(&self.errpath)?;
-
-        let marker = format!("__NEXUM_{}__", self.token);
-        // Sentinel printf is OUTSIDE the redirected group so it always reaches
-        // the PTY even if the user's command redirects its own stdout.
+        let start_m = format!("__NEXUM_{}__", self.token);
+        let end_m = format!("__NEXUMEND_{}__", self.token);
+        // stderr -> a remote temp file (mktemp = 0600), cat back through the
+        // channel between the start/end sentinels, then removed. Works
+        // identically for local and SSH; nothing touches the local filesystem.
+        // Layout on the wire: <stdout>\n<START>\x1f<exit>\x1f<cwd>\x1f<stderr><END>\n
         let payload = format!(
-            "{{ {cmd} ; }} 2> {err} ; printf '\\n{m}\\037%d\\037%s\\037\\n' \"$?\" \"$PWD\"\n",
+            "__E=$(mktemp 2>/dev/null||echo /tmp/nexumE_{tok}); {{ {cmd} ; }} 2>\"$__E\"; \
+printf '\\n{start}\\037%d\\037%s\\037' \"$?\" \"$PWD\"; cat \"$__E\" 2>/dev/null; \
+printf '{end}\\n'; rm -f \"$__E\"\n",
+            tok = self.token,
             cmd = command,
-            err = self.errpath,
-            m = marker,
+            start = start_m,
+            end = end_m,
         );
 
-        let start = Instant::now();
-        self.pty.write_all(payload.as_bytes())?;
+        let started = Instant::now();
+        self.io.write_all(payload.as_bytes())?;
 
-        let mbytes = marker.as_bytes();
-        // Bound in-memory accumulation. The sentinel arrives LAST, so keeping a
-        // head + a large sliding tail always retains the full marker
-        // (tail >> marker length). Prevents a `yes`/`cat /dev/urandom` from
-        // exhausting RAM before the timeout fires.
+        let start_b = start_m.as_bytes();
+        let end_b = end_m.as_bytes();
+        // Bound in-memory accumulation. The trailer (START..END) arrives last and
+        // is small, so a head+tail keep always retains it.
         let max_acc = self.max_output.saturating_mul(2).max(65_536);
         let mut acc: Vec<u8> = Vec::new();
         let mut overflowed = false;
@@ -140,7 +139,7 @@ impl Session {
                 self.poisoned = true;
                 return Err(Error::StillRunning);
             }
-            let chunk = match self.pty.recv_timeout(deadline - now) {
+            let chunk = match self.io.recv_timeout(deadline - now) {
                 Some(c) => c,
                 None => {
                     self.poisoned = true;
@@ -159,50 +158,51 @@ impl Session {
                 overflowed = true;
             }
 
-            if let Some(pos) = find(&acc, mbytes) {
-                let tail = &acc[pos + mbytes.len()..];
-                let seps: Vec<usize> = tail
-                    .iter()
-                    .enumerate()
-                    .filter(|(_, b)| **b == US)
-                    .map(|(i, _)| i)
-                    .collect();
-                if seps.len() >= 3 {
-                    let exit_code: i32 = String::from_utf8_lossy(&tail[seps[0] + 1..seps[1]])
-                        .trim()
-                        .parse()
-                        .unwrap_or(-1);
-                    let cwd = String::from_utf8_lossy(&tail[seps[1] + 1..seps[2]]).into_owned();
+            // Completion = the END sentinel has arrived.
+            let Some(end_pos) = find(&acc, end_b) else {
+                continue;
+            };
+            let Some(start_pos) = find(&acc[..end_pos], start_b) else {
+                continue;
+            };
+            let between = &acc[start_pos + start_b.len()..end_pos];
+            let seps: Vec<usize> = between
+                .iter()
+                .enumerate()
+                .filter(|(_, b)| **b == US)
+                .map(|(i, _)| i)
+                .collect();
+            if seps.len() < 3 {
+                continue;
+            }
+            let exit_code: i32 = String::from_utf8_lossy(&between[seps[0] + 1..seps[1]])
+                .trim()
+                .parse()
+                .unwrap_or(-1);
+            let cwd = String::from_utf8_lossy(&between[seps[1] + 1..seps[2]]).into_owned();
+            // Everything after the 3rd separator is stderr (may itself contain
+            // separators — we only consume the first three).
+            let raw_err = clean(&String::from_utf8_lossy(&between[seps[2] + 1..]));
+            let raw_out = clean(&String::from_utf8_lossy(&acc[..start_pos]));
+            let (stdout, t1) = bound(&redact(&raw_out), self.max_output);
+            let (stderr, t2) = bound(&redact(&raw_err), self.max_output);
 
-                    let raw_out = clean(&String::from_utf8_lossy(&acc[..pos]));
-                    let raw_err = clean(&std::fs::read_to_string(&self.errpath).unwrap_or_default());
-                    let (stdout, t1) = bound(&redact(&raw_out), self.max_output);
-                    let (stderr, t2) = bound(&redact(&raw_err), self.max_output);
-
-                    let result = ExecResult {
-                        command: command.to_string(),
-                        stdout,
-                        stderr,
-                        exit_code,
-                        duration_ms: start.elapsed().as_millis() as u64,
-                        cwd,
-                        truncated: t1 || t2 || overflowed,
-                    };
-                    if let Some(a) = &self.audit {
-                        if let Err(e) = a.record(&result) {
-                            eprintln!("nexum: audit write failed: {e}");
-                        }
-                    }
-                    return Ok(result);
+            let result = ExecResult {
+                command: command.to_string(),
+                stdout,
+                stderr,
+                exit_code,
+                duration_ms: started.elapsed().as_millis() as u64,
+                cwd,
+                truncated: t1 || t2 || overflowed,
+            };
+            if let Some(a) = &self.audit {
+                if let Err(e) = a.record(&result) {
+                    eprintln!("nexum: audit write failed: {e}");
                 }
             }
+            return Ok(result);
         }
-    }
-}
-
-impl Drop for Session {
-    fn drop(&mut self) {
-        let _ = std::fs::remove_file(&self.errpath);
     }
 }
 
@@ -220,8 +220,8 @@ fn unique_token() -> String {
         .map(|d| d.as_nanos())
         .unwrap_or(0);
     let n = COUNTER.fetch_add(1, Ordering::Relaxed);
-    // Unpredictable suffix so the /tmp side-channel path and the sentinel token
-    // can't be guessed.
+    // Unpredictable suffix so command output can't forge the sentinels and the
+    // remote temp-file fallback path can't be guessed.
     let mut rnd = [0u8; 8];
     if let Ok(mut f) = std::fs::File::open("/dev/urandom") {
         let _ = f.read_exact(&mut rnd);

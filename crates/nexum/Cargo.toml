@@ -11,12 +11,20 @@ readme = "../../README.md"
 keywords = ["ai", "agent", "shell", "pty", "ssh"]
 categories = ["development-tools", "command-line-interface", "api-bindings"]
 
+[features]
+default = ["ssh"]
+# SSH transport. Pulls russh + tokio; disable with `default-features = false`
+# for a lean local-PTY-only build.
+ssh = ["dep:russh", "dep:tokio"]
+
 [dependencies]
 portable-pty.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 thiserror.workspace = true
 regex.workspace = true
+russh = { version = "0.61", optional = true }
+tokio = { version = "1", features = ["rt", "macros", "sync", "io-util", "net", "time"], optional = true }
 
 [lib]
 name = "nexum"

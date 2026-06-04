@@ -34,3 +34,4 @@ pub use exec::{ExecResult, ShellState};
 pub use output::strip_ansi;
 pub use policy::Policy;
 pub use session::Session;
+pub use transport::ssh::{HostKeyVerification, SshAuth, SshConfig};
