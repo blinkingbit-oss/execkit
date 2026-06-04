@@ -22,7 +22,7 @@
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 
 use rmcp::handler::server::router::tool::ToolRouter;
 use rmcp::handler::server::wrapper::Parameters;
@@ -44,6 +44,9 @@ struct Config {
     key_dir: PathBuf,
     known_hosts: PathBuf,
     insecure_accept_any: bool,
+    /// Soft cap on concurrent live sessions (bounds thread/connection growth
+    /// from untrusted create calls).
+    max_sessions: usize,
 }
 
 impl Config {
@@ -60,8 +63,18 @@ impl Config {
                 .unwrap_or_else(|| ssh.join("known_hosts")),
             insecure_accept_any: std::env::var_os("NEXUM_MCP_INSECURE_ACCEPT_ANY_HOSTKEY")
                 .is_some(),
+            max_sessions: std::env::var("NEXUM_MCP_MAX_SESSIONS")
+                .ok()
+                .and_then(|v| v.parse().ok())
+                .unwrap_or(64),
         }
     }
+}
+
+/// Lock a std Mutex, recovering the guard if a prior holder panicked — a
+/// poisoned lock must not brick the session (inner) or the whole server (outer).
+fn lock<T>(m: &Mutex<T>) -> MutexGuard<'_, T> {
+    m.lock().unwrap_or_else(PoisonError::into_inner)
 }
 
 #[derive(Clone)]
@@ -139,6 +152,13 @@ impl NexumServer {
         &self,
         Parameters(p): Parameters<CreateParams>,
     ) -> Result<CallToolResult, ErrorData> {
+        // Soft cap before doing the (potentially expensive) connect.
+        if lock(&self.sessions).len() >= self.config.max_sessions {
+            return Ok(tool_error(format!(
+                "session limit reached ({}); destroy unused sessions",
+                self.config.max_sessions
+            )));
+        }
         let config = self.config.clone();
         let built = tokio::task::spawn_blocking(move || build_session(p, &config))
             .await
@@ -146,10 +166,7 @@ impl NexumServer {
         match built {
             Ok(session) => {
                 let id = next_id();
-                self.sessions
-                    .lock()
-                    .unwrap()
-                    .insert(id.clone(), Arc::new(Mutex::new(session)));
+                lock(&self.sessions).insert(id.clone(), Arc::new(Mutex::new(session)));
                 Ok(text(format!("{{\"session_id\":\"{id}\"}}")))
             }
             Err(e) => Ok(tool_error(format!("session_create failed: {e}"))),
@@ -164,7 +181,9 @@ impl NexumServer {
     ) -> Result<CallToolResult, ErrorData> {
         let session = self.get(&p.session_id)?;
         let command = p.command;
-        let outcome = tokio::task::spawn_blocking(move || session.lock().unwrap().exec(&command))
+        // Concurrent execs on the SAME session serialize on this lock (the
+        // outer map lock is already released). `lock` recovers from poisoning.
+        let outcome = tokio::task::spawn_blocking(move || lock(&session).exec(&command))
             .await
             .map_err(internal)?;
         match outcome {
@@ -181,16 +200,14 @@ impl NexumServer {
         &self,
         Parameters(p): Parameters<SessionIdParams>,
     ) -> Result<CallToolResult, ErrorData> {
-        let removed = self.sessions.lock().unwrap().remove(&p.session_id).is_some();
+        let removed = lock(&self.sessions).remove(&p.session_id).is_some();
         Ok(text(format!("{{\"destroyed\":{removed}}}")))
     }
 }
 
 impl NexumServer {
     fn get(&self, id: &str) -> Result<SessionRef, ErrorData> {
-        self.sessions
-            .lock()
-            .unwrap()
+        lock(&self.sessions)
             .get(id)
             .cloned()
             .ok_or_else(|| ErrorData::invalid_params(format!("unknown session_id: {id}"), None))
@@ -298,6 +315,12 @@ async fn main() -> anyhow::Result<()> {
     // stdout is the MCP channel — all diagnostics go to stderr.
     let config = Config::from_env();
     eprintln!("nexum-mcp: starting MCP server on stdio");
+    if std::env::var_os("HOME").is_none() {
+        eprintln!(
+            "nexum-mcp: NOTE HOME is unset — SSH key dir / known_hosts default under \
+             /root/.ssh; set NEXUM_MCP_KEY_DIR / NEXUM_MCP_KNOWN_HOSTS explicitly."
+        );
+    }
     if config.insecure_accept_any {
         eprintln!(
             "nexum-mcp: WARNING NEXUM_MCP_INSECURE_ACCEPT_ANY_HOSTKEY is set — \
