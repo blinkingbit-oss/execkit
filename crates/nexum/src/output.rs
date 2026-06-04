@@ -52,6 +52,9 @@ pub fn bound(s: &str, max: usize) -> (String, bool) {
     if chars.len() <= max {
         return (s.to_string(), false);
     }
+    if max < 2 {
+        return (String::new(), true);
+    }
     let half = max / 2;
     let head: String = chars[..half].iter().collect();
     let tail: String = chars[chars.len() - half..].iter().collect();

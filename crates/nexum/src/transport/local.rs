@@ -9,6 +9,11 @@ use std::sync::mpsc::{self, Receiver};
 use std::thread;
 use std::time::{Duration, Instant};
 
+/// Bounded reader→session queue. A flooding command (`yes`) fills this, the
+/// reader thread then blocks on `send`, the PTY buffer fills, and the child
+/// blocks on write — real backpressure that bounds memory (≤ CAP * read chunk).
+const CHANNEL_CAP: usize = 64;
+
 use portable_pty::{native_pty_system, Child, CommandBuilder, MasterPty, PtySize};
 
 use crate::error::{Error, Result};
@@ -45,7 +50,7 @@ impl LocalPty {
             .take_writer()
             .map_err(|e| Error::Transport(e.to_string()))?;
 
-        let (tx, rx) = mpsc::channel::<Vec<u8>>();
+        let (tx, rx) = mpsc::sync_channel::<Vec<u8>>(CHANNEL_CAP);
         thread::spawn(move || {
             let mut buf = [0u8; 8192];
             loop {
@@ -61,17 +66,37 @@ impl LocalPty {
         });
 
         let mut pty = LocalPty { writer, rx, _master: pair.master, child };
-        pty.init();
+        pty.init()?;
         Ok(pty)
     }
 
-    fn init(&mut self) {
-        // Echo off + no prompt so captured output is exactly the command output.
-        let _ = self.write_all(b"stty -echo 2>/dev/null; PS1=''; PS2=''; PROMPT_COMMAND=''\n");
-        let deadline = Instant::now() + Duration::from_millis(300);
-        while let Some(rem) = deadline.checked_duration_since(Instant::now()) {
-            if self.rx.recv_timeout(rem).is_err() {
-                break;
+    /// Disable echo + prompts, then block until the shell confirms readiness.
+    ///
+    /// The readiness tag is printed via `NEXUMrdy''<n>` so the *output* is the
+    /// contiguous tag while the *echoed command line* contains the `''` — we
+    /// therefore match only the real output, never the pre-`stty -echo` echo,
+    /// closing the init race.
+    fn init(&mut self) -> Result<()> {
+        const TAG: &[u8] = b"NEXUMrdy9f3a7c";
+        self.write_all(
+            b"stty -echo 2>/dev/null; PS1=''; PS2=''; PROMPT_COMMAND=''; \
+              printf '%s\\n' NEXUMrdy''9f3a7c\n",
+        )?;
+        let mut acc = Vec::new();
+        let deadline = Instant::now() + Duration::from_secs(5);
+        loop {
+            let now = Instant::now();
+            if now >= deadline {
+                return Err(Error::Transport("shell init timed out".into()));
+            }
+            match self.recv_timeout(deadline - now) {
+                Some(c) => {
+                    acc.extend_from_slice(&c);
+                    if contains(&acc, TAG) {
+                        return Ok(());
+                    }
+                }
+                None => return Err(Error::Transport("shell init: shell disconnected".into())),
             }
         }
     }
@@ -92,4 +117,10 @@ impl Drop for LocalPty {
     fn drop(&mut self) {
         let _ = self.child.kill();
     }
+}
+
+fn contains(hay: &[u8], needle: &[u8]) -> bool {
+    !needle.is_empty()
+        && hay.len() >= needle.len()
+        && hay.windows(needle.len()).any(|w| w == needle)
 }

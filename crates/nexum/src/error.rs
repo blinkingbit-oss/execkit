@@ -14,9 +14,16 @@ pub enum Error {
     Transport(String),
 
     /// Command did not finish before the session timeout (still running, or
-    /// waiting for input). The session may need an interrupt + resync.
+    /// waiting for input). The session is poisoned afterward (see below) — the
+    /// pending command would corrupt subsequent reads.
     #[error("command still running (timed out before completion)")]
     StillRunning,
+
+    /// The session is unusable: a prior command timed out while still running,
+    /// so its later output would desync framing. Create a new session.
+    /// (v0.x will replace poisoning with interrupt + resync.)
+    #[error("session poisoned by a prior timeout; create a new session")]
+    SessionPoisoned,
 
     /// Blocked by the advisory policy before reaching the shell.
     #[error("blocked by policy: {0}")]

@@ -46,6 +46,11 @@ impl Policy {
 }
 
 /// Best-effort: the first non-assignment program token of each pipeline segment.
+///
+/// Advisory only — NOT detected: command substitution (`$(...)`/backticks),
+/// `&&`/`||` operator precedence (split treats them as single `&`/`|`), and
+/// wrapper programs (`sudo`, `env`, `xargs`, `nice`, ...). Never rely on this
+/// as a security boundary; the environment (least-privilege/sandbox) is.
 fn programs(command: &str) -> Vec<String> {
     command
         .split([';', '|', '&', '\n'])
