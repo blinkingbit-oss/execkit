@@ -7,6 +7,8 @@
 //! default, so without the env var this test passes trivially.
 #![cfg(feature = "ssh")]
 
+use std::time::{Duration, Instant};
+
 use nexum::{HostKeyVerification, Session, SshAuth, SshConfig};
 
 fn parse(spec: &str) -> Option<(String, String, String, u16)> {
@@ -36,4 +38,26 @@ fn ssh_echo_roundtrip() {
     // State persists over SSH too.
     s.exec("cd /tmp").unwrap();
     assert_eq!(s.exec("pwd").unwrap().cwd, "/tmp");
+}
+
+/// Regression: dropping a session after a flood/timeout must not hang (the
+/// runtime thread is parked in a full blocking read send, not in select!).
+#[test]
+fn ssh_drop_after_timeout_does_not_hang() {
+    let Ok(spec) = std::env::var("NEXUM_TEST_SSH") else {
+        eprintln!("skip: set NEXUM_TEST_SSH to run");
+        return;
+    };
+    let (user, pass, host, port) = parse(&spec).expect("NEXUM_TEST_SSH=user:pass@host:port");
+    let mut cfg = SshConfig::new(host, user, SshAuth::Password(pass), HostKeyVerification::AcceptAny);
+    cfg.port = port;
+
+    let mut s = Session::ssh(cfg)
+        .expect("ssh connect")
+        .with_timeout(Duration::from_millis(500));
+    // Floods forever -> StillRunning; the runtime thread blocks in read_tx.send.
+    assert!(s.exec("yes").is_err());
+    let t = Instant::now();
+    drop(s); // must return promptly, not deadlock in join()
+    assert!(t.elapsed() < Duration::from_secs(5), "drop hung for {:?}", t.elapsed());
 }

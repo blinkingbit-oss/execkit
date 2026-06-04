@@ -103,10 +103,11 @@ fn verify_known_hosts(path: &Path, host: &str, fingerprint: &str) -> Result<bool
             }
         }
     }
-    // Unseen host: trust on first use and pin it.
+    // Unseen host: trust on first use and pin it. One atomic O_APPEND write so a
+    // concurrent reader never sees a partial line.
     use std::io::Write;
     let mut f = std::fs::OpenOptions::new().create(true).append(true).open(path)?;
-    writeln!(f, "{host} {fingerprint}")?;
+    f.write_all(format!("{host} {fingerprint}\n").as_bytes())?;
     Ok(true)
 }
 
@@ -135,7 +136,10 @@ mod imp {
     /// tokio runtime; bytes bridge to the sync [`Transport`] API via channels.
     pub struct SshTransport {
         write_tx: Option<tokio_mpsc::Sender<Vec<u8>>>,
-        read_rx: std_mpsc::Receiver<Vec<u8>>,
+        // Option so Drop can close it *before* join — otherwise a runtime thread
+        // parked in a full `read_tx.send()` (after a flood/timeout that stopped
+        // draining) never observes shutdown and join() hangs forever.
+        read_rx: Option<std_mpsc::Receiver<Vec<u8>>>,
         thread: Option<JoinHandle<()>>,
     }
 
@@ -163,7 +167,7 @@ mod imp {
             match ready_rx.recv() {
                 Ok(Ok(())) => Ok(SshTransport {
                     write_tx: Some(write_tx),
-                    read_rx,
+                    read_rx: Some(read_rx),
                     thread: Some(thread),
                 }),
                 Ok(Err(e)) => {
@@ -186,15 +190,20 @@ mod imp {
         }
 
         fn recv_timeout(&self, dur: Duration) -> Option<Vec<u8>> {
-            self.read_rx.recv_timeout(dur).ok()
+            self.read_rx.as_ref()?.recv_timeout(dur).ok()
         }
     }
 
     impl Drop for SshTransport {
         fn drop(&mut self) {
-            // Closing the write channel makes the I/O loop's write arm return
-            // None, ending the loop and the runtime thread.
+            // End the I/O loop regardless of where its thread is parked:
+            //  - dropping write_tx  -> the select! write arm returns None -> break
+            //  - dropping read_rx   -> a blocked read_tx.send() returns Err -> break
+            // The second is essential: after a flood/timeout the thread sits in a
+            // full blocking send, NOT in select!, so closing only writes wouldn't
+            // wake it and join() would hang.
             self.write_tx = None;
+            self.read_rx = None;
             if let Some(t) = self.thread.take() {
                 let _ = t.join();
             }
@@ -278,6 +287,11 @@ mod imp {
         let _ = ready_tx.send(Ok(()));
         let _keep = handle; // keep the SSH session alive for the channel's lifetime
 
+        // INVARIANT: we always request_pty above, so the server merges the
+        // command's fd2 into the single PTY stream and never sends SSH
+        // ExtendedData. `into_stream()` builds a reader with `ext: None`, whose
+        // poll_read busy-spins on an ExtendedData message — so do NOT drop the
+        // PTY request without also handling ext data here.
         let stream = channel.into_stream(); // AsyncRead + AsyncWrite (merged streams)
         let (mut rd, mut wr) = tokio::io::split(stream);
         let mut buf = [0u8; 8192];

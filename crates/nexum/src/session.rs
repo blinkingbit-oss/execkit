@@ -111,8 +111,12 @@ impl Session {
         // channel between the start/end sentinels, then removed. Works
         // identically for local and SSH; nothing touches the local filesystem.
         // Layout on the wire: <stdout>\n<START>\x1f<exit>\x1f<cwd>\x1f<stderr><END>\n
+        // The fallback temp file (no `mktemp`) is created with umask 077 INSIDE
+        // the command substitution, so it's 0600 and the umask never leaks into
+        // the user's command.
         let payload = format!(
-            "__E=$(mktemp 2>/dev/null||echo /tmp/nexumE_{tok}); {{ {cmd} ; }} 2>\"$__E\"; \
+            "__E=$(umask 077; mktemp 2>/dev/null||{{ f=/tmp/nexumE_{tok}; : >\"$f\"; echo \"$f\"; }}); \
+{{ {cmd} ; }} 2>\"$__E\"; \
 printf '\\n{start}\\037%d\\037%s\\037' \"$?\" \"$PWD\"; cat \"$__E\" 2>/dev/null; \
 printf '{end}\\n'; rm -f \"$__E\"\n",
             tok = self.token,
