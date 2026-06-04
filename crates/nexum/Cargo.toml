@@ -34,3 +34,7 @@ path = "src/lib.rs"
 [[example]]
 name = "ssh"
 required-features = ["ssh"]
+
+# docs.rs: build with all features so SSH APIs are documented.
+[package.metadata.docs.rs]
+all-features = true

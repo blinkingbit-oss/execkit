@@ -1,0 +1,43 @@
+name: Bug report
+description: Something doesn't work as expected
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for the report! For **security vulnerabilities**, do NOT use this
+        form — follow [SECURITY.md](../blob/main/SECURITY.md) instead.
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: What happened?
+      description: What did you do, what did you expect, and what happened instead?
+      placeholder: A clear description, with the command(s) and the ExecResult / error you saw.
+    validations:
+      required: true
+  - type: textarea
+    id: repro
+    attributes:
+      label: Reproduction
+      description: Minimal steps or code (a small example, the MCP tool call, or the SSH/local setup).
+    validations:
+      required: true
+  - type: input
+    id: version
+    attributes:
+      label: Version / commit
+      placeholder: "nexum 0.1.0 (or git SHA)"
+    validations:
+      required: true
+  - type: dropdown
+    id: transport
+    attributes:
+      label: Transport
+      options: [local, ssh, mcp-server, "not sure"]
+    validations:
+      required: true
+  - type: input
+    id: env
+    attributes:
+      label: OS / shell / Rust version
+      placeholder: "Ubuntu 24.04, bash 5.2, rustc 1.85"

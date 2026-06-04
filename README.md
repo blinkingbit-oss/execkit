@@ -4,17 +4,22 @@
 
 **The safety layer that lets an AI agent run shell on real infrastructure — without you holding your breath.**
 
-Persistent SSH / Docker / K8s / local sessions · default-deny by construction · secret-safe · embeddable · open source
+Persistent local + SSH sessions · structured results · secret-safe · default-deny policy · embeddable · open source
 
 *What `libssh2` is to SSH, nexum is to agent shell sessions.*
 
+[![CI](https://github.com/nexum-rs/nexum/actions/workflows/ci.yml/badge.svg)](https://github.com/nexum-rs/nexum/actions/workflows/ci.yml)
+[![crates.io](https://img.shields.io/crates/v/nexum.svg)](https://crates.io/crates/nexum)
+[![docs.rs](https://img.shields.io/docsrs/nexum)](https://docs.rs/nexum)
+[![license](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](LICENSE)
+
 </div>
 
-> **Status: pre-v0.1, design + feasibility stage.** The hard parts are already
-> proven — see [`poc/`](./poc/) (Rust `portable-pty` 12/12, Python technique
-> 33/33, security gates 19/19). The plan is [`ROADMAP.md`](./ROADMAP.md); the full
-> vision is [`FEATURE_VISION.md`](./FEATURE_VISION.md). Not yet shippable. Stars
-> and feedback welcome; production use is not.
+> **Status: v0.1, pre-release.** The core is built and reviewed — local + SSH
+> transports, structured results, advisory policy, secret redaction, and an MCP
+> server — all verified end-to-end (see [`poc/`](./poc/) and the test suite).
+> Not yet published, and **not production-ready** (see [Limitations](#limitations-v01)).
+> The plan is [`ROADMAP.md`](./ROADMAP.md); the vision is [`FEATURE_VISION.md`](./FEATURE_VISION.md).
 
 ---
 
@@ -119,6 +124,33 @@ The critical path is already proven in Rust: [`poc/rust/`](./poc/rust/).
 Full detail in [`ROADMAP.md`](./ROADMAP.md). **Cut on purpose:** cross-host
 federated sessions (attack surface > value).
 
+## Limitations (v0.1)
+
+Be upfront — this is a young library. Today:
+
+- **Not a sandbox.** The command policy is an *advisory* tripwire (string-matching,
+  bypassable). The load-bearing control is the *environment* — run the agent and
+  SSH user with least privilege. A real sandbox transport is on the roadmap (v0.4).
+- **A timed-out command poisons the session.** There's no interrupt-and-resync yet;
+  on timeout you get a clear error and should create a new session.
+- **Unix-only.** Local transport needs a POSIX shell (`bash`); Windows (ConPTY) is
+  v1.0.
+- **Synchronous core.** Fine for typical agent use; not yet tuned for thousands of
+  concurrent sessions.
+- **SSH `AcceptAny` host-key mode exists** for testing and is gated behind an
+  explicit insecure opt-in — never use it in production.
+- **Recovery/time-travel, Docker/K8s transports, streaming, and more SDKs** are
+  roadmap, not built. See [`ROADMAP.md`](./ROADMAP.md).
+
+Found something rough? Please [open an issue](https://github.com/nexum-rs/nexum/issues).
+
+## Contributing & security
+
+- Contributions: see [`CONTRIBUTING.md`](./CONTRIBUTING.md).
+- Found a vulnerability? Please follow [`SECURITY.md`](./SECURITY.md) — do **not**
+  open a public issue for security reports.
+
 ## License
 
-Apache 2.0 — embed it freely, including commercially.
+Apache 2.0 — embed it freely, including commercially. See [`LICENSE`](./LICENSE)
+and [`NOTICE`](./NOTICE).
