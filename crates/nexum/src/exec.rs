@@ -1,0 +1,25 @@
+// SPDX-License-Identifier: Apache-2.0
+use serde::{Deserialize, Serialize};
+
+/// The structured result of running one command — the agent-facing contract.
+///
+/// Note `stdout` and `stderr` are **split** (a raw PTY merges them), already
+/// ANSI-stripped and secret-redacted, and bounded to the session's output cap.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ExecResult {
+    pub command: String,
+    pub stdout: String,
+    pub stderr: String,
+    pub exit_code: i32,
+    pub duration_ms: u64,
+    pub cwd: String,
+    /// True if output was truncated to fit the session's byte/char budget.
+    pub truncated: bool,
+}
+
+/// A snapshot of shell state carried alongside results.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ShellState {
+    pub cwd: String,
+    pub last_exit: i32,
+}

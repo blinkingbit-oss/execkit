@@ -1,0 +1,87 @@
+# Automated releases for the Rust crate(s): version bump, CHANGELOG, git tag,
+# GitHub Release, and `cargo publish` to crates.io.
+#
+# How it works (two jobs, both run on every push to main):
+#   - release-plz-pr:     opens/updates a "Release PR" that bumps versions and
+#                         updates the changelog from your conventional commits.
+#                         Merging that PR is what triggers the actual release.
+#   - release-plz-release: after the Release PR is merged, publishes the new
+#                         version(s) to crates.io + creates the GitHub Release.
+#
+# One-time setup is in .github/RELEASE_SETUP.md.
+
+name: Release-plz
+
+permissions:
+  pull-requests: write
+  contents: write
+
+on:
+  push:
+    branches:
+      - main
+
+# Don't run on the very same commit twice / overlap PR runs.
+concurrency:
+  group: release-plz-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  # 1) Publish job — releases versions that exist on main but not yet on crates.io.
+  release-plz-release:
+    name: Release-plz release
+    runs-on: ubuntu-latest
+    # OIDC token for crates.io Trusted Publishing (see RELEASE_SETUP.md).
+    permissions:
+      contents: write
+      id-token: write
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      # --- crates.io auth: pick ONE of the two options below ---
+
+      # Option A (recommended): Trusted Publishing via OIDC — no stored token.
+      # Requires configuring a Trusted Publisher on crates.io first.
+      - name: Authenticate to crates.io (OIDC)
+        uses: rust-lang/crates-io-auth-action@v1
+        id: auth
+
+      - name: Run release-plz (release)
+        uses: release-plz/action@v0.5
+        with:
+          command: release
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          CARGO_REGISTRY_TOKEN: ${{ steps.auth.outputs.token }}
+          # Option B (simplest first publish): comment out the OIDC step above and
+          # use a stored token instead:
+          # CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
+
+  # 2) Release-PR job — keeps an up-to-date PR with the next version + changelog.
+  release-plz-pr:
+    name: Release-plz PR
+    runs-on: ubuntu-latest
+    permissions:
+      pull-requests: write
+      contents: write
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Run release-plz (release-pr)
+        uses: release-plz/action@v0.5
+        with:
+          command: release-pr
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

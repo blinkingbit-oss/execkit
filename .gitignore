@@ -1,0 +1,18 @@
+# Rust
+/target
+**/target/
+*.pdb
+
+# Keep Cargo.lock committed (recommended for bins AND libs since 2023) — do NOT ignore it.
+
+# Editors / OS
+.DS_Store
+*.swp
+*~
+.idea/
+.vscode/
+
+# PoC scratch artifacts
+__pycache__/
+*.pyc
+.playwright-mcp/

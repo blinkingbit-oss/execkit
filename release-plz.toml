@@ -1,0 +1,12 @@
+# release-plz configuration — https://release-plz.dev/docs/config
+# Defaults are sensible; these are set explicitly for clarity.
+
+[workspace]
+# Maintain CHANGELOG.md from conventional-commit messages.
+changelog_update = true
+# Create a GitHub Release (with notes) when a version is published.
+git_release_enable = true
+# Create an annotated git tag (e.g. v0.1.0) per release.
+git_tag_enable = true
+# Run a semver-compatibility check and label the Release PR accordingly.
+semver_check = true

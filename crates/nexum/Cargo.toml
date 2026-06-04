@@ -1,0 +1,23 @@
+[package]
+name = "nexum"
+description = "Stateful, structured, safe shell sessions for AI agents on real infrastructure."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+readme = "../../README.md"
+keywords = ["ai", "agent", "shell", "pty", "ssh"]
+categories = ["development-tools", "command-line-interface", "api-bindings"]
+
+[dependencies]
+portable-pty.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+regex.workspace = true
+
+[lib]
+name = "nexum"
+path = "src/lib.rs"

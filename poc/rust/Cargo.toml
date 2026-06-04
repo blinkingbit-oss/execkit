@@ -1,0 +1,15 @@
+[package]
+name = "nexum-poc"
+version = "0.0.0"
+edition = "2021"
+publish = false
+
+[[bin]]
+name = "nexum-poc"
+path = "src/main.rs"
+
+[dependencies]
+portable-pty = "0.8"
+
+[profile.dev]
+opt-level = 0
