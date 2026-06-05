@@ -228,6 +228,9 @@ impl ServerHandler for ExeckitServer {
                 .into(),
         );
         info.capabilities = ServerCapabilities::builder().enable_tools().build();
+        // Default pulls rmcp's own crate identity; advertise ourselves instead.
+        info.server_info.name = "execkit-mcp".into();
+        info.server_info.version = env!("CARGO_PKG_VERSION").into();
         info
     }
 }
