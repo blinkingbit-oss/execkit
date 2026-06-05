@@ -33,7 +33,9 @@ impl Mcp {
         m.send(json!({"jsonrpc":"2.0","id":1,"method":"initialize",
             "params":{"protocolVersion":"2025-06-18","capabilities":{},
                       "clientInfo":{"name":"test","version":"0"}}}));
-        m.recv(); // initialize result
+        let init = m.recv();
+        // Lock in the identity fix: must advertise execkit-mcp, not rmcp's default.
+        assert_eq!(init["result"]["serverInfo"]["name"], "execkit-mcp");
         m.send(json!({"jsonrpc":"2.0","method":"notifications/initialized"}));
         m
     }
