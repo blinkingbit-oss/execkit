@@ -38,3 +38,7 @@ required-features = ["ssh"]
 # docs.rs: build with all features so SSH APIs are documented.
 [package.metadata.docs.rs]
 all-features = true
+
+# A library, not a binary — exclude from prebuilt-binary distribution (cargo-dist).
+[package.metadata.dist]
+dist = false

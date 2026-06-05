@@ -6,7 +6,17 @@
 changelog_update = true
 # Create a GitHub Release (with notes) when a version is published.
 git_release_enable = true
+# Create the Release as a DRAFT — cargo-dist (release.yml) uploads the prebuilt
+# binaries to it and publishes (un-drafts) it on completion.
+git_release_draft = true
 # Create an annotated git tag (e.g. v0.1.0) per release.
 git_tag_enable = true
 # Run a semver-compatibility check and label the Release PR accordingly.
 semver_check = true
+
+# execkit is a library (no binary) — no prebuilt binaries, so no draft for
+# cargo-dist to publish. Skip its GitHub Release (still tagged + published to
+# crates.io). Only execkit-mcp gets a binary Release.
+[[package]]
+name = "execkit"
+git_release_enable = false
