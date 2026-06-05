@@ -15,10 +15,10 @@ Persistent local + SSH sessions · structured results · secret-safe · default-
 
 </div>
 
-> **Status: v0.1, pre-release.** The core is built and reviewed — local + SSH
+> **Status: v0.1.0 — early release.** The core is built and reviewed — local + SSH
 > transports, structured results, advisory policy, secret redaction, and an MCP
 > server — all verified end-to-end (see [`poc/`](./poc/) and the test suite).
-> Not yet published, and **not production-ready** (see [Limitations](#limitations-v01)).
+> An early `0.1.x` release — **not production-ready** (see [Limitations](#limitations-v01)).
 > The plan is [`ROADMAP.md`](./ROADMAP.md); the vision is [`FEATURE_VISION.md`](./FEATURE_VISION.md).
 
 ---
