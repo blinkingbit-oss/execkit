@@ -51,7 +51,7 @@ cargo install execkit-mcp
 { "mcpServers": { "execkit": { "command": "execkit-mcp" } } }
 ```
 
-The agent gets three tools - `session_create` (local or ssh) → `session_exec` →
+The agent gets three tools - `session_create` (local or ssh) -> `session_exec` ->
 `session_destroy`. `session_exec` returns a structured `ExecResult` (split
 stdout/stderr, exit code, cwd), already secret-redacted and bounded. See
 [`crates/execkit-mcp/README.md`](./crates/execkit-mcp/README.md) for the operator

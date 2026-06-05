@@ -37,14 +37,14 @@ cargo install execkit-mcp        # or build from source: cargo build -p execkit-
 }
 ```
 
-Then the agent can call `session_create` → `session_exec` → `session_destroy`.
+Then the agent can call `session_create` -> `session_exec` -> `session_destroy`.
 
 ## Example session (what the agent sees)
 
 ```jsonc
 // session_create {"transport":"local"}              -> {"session_id":"sess_1"}
 // session_exec   {"session_id":"sess_1","command":"npm run build"}
-//   -> {"stdout":"…","stderr":"Error: Cannot find module 'webpack'",
+//   -> {"stdout":"...","stderr":"Error: Cannot find module 'webpack'",
 //       "exit_code":1,"duration_ms":3420,"cwd":"/home/u/app","truncated":false}
 ```
 

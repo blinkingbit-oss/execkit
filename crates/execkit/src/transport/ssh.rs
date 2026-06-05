@@ -318,7 +318,7 @@ mod imp {
                 r = rd.read(&mut buf) => match r {
                     Ok(0) | Err(_) => break,
                     // Blocking send into the bounded queue applies backpressure
-                    // (stalls reads → TCP backpressure) under a flood.
+                    // (stalls reads -> TCP backpressure) under a flood.
                     Ok(n) => if read_tx.send(buf[..n].to_vec()).is_err() { break; },
                 },
                 w = write_rx.recv() => match w {

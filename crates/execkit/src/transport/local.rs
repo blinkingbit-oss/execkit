@@ -11,7 +11,7 @@ use portable_pty::{native_pty_system, Child, CommandBuilder, MasterPty, PtySize}
 use super::Transport;
 use crate::error::{Error, Result};
 
-/// Bounded reader→session queue. A flooding command (`yes`) fills this, the
+/// Bounded reader->session queue. A flooding command (`yes`) fills this, the
 /// reader thread then blocks on `send`, the PTY buffer fills, and the child
 /// blocks on write - real backpressure that bounds memory (≤ CAP * read chunk).
 const CHANNEL_CAP: usize = 64;

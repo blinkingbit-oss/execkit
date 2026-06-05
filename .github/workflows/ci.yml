@@ -17,7 +17,7 @@ env:
 
 jobs:
   test:
-    name: fmt · clippy · build · test
+    name: fmt / clippy / build / test
     runs-on: ubuntu-latest
     timeout-minutes: 25 # backstop: a hung test fails fast, never burns the 6h default
     steps:

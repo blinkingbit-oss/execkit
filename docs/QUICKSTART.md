@@ -21,7 +21,7 @@ Add to your MCP client config (Claude Code, Cursor, Gemini CLI):
 }
 ```
 
-The agent now has three tools: `session_create` → `session_exec` → `session_destroy`.
+The agent now has three tools: `session_create` -> `session_exec` -> `session_destroy`.
 `session_exec` returns a structured result (split stdout/stderr, exit code, cwd),
 already secret-redacted and bounded. See [`crates/execkit-mcp/README.md`](../crates/execkit-mcp/README.md)
 for the operator security settings (host-key verification, key dir, audit, limits).

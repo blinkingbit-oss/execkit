@@ -62,7 +62,7 @@ pub fn bound(s: &str, max: usize) -> (String, bool) {
     let head: String = chars[..half].iter().collect();
     let tail: String = chars[chars.len() - half..].iter().collect();
     let elided = chars.len() - 2 * half;
-    (format!("{head}\n… {elided} chars elided …\n{tail}"), true)
+    (format!("{head}\n... {elided} chars elided ...\n{tail}"), true)
 }
 
 #[cfg(test)]

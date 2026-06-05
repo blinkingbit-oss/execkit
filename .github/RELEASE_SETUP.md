@@ -1,7 +1,7 @@
 # Release setup (one-time)
 
-The `release-plz` workflow automates: version bump → CHANGELOG → git tag →
-GitHub Release → `cargo publish`. It activates once these prerequisites are met.
+The `release-plz` workflow automates: version bump -> CHANGELOG -> git tag ->
+GitHub Release -> `cargo publish`. It activates once these prerequisites are met.
 
 ## Prerequisites
 
@@ -18,7 +18,7 @@ GitHub Release → `cargo publish`. It activates once these prerequisites are me
 4. **crates.io auth - choose one:**
 
    **Option A - Trusted Publishing via OIDC (recommended, no stored secret):**
-   - On crates.io → your crate → *Settings → Trusted Publishing* → add a GitHub
+   - On crates.io -> your crate -> *Settings -> Trusted Publishing* -> add a GitHub
      publisher: owner/repo + workflow file `release-plz.yml` + (optional) environment.
    - The workflow's `release` job already requests `id-token: write` and uses
      `rust-lang/crates-io-auth-action`. Nothing else to store.
@@ -26,19 +26,19 @@ GitHub Release → `cargo publish`. It activates once these prerequisites are me
      publish with a token (Option B), then switch to OIDC.
 
    **Option B - Stored token (simplest for the very first publish):**
-   - `cargo login` locally → create a crates.io API token (scope: publish-update).
+   - `cargo login` locally -> create a crates.io API token (scope: publish-update).
    - Add it as a GitHub repo secret named `CARGO_REGISTRY_TOKEN`.
    - In `release-plz.yml`, comment out the OIDC auth step and switch the
      `CARGO_REGISTRY_TOKEN` env to `${{ secrets.CARGO_REGISTRY_TOKEN }}`.
 
-5. **Let the Action open PRs:** Settings → Actions → General → Workflow permissions
-   → enable "Allow GitHub Actions to create and approve pull requests".
+5. **Let the Action open PRs:** Settings -> Actions -> General -> Workflow permissions
+   -> enable "Allow GitHub Actions to create and approve pull requests".
 
 ## How a release happens after setup
 
 1. Push commits to `main` using **Conventional Commits** (`feat:`, `fix:`, etc.).
 2. release-plz opens/updates a **Release PR** with the bumped version + changelog.
-3. **Merge the Release PR** → the `release` job publishes to crates.io and creates
+3. **Merge the Release PR** -> the `release` job publishes to crates.io and creates
    the GitHub Release. That's it.
 
 ## Add the other registries later

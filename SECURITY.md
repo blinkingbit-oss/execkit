@@ -61,6 +61,6 @@ caller. Tool/command inputs are adversarial by assumption.
 ## Known advisories in dependencies
 
 - **RUSTSEC-2023-0071** (Marvin timing side-channel in `rsa`) is pulled
-  transitively via `russh → ssh-key → rsa`. There is no fixed upstream release
+  transitively via `russh -> ssh-key -> rsa`. There is no fixed upstream release
   yet; it is acknowledged and tracked (CI ignores this specific advisory while
   still gating on all others). We will drop the exception when `russh` updates.
