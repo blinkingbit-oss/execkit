@@ -41,7 +41,7 @@ GitHub Release → `cargo publish`. It activates once these prerequisites are me
 3. **Merge the Release PR** → the `release` job publishes to crates.io and creates
    the GitHub Release. That's it.
 
-## Add the other registries later (per ROADMAP)
+## Add the other registries later
 
 - v0.2 PyPI: `maturin generate-ci github` + a PyPI Trusted Publisher.
 - v0.3 npm: `napi new` template + `NPM_TOKEN`.

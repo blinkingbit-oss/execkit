@@ -23,4 +23,4 @@ body:
     attributes:
       label: Checks
       options:
-        - label: I checked the [ROADMAP](../blob/main/ROADMAP.md) — this isn't already planned.
+        - label: I searched existing issues and this isn't already requested.

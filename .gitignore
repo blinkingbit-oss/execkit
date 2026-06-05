@@ -16,3 +16,6 @@
 __pycache__/
 *.pyc
 .playwright-mcp/
+
+# internal planning / scratch — kept locally, not published
+_internal/

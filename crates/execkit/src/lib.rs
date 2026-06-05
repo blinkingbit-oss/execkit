@@ -6,9 +6,11 @@
 //! library's job is to contain its own caller: every command passes a policy
 //! fence, output is redacted of secrets, and results are recorded.
 //!
-//! v0.1 scope: a persistent **local PTY** session with structured [`ExecResult`],
-//! an advisory [`Policy`], secret redaction, and an append-only audit log.
-//! SSH transport and MCP server mode follow (see `ROADMAP.md`).
+//! Sessions persist state (cwd, env) across commands and run over a **local PTY**
+//! or **SSH** ([`Session::local`] / [`Session::ssh`]), returning a structured
+//! [`ExecResult`] checked by an advisory [`Policy`], with secret redaction, bounded
+//! output, and an append-only audit log. An MCP server (`execkit-mcp`) exposes the
+//! same sessions to MCP agents.
 //!
 //! ```no_run
 //! use execkit::Session;

@@ -64,5 +64,4 @@ EXECKIT_SSH="user:password@host:22" cargo run --example ssh
   SSH host-key verification.
 - **One API, many transports** — local PTY and SSH today; same `ExecResult`.
 
-See [`README.md`](../README.md) for the full picture and [`ROADMAP.md`](../ROADMAP.md)
-for what's next.
+See [`README.md`](../README.md) for the full picture.
