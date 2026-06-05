@@ -262,7 +262,16 @@ mod imp {
             SshAuth::Key { path, passphrase } => {
                 let key = russh::keys::load_secret_key(path, passphrase.as_deref())
                     .map_err(|e| Error::Transport(format!("load key: {e}")))?;
-                let key = russh::keys::PrivateKeyWithHashAlg::new(Arc::new(key), None);
+                // RSA keys must sign with rsa-sha2 (SHA-256/512) against modern
+                // servers, which reject the legacy ssh-rsa (SHA-1). Negotiate the
+                // server's preferred RSA hash; ignored for non-RSA keys.
+                let hash = handle
+                    .best_supported_rsa_hash()
+                    .await
+                    .ok()
+                    .flatten()
+                    .flatten();
+                let key = russh::keys::PrivateKeyWithHashAlg::new(Arc::new(key), hash);
                 handle
                     .authenticate_publickey(cfg.user.clone(), key)
                     .await
@@ -281,10 +290,14 @@ mod imp {
             .request_pty(false, "xterm-256color", 120, 40, 0, 0, &[])
             .await
             .map_err(|e| Error::Transport(format!("request pty: {e}")))?;
+        // Run a clean POSIX shell rather than request_shell, which starts the
+        // interactive LOGIN shell — its profile/rc, prompt, and readline behavior
+        // desync the sentinel framing. /bin/sh is universally present (bash is
+        // not, e.g. on Alpine); the framing is POSIX-compatible.
         channel
-            .request_shell(false)
+            .exec(false, "/bin/sh")
             .await
-            .map_err(|e| Error::Transport(format!("request shell: {e}")))?;
+            .map_err(|e| Error::Transport(format!("start shell: {e}")))?;
         Ok((handle, channel))
     }
 
