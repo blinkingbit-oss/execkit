@@ -24,14 +24,35 @@ cargo install execkit-mcp        # or build from source: cargo build -p execkit-
 
 ## Wire it into an agent
 
-**Claude Code / Cursor / Gemini CLI** - add to your MCP config (e.g.
-`~/.config/claude/mcp.json` or the client's MCP settings):
+`execkit-mcp` is a stdio MCP server - register the installed binary with your
+client. (`cargo install` puts it at `~/.cargo/bin/execkit-mcp`; use the full path
+if it isn't on the client's PATH.)
+
+**Claude Code** - one command:
+
+```bash
+claude mcp add execkit -- execkit-mcp        # add `-s user` to enable it everywhere
+```
+
+**Cursor** (`~/.cursor/mcp.json`) and **Gemini CLI** (`~/.gemini/settings.json`) -
+add the same block:
+
+```json
+{
+  "mcpServers": {
+    "execkit": { "command": "execkit-mcp" }
+  }
+}
+```
+
+To turn on auditing or other operator settings, add an `env` block:
 
 ```json
 {
   "mcpServers": {
     "execkit": {
-      "command": "execkit-mcp"
+      "command": "execkit-mcp",
+      "env": { "EXECKIT_MCP_AUDIT": "/var/log/execkit.jsonl" }
     }
   }
 }
