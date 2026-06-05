@@ -1,22 +1,24 @@
 # release-plz configuration - https://release-plz.dev/docs/config
-# Defaults are sensible; these are set explicitly for clarity.
 
 [workspace]
 # Maintain CHANGELOG.md from conventional-commit messages.
 changelog_update = true
-# Create a GitHub Release (with notes) when a version is published.
-git_release_enable = true
-# Create the Release as a DRAFT — cargo-dist (release.yml) uploads the prebuilt
-# binaries to it and publishes (un-drafts) it on completion.
-git_release_draft = true
-# Create an annotated git tag (e.g. v0.1.0) per release.
-git_tag_enable = true
 # Run a semver-compatibility check and label the Release PR accordingly.
 semver_check = true
-
-# execkit is a library (no binary) — no prebuilt binaries, so no draft for
-# cargo-dist to publish. Skip its GitHub Release (still tagged + published to
-# crates.io). Only execkit-mcp gets a binary Release.
-[[package]]
-name = "execkit"
+# Tags and GitHub Releases are created only for the binary crate (execkit-mcp),
+# below. The execkit library still publishes to crates.io, but gets no separate
+# tag/release - it ships in lockstep under the unified v{version} tag. A single
+# tag means cargo-dist fires exactly once; a per-crate library tag would spawn a
+# failed dist run ("this workspace doesn't have anything for dist to Release").
+git_tag_enable = false
 git_release_enable = false
+
+# execkit-mcp owns the release: one unified `v{version}` tag (matching the
+# existing v0.1.x scheme) plus a DRAFT GitHub Release. cargo-dist (release.yml)
+# fires on that tag, uploads the prebuilt binaries to the draft, and publishes it.
+[[package]]
+name = "execkit-mcp"
+git_tag_enable = true
+git_tag_name = "v{{ version }}"
+git_release_enable = true
+git_release_draft = true
