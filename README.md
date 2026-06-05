@@ -2,7 +2,7 @@
 
 # execkit
 
-**Stateful, structured, safe command execution for AI agents — over local shells and SSH.**
+**Stateful, structured, safe command execution for AI agents - over local shells and SSH.**
 
 [![CI](https://github.com/blinkingbit-oss/execkit/actions/workflows/ci.yml/badge.svg)](https://github.com/blinkingbit-oss/execkit/actions/workflows/ci.yml)
 [![crates.io](https://img.shields.io/crates/v/execkit.svg)](https://crates.io/crates/execkit)
@@ -11,10 +11,10 @@
 
 </div>
 
-> **Early `0.1.x` release — not production-ready.** See [Limitations](#limitations).
+> **Early `0.1.x` release - not production-ready.** See [Limitations](#limitations).
 
-execkit gives an AI agent a **persistent session** on a machine — a local shell or
-an SSH host — and returns a **structured result** for every command. Crucially, it
+execkit gives an AI agent a **persistent session** on a machine - a local shell or
+an SSH host - and returns a **structured result** for every command. Crucially, it
 treats the agent itself as untrusted: every command passes a policy fence, output
 is scrubbed of secrets, and flooding output is bounded. Use it as an **embeddable
 Rust library** or as an **MCP server** any agent can drive.
@@ -26,9 +26,20 @@ shells are local-only with no guardrails, managed sandboxes lock you in, and raw
 SSH is stateless-per-command with no notion of "is this command allowed?"
 
 **The agent is the adversary.** The LLM driving execkit can be prompt-injected by
-anything it reads, so execkit contains its own caller — a command passes the policy
+anything it reads, so execkit contains its own caller: a command passes the policy
 fence *before* it runs, secrets are redacted *before* output returns, and a changed
 SSH host key fails loudly instead of reconnecting into a MITM.
+
+```mermaid
+flowchart LR
+    A([AI agent]) -->|command| F{policy fence}
+    F -->|blocked| X([rejected, never runs])
+    F -->|allowed| T[transport: local PTY or SSH]
+    T --> O[raw output]
+    O --> R[redact secrets, bound output]
+    R --> E([structured ExecResult])
+    E -.-> A
+```
 
 ## Use it from an agent (MCP)
 
@@ -40,7 +51,7 @@ cargo install execkit-mcp
 { "mcpServers": { "execkit": { "command": "execkit-mcp" } } }
 ```
 
-The agent gets three tools — `session_create` (local or ssh) → `session_exec` →
+The agent gets three tools - `session_create` (local or ssh) → `session_exec` →
 `session_destroy`. `session_exec` returns a structured `ExecResult` (split
 stdout/stderr, exit code, cwd), already secret-redacted and bounded. See
 [`crates/execkit-mcp/README.md`](./crates/execkit-mcp/README.md) for the operator
@@ -73,38 +84,38 @@ Runnable examples: `cargo run --example local` and
 
 ## What you get
 
-- **Persistent, stateful sessions** — `cd`/env/state persist across commands, over
+- **Persistent, stateful sessions** - `cd`/env/state persist across commands, over
   **local PTY or SSH**.
-- **Structured `ExecResult`** — split stdout/stderr, exit code, duration, cwd.
-- **Safe by construction** — advisory command policy, **secret redaction**, bounded
+- **Structured `ExecResult`** - split stdout/stderr, exit code, duration, cwd.
+- **Safe by construction** - advisory command policy, **secret redaction**, bounded
   (anti-flood) output, SSH host-key verification.
-- **One small API, every transport** — the same `ExecResult` regardless of transport.
-- **Embeddable, never a service** — `cargo add`, in *your* process; no daemon, no vendor.
+- **One small API, every transport** - the same `ExecResult` regardless of transport.
+- **Embeddable, never a service** - `cargo add`, in *your* process; no daemon, no vendor.
 
 ## Limitations
 
-An early library — today:
+An early library - today:
 
 - **Not a sandbox.** The command policy is an *advisory* tripwire (string-matching,
-  bypassable). The load-bearing control is a least-privilege *environment* — run the
+  bypassable). The load-bearing control is a least-privilege *environment* - run the
   agent and SSH user with minimal rights.
-- **A timed-out command poisons the session** — you get a clear error and should
+- **A timed-out command poisons the session** - you get a clear error and should
   create a new session.
 - **Unix-only.** Local sessions need a POSIX shell (`bash`); Windows is later.
-- **Synchronous core** — fine for typical agent use; not tuned for thousands of
+- **Synchronous core** - fine for typical agent use; not tuned for thousands of
   concurrent sessions.
 - **SSH `AcceptAny` host-key mode** exists for testing, behind an explicit insecure
-  opt-in — never use it in production.
+  opt-in - never use it in production.
 
 Found something rough? [Open an issue](https://github.com/blinkingbit-oss/execkit/issues).
 
 ## Contributing & security
 
 - Contributions: see [`CONTRIBUTING.md`](./CONTRIBUTING.md).
-- Found a vulnerability? Follow [`SECURITY.md`](./SECURITY.md) — please don't open a
+- Found a vulnerability? Follow [`SECURITY.md`](./SECURITY.md) - please don't open a
   public issue for security reports.
 
 ## License
 
-Apache-2.0 — embed it freely, including commercially. See [`LICENSE`](./LICENSE) and
+Apache-2.0 - embed it freely, including commercially. See [`LICENSE`](./LICENSE) and
 [`NOTICE`](./NOTICE).

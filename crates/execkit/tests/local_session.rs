@@ -70,7 +70,7 @@ fn session_is_poisoned_after_timeout() {
 #[test]
 fn output_is_bounded_for_flood() {
     let mut s = Session::local().unwrap().with_max_output(1000);
-    // ~50k lines (~280 KB) from one fast process — must come back bounded near
+    // ~50k lines (~280 KB) from one fast process - must come back bounded near
     // max_output, proving acc is compacted rather than accumulated whole.
     let r = s.exec("seq 1 50000").unwrap();
     assert!(r.truncated, "flood output should be marked truncated");

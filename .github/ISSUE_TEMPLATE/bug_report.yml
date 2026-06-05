@@ -6,7 +6,7 @@ body:
     attributes:
       value: |
         Thanks for the report! For **security vulnerabilities**, do NOT use this
-        form — follow [SECURITY.md](../blob/main/SECURITY.md) instead.
+        form - follow [SECURITY.md](../blob/main/SECURITY.md) instead.
   - type: textarea
     id: what-happened
     attributes:

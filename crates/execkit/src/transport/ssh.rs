@@ -1,8 +1,8 @@
 // SPDX-License-Identifier: Apache-2.0
 //! SSH transport configuration and host-key verification.
 //!
-//! The russh-backed I/O is wired separately; the pieces here — connection
-//! config, auth, and the **host-key policy** (the load-bearing MITM defense) —
+//! The russh-backed I/O is wired separately; the pieces here - connection
+//! config, auth, and the **host-key policy** (the load-bearing MITM defense) -
 //! are pure and unit-tested, independent of any network.
 
 use std::path::{Path, PathBuf};
@@ -69,7 +69,7 @@ impl std::fmt::Debug for SshConfig {
     }
 }
 
-/// Server host-key policy — the defense against connecting into a MITM.
+/// Server host-key policy - the defense against connecting into a MITM.
 #[derive(Debug, Clone)]
 pub enum HostKeyVerification {
     /// Require this exact fingerprint, e.g. `"SHA256:abc123..."`.
@@ -77,7 +77,7 @@ pub enum HostKeyVerification {
     /// Trust-on-first-use against a `known_hosts`-style file (`host fingerprint`
     /// per line). A *changed* fingerprint for a known host is rejected.
     KnownHosts(PathBuf),
-    /// DANGEROUS — accept any key. Tests only; never use in production.
+    /// DANGEROUS - accept any key. Tests only; never use in production.
     AcceptAny,
 }
 
@@ -107,7 +107,7 @@ fn verify_known_hosts(path: &Path, host: &str, fingerprint: &str) -> Result<bool
         if let (Some(h), Some(fp)) = (it.next(), it.next()) {
             if h == host {
                 // Known host: the fingerprint MUST match. A mismatch is a MITM
-                // signal — reject loudly, never silently re-pin.
+                // signal - reject loudly, never silently re-pin.
                 return Ok(fp == fingerprint);
             }
         }
@@ -148,7 +148,7 @@ mod imp {
     /// tokio runtime; bytes bridge to the sync [`Transport`] API via channels.
     pub struct SshTransport {
         write_tx: Option<tokio_mpsc::Sender<Vec<u8>>>,
-        // Option so Drop can close it *before* join — otherwise a runtime thread
+        // Option so Drop can close it *before* join - otherwise a runtime thread
         // parked in a full `read_tx.send()` (after a flood/timeout that stopped
         // draining) never observes shutdown and join() hangs forever.
         read_rx: Option<std_mpsc::Receiver<Vec<u8>>>,
@@ -307,7 +307,7 @@ mod imp {
         // INVARIANT: we always request_pty above, so the server merges the
         // command's fd2 into the single PTY stream and never sends SSH
         // ExtendedData. `into_stream()` builds a reader with `ext: None`, whose
-        // poll_read busy-spins on an ExtendedData message — so do NOT drop the
+        // poll_read busy-spins on an ExtendedData message - so do NOT drop the
         // PTY request without also handling ext data here.
         let stream = channel.into_stream(); // AsyncRead + AsyncWrite (merged streams)
         let (mut rd, mut wr) = tokio::io::split(stream);

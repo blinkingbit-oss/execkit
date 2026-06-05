@@ -1,4 +1,4 @@
-# release-plz configuration — https://release-plz.dev/docs/config
+# release-plz configuration - https://release-plz.dev/docs/config
 # Defaults are sensible; these are set explicitly for clarity.
 
 [workspace]

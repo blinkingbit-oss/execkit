@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: Apache-2.0
-//! execkit-mcp — an MCP (stdio) server exposing execkit shell sessions to any
+//! execkit-mcp - an MCP (stdio) server exposing execkit shell sessions to any
 //! MCP-capable agent (Claude Code, Cursor, Gemini CLI, ...).
 //!
 //! Tools: `session_create`, `session_exec`, `session_destroy`. Sessions are
@@ -13,10 +13,10 @@
 //! treated as untrusted. Anything that affects the host or filesystem in a
 //! dangerous way is configured by the **operator at startup** (env vars), not by
 //! per-call agent arguments:
-//!   - `EXECKIT_MCP_AUDIT`       — append a JSONL audit log here (all sessions).
-//!   - `EXECKIT_MCP_KEY_DIR`     — dir SSH private keys must live under (default ~/.ssh).
-//!   - `EXECKIT_MCP_KNOWN_HOSTS` — SSH known_hosts file (default ~/.ssh/known_hosts).
-//!   - `EXECKIT_MCP_INSECURE_ACCEPT_ANY_HOSTKEY=1` — DANGEROUS: disable host-key
+//!   - `EXECKIT_MCP_AUDIT`       - append a JSONL audit log here (all sessions).
+//!   - `EXECKIT_MCP_KEY_DIR`     - dir SSH private keys must live under (default ~/.ssh).
+//!   - `EXECKIT_MCP_KNOWN_HOSTS` - SSH known_hosts file (default ~/.ssh/known_hosts).
+//!   - `EXECKIT_MCP_INSECURE_ACCEPT_ANY_HOSTKEY=1` - DANGEROUS: disable host-key
 //!     verification. Never in production.
 
 use std::collections::HashMap;
@@ -71,7 +71,7 @@ impl Config {
     }
 }
 
-/// Lock a std Mutex, recovering the guard if a prior holder panicked — a
+/// Lock a std Mutex, recovering the guard if a prior holder panicked - a
 /// poisoned lock must not brick the session (inner) or the whole server (outer).
 fn lock<T>(m: &Mutex<T>) -> MutexGuard<'_, T> {
     m.lock().unwrap_or_else(PoisonError::into_inner)
@@ -219,7 +219,7 @@ impl ExeckitServer {
 #[tool_handler]
 impl ServerHandler for ExeckitServer {
     fn get_info(&self) -> ServerInfo {
-        // ServerInfo is #[non_exhaustive] — start from default and assign.
+        // ServerInfo is #[non_exhaustive] - start from default and assign.
         let mut info = ServerInfo::default();
         info.instructions = Some(
             "Stateful, structured, safe shell sessions for agents. Call session_create \
@@ -256,7 +256,7 @@ fn build_session(p: CreateParams, config: &Config) -> Result<Session, execkit::E
                     "ssh: 'password' or 'key_path' required".into(),
                 ));
             };
-            // Host-key policy: pin if a fingerprint is supplied (safe — no file
+            // Host-key policy: pin if a fingerprint is supplied (safe - no file
             // I/O on a caller path); otherwise verify against the operator's
             // known_hosts; AcceptAny ONLY via explicit insecure opt-in.
             let host_key = if let Some(fp) = p.fingerprint {
@@ -320,18 +320,18 @@ fn internal<E: std::fmt::Display>(e: E) -> ErrorData {
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
-    // stdout is the MCP channel — all diagnostics go to stderr.
+    // stdout is the MCP channel - all diagnostics go to stderr.
     let config = Config::from_env();
     eprintln!("execkit-mcp: starting MCP server on stdio");
     if std::env::var_os("HOME").is_none() {
         eprintln!(
-            "execkit-mcp: NOTE HOME is unset — SSH key dir / known_hosts default under \
+            "execkit-mcp: NOTE HOME is unset - SSH key dir / known_hosts default under \
              /root/.ssh; set EXECKIT_MCP_KEY_DIR / EXECKIT_MCP_KNOWN_HOSTS explicitly."
         );
     }
     if config.insecure_accept_any {
         eprintln!(
-            "execkit-mcp: WARNING EXECKIT_MCP_INSECURE_ACCEPT_ANY_HOSTKEY is set — \
+            "execkit-mcp: WARNING EXECKIT_MCP_INSECURE_ACCEPT_ANY_HOSTKEY is set - \
              SSH host-key verification is DISABLED (MITM possible). Do not use in production."
         );
     }

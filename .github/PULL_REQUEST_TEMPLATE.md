@@ -12,7 +12,7 @@
 - [ ] Docs/README/CHANGELOG updated if user-facing
 - [ ] Commits signed off (`git commit -s`, DCO)
 - [ ] No new tool argument lets an (untrusted) caller pick arbitrary host paths,
-      credentials, or hosts — dangerous config stays operator-controlled
+      credentials, or hosts - dangerous config stays operator-controlled
 
 ## Notes for reviewers
 

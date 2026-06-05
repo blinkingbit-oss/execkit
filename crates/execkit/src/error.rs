@@ -14,7 +14,7 @@ pub enum Error {
     Transport(String),
 
     /// Command did not finish before the session timeout (still running, or
-    /// waiting for input). The session is poisoned afterward (see below) — the
+    /// waiting for input). The session is poisoned afterward (see below) - the
     /// pending command would corrupt subsequent reads.
     #[error("command still running (timed out before completion)")]
     StillRunning,

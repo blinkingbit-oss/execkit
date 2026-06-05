@@ -18,7 +18,7 @@ git clone https://github.com/blinkingbit-oss/execkit && cd execkit
 cargo build --workspace
 ```
 
-## Before you push — the same checks CI runs
+## Before you push - the same checks CI runs
 
 ```bash
 cargo fmt --all                                   # format
@@ -51,7 +51,7 @@ EXECKIT_SSH="user:pass@host:22" cargo run --example ssh
   MCP binary), not mocks. New behavior needs a test.
 - Keep the security posture in mind: tool/command inputs are **untrusted**
   (the agent may be prompt-injected). Don't add a tool argument that lets the
-  caller pick arbitrary host paths, credentials, or hosts — make dangerous config
+  caller pick arbitrary host paths, credentials, or hosts - make dangerous config
   operator-controlled (startup env). See the MCP server's threat-model comment.
 - Match the surrounding style; small, focused PRs are easier to review.
 

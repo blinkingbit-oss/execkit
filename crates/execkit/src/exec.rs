@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 use serde::{Deserialize, Serialize};
 
-/// The structured result of running one command — the agent-facing contract.
+/// The structured result of running one command - the agent-facing contract.
 ///
 /// Note `stdout` and `stderr` are **split** (a raw PTY merges them), already
 /// ANSI-stripped and secret-redacted, and bounded to the session's output cap.

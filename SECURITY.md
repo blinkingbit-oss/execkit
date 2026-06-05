@@ -18,7 +18,7 @@ disclose coordinated with you.
 execkit is pre-1.0. Security fixes target the **latest `0.x` release**; older
 versions are not maintained.
 
-## Threat model — the agent is the adversary
+## Threat model - the agent is the adversary
 
 This is the most important thing to understand about execkit's security posture.
 
@@ -46,7 +46,7 @@ caller. Tool/command inputs are adversarial by assumption.
   a real sandbox transport is roadmap (v0.4). Policy bypasses are still worth
   reporting, but "regex policy can be evaded" alone is expected.
 - `HostKeyVerification::AcceptAny` and `EXECKIT_MCP_INSECURE_ACCEPT_ANY_HOSTKEY`
-  disable MITM protection **on purpose** for testing — using them is not a vuln.
+  disable MITM protection **on purpose** for testing - using them is not a vuln.
 - Anything requiring an already-privileged local attacker on the operator's host.
 
 ## Operator hardening checklist

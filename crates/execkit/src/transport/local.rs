@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: Apache-2.0
-//! Local PTY transport — a persistent shell in a pseudo-terminal.
+//! Local PTY transport - a persistent shell in a pseudo-terminal.
 
 use std::io::{Read, Write};
 use std::sync::mpsc::{self, Receiver};
@@ -13,7 +13,7 @@ use crate::error::{Error, Result};
 
 /// Bounded reader→session queue. A flooding command (`yes`) fills this, the
 /// reader thread then blocks on `send`, the PTY buffer fills, and the child
-/// blocks on write — real backpressure that bounds memory (≤ CAP * read chunk).
+/// blocks on write - real backpressure that bounds memory (≤ CAP * read chunk).
 const CHANNEL_CAP: usize = 64;
 
 /// A live shell process attached to a PTY.

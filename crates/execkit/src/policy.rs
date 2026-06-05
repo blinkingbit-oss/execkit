@@ -1,9 +1,9 @@
 // SPDX-License-Identifier: Apache-2.0
-//! Advisory command policy — a tripwire, NOT a security boundary.
+//! Advisory command policy - a tripwire, NOT a security boundary.
 //!
 //! String matching is trivially bypassable (`r''m`, base64 | sh, env indirection).
 //! The load-bearing control is the *environment* (least-privilege user, sandbox).
-//! This layer is a fast, advisory first line — never rely on it alone.
+//! This layer is a fast, advisory first line - never rely on it alone.
 
 use regex::Regex;
 use std::sync::OnceLock;
@@ -47,7 +47,7 @@ impl Policy {
 
 /// Best-effort: the first non-assignment program token of each pipeline segment.
 ///
-/// Advisory only — NOT detected: command substitution (`$(...)`/backticks),
+/// Advisory only - NOT detected: command substitution (`$(...)`/backticks),
 /// `&&`/`||` operator precedence (split treats them as single `&`/`|`), and
 /// wrapper programs (`sudo`, `env`, `xargs`, `nice`, ...). Never rely on this
 /// as a security boundary; the environment (least-privilege/sandbox) is.

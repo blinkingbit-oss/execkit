@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: Apache-2.0
-//! Secret redaction — keep credentials out of the model and the logs.
+//! Secret redaction - keep credentials out of the model and the logs.
 //!
 //! v0.1 matches by value shape. A real deployment should also redact by env-var
 //! name and allow custom patterns.

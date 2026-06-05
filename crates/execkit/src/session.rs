@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 //! A persistent session: frame each command with unguessable start/end sentinels
 //! that carry exit code + cwd, and dump the command's stderr back *through the
-//! channel* between them — so the framing is identical for local and remote
+//! channel* between them - so the framing is identical for local and remote
 //! transports (no local-filesystem dependency). Then apply policy, redaction,
 //! bounding, and audit.
 
@@ -185,7 +185,7 @@ printf '{end}\\n'; rm -f \"$__E\"\n",
                 .unwrap_or(-1);
             let cwd = String::from_utf8_lossy(&between[seps[1] + 1..seps[2]]).into_owned();
             // Everything after the 3rd separator is stderr (may itself contain
-            // separators — we only consume the first three).
+            // separators - we only consume the first three).
             let raw_err = clean(&String::from_utf8_lossy(&between[seps[2] + 1..]));
             let raw_out = clean(&String::from_utf8_lossy(&acc[..start_pos]));
             let (stdout, t1) = bound(&redact(&raw_out), self.max_output);

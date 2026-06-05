@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: Apache-2.0
-//! Transports — how a session reaches an environment.
+//! Transports - how a session reaches an environment.
 //!
 //! `Session` frames commands on top of a byte-level [`Transport`], so the
 //! framing / policy / redaction / audit logic is identical across local PTY,
@@ -24,7 +24,7 @@ pub trait Transport: Send {
 ///
 /// Transport-agnostic and race-free: the readiness tag is printed via
 /// `EXECKITrdy''<n>` so the *output* is the contiguous tag while the *echoed
-/// command line* contains the `''` — we match only real output, never the
+/// command line* contains the `''` - we match only real output, never the
 /// pre-`stty -echo` echo.
 pub(crate) fn shell_init(t: &mut dyn Transport) -> Result<()> {
     const TAG: &[u8] = b"EXECKITrdy9f3a7c";

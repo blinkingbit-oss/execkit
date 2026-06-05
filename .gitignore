@@ -3,7 +3,7 @@
 **/target/
 *.pdb
 
-# Keep Cargo.lock committed (recommended for bins AND libs since 2023) — do NOT ignore it.
+# Keep Cargo.lock committed (recommended for bins AND libs since 2023) - do NOT ignore it.
 
 # Editors / OS
 .DS_Store
@@ -17,5 +17,5 @@ __pycache__/
 *.pyc
 .playwright-mcp/
 
-# internal planning / scratch — kept locally, not published
+# internal planning / scratch - kept locally, not published
 _internal/
