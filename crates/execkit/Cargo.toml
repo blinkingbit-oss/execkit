@@ -23,7 +23,14 @@ serde.workspace = true
 serde_json.workspace = true
 thiserror.workspace = true
 regex.workspace = true
-russh = { version = "0.61", optional = true }
+# Use the `ring` crypto backend instead of the default `aws-lc-rs`: aws-lc-sys is a
+# heavy C/cmake dep that breaks musl/cross prebuilt-binary builds. `rsa` is kept for
+# RSA key auth; `flate2` for compression (russh defaults, minus aws-lc-rs).
+russh = { version = "0.61", optional = true, default-features = false, features = [
+    "ring",
+    "flate2",
+    "rsa",
+] }
 tokio = { version = "1", features = ["rt", "macros", "sync", "io-util", "net", "time"], optional = true }
 
 [lib]
