@@ -7,8 +7,8 @@ version = "0.1.0"
 edition = "2021"
 rust-version = "1.85"
 license = "Apache-2.0"
-repository = "https://github.com/execkit/execkit"
-homepage = "https://github.com/execkit/execkit"
+repository = "https://github.com/blinkingbit-oss/execkit"
+homepage = "https://github.com/blinkingbit-oss/execkit"
 
 [workspace.dependencies]
 portable-pty = "0.8"

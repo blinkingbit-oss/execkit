@@ -14,7 +14,7 @@ You need a recent stable Rust (MSRV is **1.85**). Docker is needed only for the
 SSH end-to-end test.
 
 ```bash
-git clone https://github.com/execkit/execkit && cd execkit
+git clone https://github.com/blinkingbit-oss/execkit && cd execkit
 cargo build --workspace
 ```
 

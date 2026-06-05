@@ -8,7 +8,7 @@ Persistent local + SSH sessions · structured results · secret-safe · default-
 
 *What `libssh2` is to SSH, execkit is to agent shell sessions.*
 
-[![CI](https://github.com/execkit/execkit/actions/workflows/ci.yml/badge.svg)](https://github.com/execkit/execkit/actions/workflows/ci.yml)
+[![CI](https://github.com/blinkingbit-oss/execkit/actions/workflows/ci.yml/badge.svg)](https://github.com/blinkingbit-oss/execkit/actions/workflows/ci.yml)
 [![crates.io](https://img.shields.io/crates/v/execkit.svg)](https://crates.io/crates/execkit)
 [![docs.rs](https://img.shields.io/docsrs/execkit)](https://docs.rs/execkit)
 [![license](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](LICENSE)
@@ -142,7 +142,7 @@ Be upfront — this is a young library. Today:
 - **Recovery/time-travel, Docker/K8s transports, streaming, and more SDKs** are
   roadmap, not built. See [`ROADMAP.md`](./ROADMAP.md).
 
-Found something rough? Please [open an issue](https://github.com/execkit/execkit/issues).
+Found something rough? Please [open an issue](https://github.com/blinkingbit-oss/execkit/issues).
 
 ## Contributing & security
 
