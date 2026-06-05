@@ -12,7 +12,7 @@ GitHub Release → `cargo publish`. It activates once these prerequisites are me
 2. **Repo is on GitHub**, with the `main` branch as default.
 
 3. **Reserve the crate name** on crates.io (publish a `0.0.0` placeholder, or just
-   ensure `nexum` is free): `cargo publish` once manually for the first version, OR
+   ensure `execkit` is free): `cargo publish` once manually for the first version, OR
    set up Trusted Publishing (below) which can claim it.
 
 4. **crates.io auth — choose one:**

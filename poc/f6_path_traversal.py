@@ -9,7 +9,7 @@ import sys
 
 from _policy import Policy
 
-JAIL = "/tmp/nexum_jail"
+JAIL = "/tmp/execkit_jail"
 
 
 def read_file(policy: Policy, path: str):
@@ -26,12 +26,12 @@ def run():
     with open(os.path.join(JAIL, "ok.txt"), "w") as f:
         f.write("inside the jail")
     # a secret living OUTSIDE the jail that an attacker would try to reach
-    with open("/tmp/nexum_secret_outside.txt", "w") as f:
+    with open("/tmp/execkit_secret_outside.txt", "w") as f:
         f.write("TOP SECRET")
     # symlink inside the jail pointing out (classic traversal trick)
     link = os.path.join(JAIL, "escape_link")
     if not os.path.lexists(link):
-        os.symlink("/tmp/nexum_secret_outside.txt", link)
+        os.symlink("/tmp/execkit_secret_outside.txt", link)
 
     policy = Policy(allow_paths=[JAIL])
 

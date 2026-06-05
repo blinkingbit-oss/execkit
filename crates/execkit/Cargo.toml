@@ -1,5 +1,5 @@
 [package]
-name = "nexum"
+name = "execkit"
 description = "Stateful, structured, safe shell sessions for AI agents on real infrastructure."
 version.workspace = true
 edition.workspace = true
@@ -27,7 +27,7 @@ russh = { version = "0.61", optional = true }
 tokio = { version = "1", features = ["rt", "macros", "sync", "io-util", "net", "time"], optional = true }
 
 [lib]
-name = "nexum"
+name = "execkit"
 path = "src/lib.rs"
 
 # The ssh example uses Session::ssh, which only exists with the ssh feature.

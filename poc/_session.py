@@ -1,5 +1,5 @@
 """
-nexum PoC — the core technique a real implementation would use.
+execkit PoC — the core technique a real implementation would use.
 
 A persistent shell lives inside a PTY. Each command is framed by an
 *unguessable* sentinel that carries the exit code AND the cwd in a single
@@ -45,7 +45,7 @@ class PtySession:
         self.shell = shell
         # Per-session random token => command output can never forge the sentinel.
         self.token = secrets.token_hex(6)
-        ef = tempfile.NamedTemporaryFile(prefix="nexum_err_", delete=False)
+        ef = tempfile.NamedTemporaryFile(prefix="execkit_err_", delete=False)
         self.errpath = ef.name
         ef.close()
 
@@ -110,7 +110,7 @@ class PtySession:
 
     def exec(self, command: str, timeout: float = 10.0) -> dict:
         """Run a command; return a structured ExecResult-like dict."""
-        marker = f"__NEXUM_{self.token}__"
+        marker = f"__EXECKIT_{self.token}__"
         # \037 == \x1f (unit separator); octal works in bash/zsh/dash printf.
         # stderr of the command group -> side channel; sentinel goes to the PTY
         # *outside* the group so it always arrives even if the user redirects.

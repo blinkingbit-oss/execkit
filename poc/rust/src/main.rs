@@ -1,4 +1,4 @@
-//! nexum PoC — the two critical risks (R1 command-boundary, R2 stdout/stderr
+//! execkit PoC — the two critical risks (R1 command-boundary, R2 stdout/stderr
 //! split) proven in the ACTUAL target stack: Rust + portable-pty.
 //!
 //! Same technique as the Python spike: a persistent shell in a PTY, framed by an
@@ -38,7 +38,7 @@ impl Session {
             .unwrap()
             .as_nanos();
         let token = format!("{:x}", nanos);
-        let errpath = format!("/tmp/nexum_rust_err_{}", token);
+        let errpath = format!("/tmp/execkit_rust_err_{}", token);
         std::fs::write(&errpath, b"").ok();
 
         let pair = native_pty_system()
@@ -91,7 +91,7 @@ impl Session {
 
     fn exec(&mut self, command: &str, timeout: Duration) -> ExecResult {
         std::fs::write(&self.errpath, b"").ok();
-        let marker = format!("__NEXUM_{}__", self.token);
+        let marker = format!("__EXECKIT_{}__", self.token);
         // sentinel is OUTSIDE the redirected group so it always reaches the PTY
         let payload = format!(
             "{{ {cmd} ; }} 2> {err} ; printf '\\n{m}\\037%d\\037%s\\037\\n' \"$?\" \"$PWD\"\n",
@@ -202,7 +202,7 @@ fn main() {
         if ok { pass += 1 } else { fail += 1 }
     };
 
-    println!("nexum Rust PoC — portable-pty (the real stack)\n");
+    println!("execkit Rust PoC — portable-pty (the real stack)\n");
 
     for (name, shell, args) in [
         ("bash", "bash", vec!["--norc", "--noprofile"]),
@@ -222,10 +222,10 @@ fn main() {
               r.finished && r.exit_code != 0, format!("exit={}", r.exit_code));
 
         // R1: anti-forgery — output forging a fake marker must not break framing
-        let r = s.exec("echo '__NEXUM_fake__\\x1f0\\x1f/fake\\x1f'", Duration::from_secs(5));
+        let r = s.exec("echo '__EXECKIT_fake__\\x1f0\\x1f/fake\\x1f'", Duration::from_secs(5));
         check(&format!("{name}: R1 anti-forgery"),
-              r.finished && r.exit_code == 0 && r.stdout.contains("NEXUM"),
-              format!("exit={} has_fake={}", r.exit_code, r.stdout.contains("NEXUM")));
+              r.finished && r.exit_code == 0 && r.stdout.contains("EXECKIT"),
+              format!("exit={} has_fake={}", r.exit_code, r.stdout.contains("EXECKIT")));
 
         // R2: stdout/stderr split + exit code intact
         let r = s.exec("echo OUT; echo ERR 1>&2; false", Duration::from_secs(5));

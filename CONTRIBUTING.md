@@ -1,6 +1,6 @@
-# Contributing to nexum
+# Contributing to execkit
 
-Thanks for your interest! nexum is a young project and contributions are welcome.
+Thanks for your interest! execkit is a young project and contributions are welcome.
 
 ## Ground rules
 
@@ -14,7 +14,7 @@ You need a recent stable Rust (MSRV is **1.85**). Docker is needed only for the
 SSH end-to-end test.
 
 ```bash
-git clone https://github.com/nexum-rs/nexum && cd nexum
+git clone https://github.com/execkit/execkit && cd execkit
 cargo build --workspace
 ```
 
@@ -23,7 +23,7 @@ cargo build --workspace
 ```bash
 cargo fmt --all                                   # format
 cargo clippy --workspace --all-targets --all-features -- -D warnings
-cargo clippy -p nexum --no-default-features --all-targets -- -D warnings   # lean build
+cargo clippy -p execkit --no-default-features --all-targets -- -D warnings   # lean build
 cargo test --workspace                            # unit + local PTY + MCP e2e (no network)
 ```
 
@@ -33,7 +33,7 @@ cargo test --workspace                            # unit + local PTY + MCP e2e (
 docker run -d --name sshd -p 127.0.0.1:2222:22 alpine sh -c \
   "apk add --no-cache openssh && ssh-keygen -A && echo root:testpw | chpasswd && \
    sed -i 's/^#\?PermitRootLogin.*/PermitRootLogin yes/' /etc/ssh/sshd_config && /usr/sbin/sshd -D -e"
-NEXUM_TEST_SSH="root:testpw@127.0.0.1:2222" cargo test -p nexum --test ssh_smoke -- --nocapture
+EXECKIT_TEST_SSH="root:testpw@127.0.0.1:2222" cargo test -p execkit --test ssh_smoke -- --nocapture
 docker rm -f sshd
 ```
 
@@ -41,7 +41,7 @@ Examples:
 
 ```bash
 cargo run --example local
-NEXUM_SSH="user:pass@host:22" cargo run --example ssh
+EXECKIT_SSH="user:pass@host:22" cargo run --example ssh
 ```
 
 ## Coding conventions

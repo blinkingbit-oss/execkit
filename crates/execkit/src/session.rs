@@ -105,8 +105,8 @@ impl Session {
             }
         }
 
-        let start_m = format!("__NEXUM_{}__", self.token);
-        let end_m = format!("__NEXUMEND_{}__", self.token);
+        let start_m = format!("__EXECKIT_{}__", self.token);
+        let end_m = format!("__EXECKITEND_{}__", self.token);
         // stderr -> a remote temp file (mktemp = 0600), cat back through the
         // channel between the start/end sentinels, then removed. Works
         // identically for local and SSH; nothing touches the local filesystem.
@@ -115,7 +115,7 @@ impl Session {
         // the command substitution, so it's 0600 and the umask never leaks into
         // the user's command.
         let payload = format!(
-            "__E=$(umask 077; mktemp 2>/dev/null||{{ f=/tmp/nexumE_{tok}; : >\"$f\"; echo \"$f\"; }}); \
+            "__E=$(umask 077; mktemp 2>/dev/null||{{ f=/tmp/execkitE_{tok}; : >\"$f\"; echo \"$f\"; }}); \
 {{ {cmd} ; }} 2>\"$__E\"; \
 printf '\\n{start}\\037%d\\037%s\\037' \"$?\" \"$PWD\"; cat \"$__E\" 2>/dev/null; \
 printf '{end}\\n'; rm -f \"$__E\"\n",
@@ -202,7 +202,7 @@ printf '{end}\\n'; rm -f \"$__E\"\n",
             };
             if let Some(a) = &self.audit {
                 if let Err(e) = a.record(&result) {
-                    eprintln!("nexum: audit write failed: {e}");
+                    eprintln!("execkit: audit write failed: {e}");
                 }
             }
             return Ok(result);

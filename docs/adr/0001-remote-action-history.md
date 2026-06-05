@@ -6,7 +6,7 @@
 
 ## Context
 
-nexum lets an AI agent run commands on remote targets (SSH, Docker, K8s). Those
+execkit lets an AI agent run commands on remote targets (SSH, Docker, K8s). Those
 targets typically have **no version control**, so an agent's destructive or wrong
 actions there are unrecoverable. This is the un-versioned blast radius the policy
 fence can only *prevent* — we also want to *recover*.
@@ -22,7 +22,7 @@ previous state and stick to it"; manual deletion of states.
 
 ## Decision
 
-**Maintain a content-addressed history as a local (nexum-side) git mirror of a
+**Maintain a content-addressed history as a local (execkit-side) git mirror of a
 bounded remote workspace, synced after each agent action. The remote stays a
 dumb sync source and needs no special tooling.**
 
@@ -38,9 +38,9 @@ dumb sync source and needs no special tooling.**
    and append-only (non-destructive) history for free. `git2` (libgit2) is the
    fallback if gitoxide write support is insufficient.
 
-3. **Remote needs no git.** History is computed and stored on the nexum side under
-   e.g. `~/.nexum/history/<host>/<workspace>/`, with a ref namespace
-   (`refs/nexum/...`). The remote only needs standard shell utilities.
+3. **Remote needs no git.** History is computed and stored on the execkit side under
+   e.g. `~/.execkit/history/<host>/<workspace>/`, with a ref namespace
+   (`refs/execkit/...`). The remote only needs standard shell utilities.
 
 4. **Sync per action:**
    - **Change detection:** mtime+size sweep over the workspace (rsync's heuristic;

@@ -1,4 +1,4 @@
-# nexum — Feasibility PoC
+# execkit — Feasibility PoC
 
 **Goal:** before writing a line of the real library, prove the *scary* techniques
 actually work. Not production code — throwaway spikes to de-risk the idea.
@@ -52,7 +52,7 @@ round-trip yields a structured result:
 { <command> ; } 2> <side-channel> ; printf '\n<MARKER>\037%d\037%s\037\n' "$?" "$PWD"
 ```
 
-- **MARKER** = `__NEXUM_<random-per-session-token>__` → command output can never
+- **MARKER** = `__EXECKIT_<random-per-session-token>__` → command output can never
   forge the boundary (proven by the anti-forgery test).
 - **`\037` (unit separator)** frames exit code + cwd unambiguously.
 - **stderr → side channel**, stdout stays on the PTY → the two streams split

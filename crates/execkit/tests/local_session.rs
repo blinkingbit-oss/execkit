@@ -3,7 +3,7 @@
 
 use std::time::Duration;
 
-use nexum::{Policy, Session};
+use execkit::{Policy, Session};
 
 #[test]
 fn echo_roundtrip() {
@@ -46,7 +46,7 @@ fn policy_blocks_before_execution() {
         deny: vec!["rm".into()],
     });
     let err = s.exec("rm -rf /tmp/should_not_run").unwrap_err();
-    assert!(matches!(err, nexum::Error::PolicyDenied(_)));
+    assert!(matches!(err, execkit::Error::PolicyDenied(_)));
 }
 
 #[test]
@@ -57,13 +57,13 @@ fn session_is_poisoned_after_timeout() {
     // A command that outlives the timeout returns StillRunning...
     assert!(matches!(
         s.exec("sleep 3").unwrap_err(),
-        nexum::Error::StillRunning
+        execkit::Error::StillRunning
     ));
     // ...and the session refuses further work instead of silently corrupting.
     assert!(s.is_poisoned());
     assert!(matches!(
         s.exec("echo hi").unwrap_err(),
-        nexum::Error::SessionPoisoned
+        execkit::Error::SessionPoisoned
     ));
 }
 

@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: Apache-2.0
-//! nexum-mcp — an MCP (stdio) server exposing nexum shell sessions to any
+//! execkit-mcp — an MCP (stdio) server exposing execkit shell sessions to any
 //! MCP-capable agent (Claude Code, Cursor, Gemini CLI, ...).
 //!
 //! Tools: `session_create`, `session_exec`, `session_destroy`. Sessions are
@@ -13,10 +13,10 @@
 //! treated as untrusted. Anything that affects the host or filesystem in a
 //! dangerous way is configured by the **operator at startup** (env vars), not by
 //! per-call agent arguments:
-//!   - `NEXUM_MCP_AUDIT`       — append a JSONL audit log here (all sessions).
-//!   - `NEXUM_MCP_KEY_DIR`     — dir SSH private keys must live under (default ~/.ssh).
-//!   - `NEXUM_MCP_KNOWN_HOSTS` — SSH known_hosts file (default ~/.ssh/known_hosts).
-//!   - `NEXUM_MCP_INSECURE_ACCEPT_ANY_HOSTKEY=1` — DANGEROUS: disable host-key
+//!   - `EXECKIT_MCP_AUDIT`       — append a JSONL audit log here (all sessions).
+//!   - `EXECKIT_MCP_KEY_DIR`     — dir SSH private keys must live under (default ~/.ssh).
+//!   - `EXECKIT_MCP_KNOWN_HOSTS` — SSH known_hosts file (default ~/.ssh/known_hosts).
+//!   - `EXECKIT_MCP_INSECURE_ACCEPT_ANY_HOSTKEY=1` — DANGEROUS: disable host-key
 //!     verification. Never in production.
 
 use std::collections::HashMap;
@@ -31,9 +31,9 @@ use rmcp::{tool, tool_handler, tool_router, ErrorData, ServerHandler, ServiceExt
 use schemars::JsonSchema;
 use serde::Deserialize;
 
-use nexum::{AuditLog, HostKeyVerification, Policy, Session, SshAuth, SshConfig};
+use execkit::{AuditLog, HostKeyVerification, Policy, Session, SshAuth, SshConfig};
 
-/// A session guarded by its own mutex (nexum::Session is Send but not Sync;
+/// A session guarded by its own mutex (execkit::Session is Send but not Sync;
 /// blocking `exec` runs on a blocking thread holding only this lock).
 type SessionRef = Arc<Mutex<Session>>;
 type Sessions = Arc<Mutex<HashMap<String, SessionRef>>>;
@@ -54,16 +54,16 @@ impl Config {
         let home = std::env::var("HOME").unwrap_or_else(|_| "/root".into());
         let ssh = Path::new(&home).join(".ssh");
         Config {
-            audit_path: std::env::var_os("NEXUM_MCP_AUDIT").map(PathBuf::from),
-            key_dir: std::env::var_os("NEXUM_MCP_KEY_DIR")
+            audit_path: std::env::var_os("EXECKIT_MCP_AUDIT").map(PathBuf::from),
+            key_dir: std::env::var_os("EXECKIT_MCP_KEY_DIR")
                 .map(PathBuf::from)
                 .unwrap_or_else(|| ssh.clone()),
-            known_hosts: std::env::var_os("NEXUM_MCP_KNOWN_HOSTS")
+            known_hosts: std::env::var_os("EXECKIT_MCP_KNOWN_HOSTS")
                 .map(PathBuf::from)
                 .unwrap_or_else(|| ssh.join("known_hosts")),
-            insecure_accept_any: std::env::var_os("NEXUM_MCP_INSECURE_ACCEPT_ANY_HOSTKEY")
+            insecure_accept_any: std::env::var_os("EXECKIT_MCP_INSECURE_ACCEPT_ANY_HOSTKEY")
                 .is_some(),
-            max_sessions: std::env::var("NEXUM_MCP_MAX_SESSIONS")
+            max_sessions: std::env::var("EXECKIT_MCP_MAX_SESSIONS")
                 .ok()
                 .and_then(|v| v.parse().ok())
                 .unwrap_or(64),
@@ -78,11 +78,11 @@ fn lock<T>(m: &Mutex<T>) -> MutexGuard<'_, T> {
 }
 
 #[derive(Clone)]
-struct NexumServer {
+struct ExeckitServer {
     // Read by the code the #[tool_handler] macro generates; Rust's dead-code
     // analysis can't see through the macro, hence the allow.
     #[allow(dead_code)]
-    tool_router: ToolRouter<NexumServer>,
+    tool_router: ToolRouter<ExeckitServer>,
     sessions: Sessions,
     config: Arc<Config>,
 }
@@ -134,7 +134,7 @@ struct SessionIdParams {
 }
 
 #[tool_router]
-impl NexumServer {
+impl ExeckitServer {
     fn new(config: Config) -> Self {
         Self {
             tool_router: Self::tool_router(),
@@ -207,7 +207,7 @@ impl NexumServer {
     }
 }
 
-impl NexumServer {
+impl ExeckitServer {
     fn get(&self, id: &str) -> Result<SessionRef, ErrorData> {
         lock(&self.sessions)
             .get(id)
@@ -217,7 +217,7 @@ impl NexumServer {
 }
 
 #[tool_handler]
-impl ServerHandler for NexumServer {
+impl ServerHandler for ExeckitServer {
     fn get_info(&self) -> ServerInfo {
         // ServerInfo is #[non_exhaustive] — start from default and assign.
         let mut info = ServerInfo::default();
@@ -232,15 +232,15 @@ impl ServerHandler for NexumServer {
     }
 }
 
-fn build_session(p: CreateParams, config: &Config) -> Result<Session, nexum::Error> {
+fn build_session(p: CreateParams, config: &Config) -> Result<Session, execkit::Error> {
     let mut session = match p.transport.as_str() {
         "ssh" => {
             let host = p
                 .host
-                .ok_or_else(|| nexum::Error::Transport("ssh: 'host' required".into()))?;
+                .ok_or_else(|| execkit::Error::Transport("ssh: 'host' required".into()))?;
             let user = p
                 .user
-                .ok_or_else(|| nexum::Error::Transport("ssh: 'user' required".into()))?;
+                .ok_or_else(|| execkit::Error::Transport("ssh: 'user' required".into()))?;
             let auth = if let Some(pw) = p.password {
                 SshAuth::Password(pw)
             } else if let Some(key) = p.key_path {
@@ -252,7 +252,7 @@ fn build_session(p: CreateParams, config: &Config) -> Result<Session, nexum::Err
                     passphrase: None,
                 }
             } else {
-                return Err(nexum::Error::Transport(
+                return Err(execkit::Error::Transport(
                     "ssh: 'password' or 'key_path' required".into(),
                 ));
             };
@@ -290,8 +290,8 @@ fn build_session(p: CreateParams, config: &Config) -> Result<Session, nexum::Err
 /// Resolve a caller-supplied key path and require it to live under `key_dir`.
 /// Uses canonicalization (resolves `..` and symlinks) and returns a single
 /// generic error so a not-found vs. out-of-bounds path is indistinguishable.
-fn validated_key_path(raw: &str, key_dir: &Path) -> Result<PathBuf, nexum::Error> {
-    let deny = || nexum::Error::Transport("ssh: key_path not permitted".into());
+fn validated_key_path(raw: &str, key_dir: &Path) -> Result<PathBuf, execkit::Error> {
+    let deny = || execkit::Error::Transport("ssh: key_path not permitted".into());
     let dir = std::fs::canonicalize(key_dir).map_err(|_| deny())?;
     let path = std::fs::canonicalize(raw).map_err(|_| deny())?;
     if path.starts_with(&dir) {
@@ -322,20 +322,20 @@ fn internal<E: std::fmt::Display>(e: E) -> ErrorData {
 async fn main() -> anyhow::Result<()> {
     // stdout is the MCP channel — all diagnostics go to stderr.
     let config = Config::from_env();
-    eprintln!("nexum-mcp: starting MCP server on stdio");
+    eprintln!("execkit-mcp: starting MCP server on stdio");
     if std::env::var_os("HOME").is_none() {
         eprintln!(
-            "nexum-mcp: NOTE HOME is unset — SSH key dir / known_hosts default under \
-             /root/.ssh; set NEXUM_MCP_KEY_DIR / NEXUM_MCP_KNOWN_HOSTS explicitly."
+            "execkit-mcp: NOTE HOME is unset — SSH key dir / known_hosts default under \
+             /root/.ssh; set EXECKIT_MCP_KEY_DIR / EXECKIT_MCP_KNOWN_HOSTS explicitly."
         );
     }
     if config.insecure_accept_any {
         eprintln!(
-            "nexum-mcp: WARNING NEXUM_MCP_INSECURE_ACCEPT_ANY_HOSTKEY is set — \
+            "execkit-mcp: WARNING EXECKIT_MCP_INSECURE_ACCEPT_ANY_HOSTKEY is set — \
              SSH host-key verification is DISABLED (MITM possible). Do not use in production."
         );
     }
-    let service = NexumServer::new(config)
+    let service = ExeckitServer::new(config)
         .serve(rmcp::transport::stdio())
         .await?;
     service.waiting().await?;

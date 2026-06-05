@@ -3,9 +3,9 @@
 //!
 //! Run: `cargo run --example local`
 
-use nexum::{Policy, Session};
+use execkit::{Policy, Session};
 
-fn main() -> Result<(), nexum::Error> {
+fn main() -> Result<(), execkit::Error> {
     let mut session = Session::local()?.with_policy(Policy {
         allow: vec![],
         deny: vec!["rm".into(), "dd".into()],
@@ -28,7 +28,7 @@ fn main() -> Result<(), nexum::Error> {
 
     // The advisory fence blocks dangerous commands before they run.
     match session.exec("rm -rf /tmp/whatever") {
-        Err(nexum::Error::PolicyDenied(why)) => println!("\nblocked by policy: {why}"),
+        Err(execkit::Error::PolicyDenied(why)) => println!("\nblocked by policy: {why}"),
         other => println!("\nunexpected: {other:?}"),
     }
 

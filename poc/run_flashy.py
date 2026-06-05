@@ -13,7 +13,7 @@ FLASHY = [
 
 def main():
     print("=" * 72)
-    print("nexum — flashy-feature SECURITY PoC (does the gate hold?)")
+    print("execkit — flashy-feature SECURITY PoC (does the gate hold?)")
     print("=" * 72)
     summary = []
     for fid, title, mod in FLASHY:

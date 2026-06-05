@@ -2,7 +2,7 @@
 FLASHY GATE — Session fork / observation must NOT leak between sessions.
 
 Verifies:
-  - a forked session inherits state (cwd, NEXUM_* env) from a snapshot
+  - a forked session inherits state (cwd, EXECKIT_* env) from a snapshot
   - fork is a real independent process: mutating the child never affects the parent
   - no session bleed: a secret set in one session is NOT visible in another
   - read-only observation cannot execute (no write capability)
@@ -30,27 +30,27 @@ def run():
     other = None
     try:
         parent.exec("cd /tmp")
-        parent.exec("export NEXUM_ROLE=parent")
+        parent.exec("export EXECKIT_ROLE=parent")
         snap = capture_state(parent)
 
         # 1. fork inherits state
         child = PtySession()
         restore_state(child, snap)
-        r = child.exec("echo $NEXUM_ROLE @ $(pwd)")
+        r = child.exec("echo $EXECKIT_ROLE @ $(pwd)")
         results.append(("fork inherits state", r["stdout"] == "parent @ /tmp", f"got={r['stdout']!r}"))
 
         # 2. fork is isolated: mutate child, parent unchanged
-        child.exec("export NEXUM_ROLE=child; cd /")
-        pr = parent.exec("echo $NEXUM_ROLE @ $(pwd)")
-        cr = child.exec("echo $NEXUM_ROLE @ $(pwd)")
+        child.exec("export EXECKIT_ROLE=child; cd /")
+        pr = parent.exec("echo $EXECKIT_ROLE @ $(pwd)")
+        cr = child.exec("echo $EXECKIT_ROLE @ $(pwd)")
         results.append(("fork is isolated",
                         pr["stdout"] == "parent @ /tmp" and cr["stdout"] == "child @ /",
                         f"parent={pr['stdout']!r} child={cr['stdout']!r}"))
 
         # 3. no session bleed: secret in `other` is invisible to parent
         other = PtySession()
-        other.exec("export NEXUM_SECRET=topsecret")
-        leak = parent.exec("echo [$NEXUM_SECRET]")
+        other.exec("export EXECKIT_SECRET=topsecret")
+        leak = parent.exec("echo [$EXECKIT_SECRET]")
         results.append(("no session bleed", leak["stdout"] == "[]", f"parent_sees={leak['stdout']!r}"))
 
         # 4. read-only observer has no exec capability

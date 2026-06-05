@@ -15,14 +15,14 @@ struct Mcp {
 
 impl Mcp {
     fn start(env: &[(&str, &str)]) -> Self {
-        let mut cmd = Command::new(env!("CARGO_BIN_EXE_nexum-mcp"));
+        let mut cmd = Command::new(env!("CARGO_BIN_EXE_execkit-mcp"));
         cmd.stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::null());
         for (k, v) in env {
             cmd.env(k, v);
         }
-        let mut child = cmd.spawn().expect("spawn nexum-mcp");
+        let mut child = cmd.spawn().expect("spawn execkit-mcp");
         let stdin = child.stdin.take().unwrap();
         let stdout = BufReader::new(child.stdout.take().unwrap());
         let mut m = Mcp {
@@ -139,7 +139,7 @@ fn lists_tools_and_runs_a_command() {
 
 #[test]
 fn enforces_session_cap() {
-    let mut m = Mcp::start(&[("NEXUM_MCP_MAX_SESSIONS", "2")]);
+    let mut m = Mcp::start(&[("EXECKIT_MCP_MAX_SESSIONS", "2")]);
     let r1 = m.call(3, "session_create", json!({"transport":"local"}));
     let r2 = m.call(4, "session_create", json!({"transport":"local"}));
     let r3 = m.call(5, "session_create", json!({"transport":"local"}));
@@ -151,9 +151,9 @@ fn enforces_session_cap() {
 fn rejects_key_path_traversal_generically() {
     // Use a real, existing key_dir so the rejection exercises the bounds check
     // specifically (not the "key_dir missing" branch, which shares the message).
-    let key_dir = std::env::temp_dir().join(format!("nexum_kd_{}", std::process::id()));
+    let key_dir = std::env::temp_dir().join(format!("execkit_kd_{}", std::process::id()));
     std::fs::create_dir_all(&key_dir).unwrap();
-    let mut m = Mcp::start(&[("NEXUM_MCP_KEY_DIR", key_dir.to_str().unwrap())]);
+    let mut m = Mcp::start(&[("EXECKIT_MCP_KEY_DIR", key_dir.to_str().unwrap())]);
     let r = m.call(
         3,
         "session_create",

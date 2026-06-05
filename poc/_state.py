@@ -20,5 +20,5 @@ def restore_state(session, state: dict, skip_keys=()):
         if k in skip_keys or v == "[REDACTED]":
             continue
         # only restore vars we explicitly care about in the PoC namespace
-        if k.startswith("NEXUM_"):
+        if k.startswith("EXECKIT_"):
             session.exec(f"export {k}={v}")

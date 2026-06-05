@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 //! Real end-to-end SSH smoke test. Self-skips unless a server is provided via
-//!   NEXUM_TEST_SSH="user:password@host:port"
-//! e.g. NEXUM_TEST_SSH="root:pw@127.0.0.1:2222" cargo test --test ssh_smoke
+//!   EXECKIT_TEST_SSH="user:password@host:port"
+//! e.g. EXECKIT_TEST_SSH="root:pw@127.0.0.1:2222" cargo test --test ssh_smoke
 //!
 //! Uses AcceptAny host-key policy (test only). There is no sshd in CI by
 //! default, so without the env var this test passes trivially.
@@ -9,7 +9,7 @@
 
 use std::time::{Duration, Instant};
 
-use nexum::{HostKeyVerification, Session, SshAuth, SshConfig};
+use execkit::{HostKeyVerification, Session, SshAuth, SshConfig};
 
 fn parse(spec: &str) -> Option<(String, String, String, u16)> {
     // user:password@host:port
@@ -21,11 +21,11 @@ fn parse(spec: &str) -> Option<(String, String, String, u16)> {
 
 #[test]
 fn ssh_echo_roundtrip() {
-    let Ok(spec) = std::env::var("NEXUM_TEST_SSH") else {
-        eprintln!("skip: set NEXUM_TEST_SSH=\"user:pass@host:port\" to run");
+    let Ok(spec) = std::env::var("EXECKIT_TEST_SSH") else {
+        eprintln!("skip: set EXECKIT_TEST_SSH=\"user:pass@host:port\" to run");
         return;
     };
-    let (user, pass, host, port) = parse(&spec).expect("NEXUM_TEST_SSH=user:pass@host:port");
+    let (user, pass, host, port) = parse(&spec).expect("EXECKIT_TEST_SSH=user:pass@host:port");
 
     let mut cfg = SshConfig::new(
         host,
@@ -49,11 +49,11 @@ fn ssh_echo_roundtrip() {
 /// runtime thread is parked in a full blocking read send, not in select!).
 #[test]
 fn ssh_drop_after_timeout_does_not_hang() {
-    let Ok(spec) = std::env::var("NEXUM_TEST_SSH") else {
-        eprintln!("skip: set NEXUM_TEST_SSH to run");
+    let Ok(spec) = std::env::var("EXECKIT_TEST_SSH") else {
+        eprintln!("skip: set EXECKIT_TEST_SSH to run");
         return;
     };
-    let (user, pass, host, port) = parse(&spec).expect("NEXUM_TEST_SSH=user:pass@host:port");
+    let (user, pass, host, port) = parse(&spec).expect("EXECKIT_TEST_SSH=user:pass@host:port");
     let mut cfg = SshConfig::new(
         host,
         user,

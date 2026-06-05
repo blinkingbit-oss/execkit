@@ -1,11 +1,11 @@
 [package]
-name = "nexum-poc"
+name = "execkit-poc"
 version = "0.0.0"
 edition = "2021"
 publish = false
 
 [[bin]]
-name = "nexum-poc"
+name = "execkit-poc"
 path = "src/main.rs"
 
 [dependencies]

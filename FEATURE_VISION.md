@@ -1,10 +1,10 @@
-# nexum — The "Heaven-Tier" Feature Vision
+# execkit — The "Heaven-Tier" Feature Vision
 
 > The dream version. Every feature here is **theoretically possible** — technical
 > feasibility is checked separately (see `poc/`). This is the north star we steer
 > toward, not the v0.1 scope.
 >
-> **One-line pitch:** *What `libssh2` is to SSH, nexum is to agent shell sessions* —
+> **One-line pitch:** *What `libssh2` is to SSH, execkit is to agent shell sessions* —
 > an embeddable, language-agnostic library that turns "a terminal" into a
 > **semantically rich, stateful, safe execution surface** that any AI agent can use
 > as naturally as a human uses a terminal — and better.
@@ -15,7 +15,7 @@
 
 0. **Secure by construction — the agent is the adversary.** The thing issuing
    commands (the LLM) can be hijacked by prompt injection from any data it reads.
-   nexum's first job is to *contain its own caller*. A feature is not "tempting"
+   execkit's first job is to *contain its own caller*. A feature is not "tempting"
    and not "done" until its security guarantee ships *with* it. Flashy + insecure
    = a liability, not a feature. The most tempting thing we sell is **safe
    autonomy**: trust an agent with a real environment without fear.
@@ -24,10 +24,10 @@
 2. **A session is a place, not a connection.** State persists. `cd` sticks. The
    agent "lives" there.
 3. **Never blow up the agent's context window.** Output is the single biggest
-   silent cost in agent loops — nexum treats tokens as a first-class budget.
+   silent cost in agent loops — execkit treats tokens as a first-class budget.
 4. **Same call everywhere.** Local, SSH, Docker, K8s, serial — one API, identical
    results.
-5. **Safe by construction.** Running arbitrary commands is a loaded gun; nexum
+5. **Safe by construction.** Running arbitrary commands is a loaded gun; execkit
    makes it hard to shoot yourself.
 6. **Embeddable, never a service.** `cargo add` / `pip install` and it's *inside*
    your process. No daemon you don't control, no vendor.
@@ -52,7 +52,7 @@
 
 ### Output that respects the agent's brain
 - **Token-aware output budgeting.** The agent declares its context window /
-  per-call budget; nexum pre-counts tokens and adapts truncation *before*
+  per-call budget; execkit pre-counts tokens and adapts truncation *before*
   delivery. "Give me at most 2k tokens of this build log."
 - **Semantic compression, not dumb truncation.** When output exceeds budget,
   compress *by meaning*: keep the error and the failing lines, summarize the 4,000
@@ -66,7 +66,7 @@
 
 ### Sessions that don't break
 - **Self-healing reconnect *with identity re-verification*.** Network drops →
-  nexum reconnects and restores `cwd`/env transparently — but **re-verifies the
+  execkit reconnects and restores `cwd`/env transparently — but **re-verifies the
   SSH host key on every reconnect**; a changed key fails loudly (no silent MITM).
 - **Session snapshot / restore.** Serialize a session's shell state and rehydrate
   it later (or on another host).
@@ -98,7 +98,7 @@
 These are the features that make a developer tell three friends.
 
 - **Capability negotiation / self-description.** On session init the agent declares
-  what it can handle (streaming? images? max tokens? formats?), and nexum
+  what it can handle (streaming? images? max tokens? formats?), and execkit
   *auto-tunes* output format, verbosity, and chunking to match. The tool adapts to
   the agent instead of the reverse.
 - **Environment diff after every command.** `env_delta` is just the start: surface
@@ -113,7 +113,7 @@ These are the features that make a developer tell three friends.
   state").
 - **Dry-run / what-if mode.** Ask "what would this command change?" and get a
   predicted environment diff without executing (best-effort, for known commands).
-- **Auto-error-context.** When a command fails, nexum attaches the *relevant*
+- **Auto-error-context.** When a command fails, execkit attaches the *relevant*
   context automatically: the failing file+line, the last meaningful stderr lines,
   the exit-code meaning, and likely-related recent commands.
 - **Visual terminal capture.** A pixel/screenshot API for TUI apps (`htop`, `vim`,
@@ -177,7 +177,7 @@ liability, not a differentiator.
 
 ---
 
-## What nexum deliberately **refuses** to be (the strategic anchor)
+## What execkit deliberately **refuses** to be (the strategic anchor)
 
 - ❌ Not a hosted service / SaaS. It's a library you embed and own.
 - ❌ Not a GUI / web terminal product.

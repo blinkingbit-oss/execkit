@@ -41,10 +41,10 @@ def run():
                             f"exit={r.get('exit_code')}"))
 
             # 3. output that *tries to forge* the sentinel must not break framing
-            r = s.exec("echo '__NEXUM_deadbeef__\\x1f0\\x1f/fake\\x1f'")
+            r = s.exec("echo '__EXECKIT_deadbeef__\\x1f0\\x1f/fake\\x1f'")
             results.append((f"{name}: anti-forgery",
-                            r["finished"] and r["exit_code"] == 0 and "NEXUM" in r["stdout"],
-                            f"exit={r.get('exit_code')} stdout_has_fake={'NEXUM' in r.get('stdout','')}"))
+                            r["finished"] and r["exit_code"] == 0 and "EXECKIT" in r["stdout"],
+                            f"exit={r.get('exit_code')} stdout_has_fake={'EXECKIT' in r.get('stdout','')}"))
 
             # 4. multiple commands in a row — boundaries must not bleed
             a = s.exec("echo first")

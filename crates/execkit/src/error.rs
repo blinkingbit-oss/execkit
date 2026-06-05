@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 use thiserror::Error;
 
-/// Errors returned by nexum.
+/// Errors returned by execkit.
 #[derive(Error, Debug)]
 pub enum Error {
     #[error("io error: {0}")]

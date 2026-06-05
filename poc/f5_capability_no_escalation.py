@@ -32,11 +32,11 @@ def run():
         results.append(("denylisted blocked", not r["executed"], f"reason={r.get('reason')}"))
 
         # 3. the block is REAL: a destructive command never hits the fs
-        os.makedirs("/tmp/nexum_jail", exist_ok=True)
-        with open("/tmp/nexum_jail/keepme", "w") as f:
+        os.makedirs("/tmp/execkit_jail", exist_ok=True)
+        with open("/tmp/execkit_jail/keepme", "w") as f:
             f.write("important")
-        r = g.exec("rm -f /tmp/nexum_jail/keepme")
-        still_there = os.path.exists("/tmp/nexum_jail/keepme")
+        r = g.exec("rm -f /tmp/execkit_jail/keepme")
+        still_there = os.path.exists("/tmp/execkit_jail/keepme")
         results.append(("block prevents real deletion", (not r["executed"]) and still_there,
                         f"file_exists={still_there}"))
 
@@ -46,8 +46,8 @@ def run():
 
         # 5. NO self-escalation: agent 'requests' rm, policy ignores it, still blocked
         msg = policy.agent_requests_capability(["rm", "dd"])
-        r = g.exec("rm -rf /tmp/nexum_jail/keepme")
-        still_there2 = os.path.exists("/tmp/nexum_jail/keepme")
+        r = g.exec("rm -rf /tmp/execkit_jail/keepme")
+        still_there2 = os.path.exists("/tmp/execkit_jail/keepme")
         results.append(("agent cannot self-escalate",
                         (not r["executed"]) and still_there2 and "ignored" in msg,
                         f"grant='{msg[:24]}...' file_exists={still_there2}"))

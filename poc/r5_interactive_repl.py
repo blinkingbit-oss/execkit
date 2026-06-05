@@ -71,10 +71,10 @@ def run():
         ok, out = p.send_expect("2+2\n", r"\b4\b")
         results.append(("REPL evaluates expression", ok, f"saw 4 = {ok}"))
 
-        ok, out = p.send_expect('name = "nexum"\n', r">>>|\n")
+        ok, out = p.send_expect('name = "execkit"\n', r">>>|\n")
         # state persists: use the variable defined in the previous write
-        ok2, out2 = p.send_expect("print(name.upper())\n", r"NEXUM")
-        results.append(("REPL state persists across writes", ok2, f"saw NEXUM = {ok2}"))
+        ok2, out2 = p.send_expect("print(name.upper())\n", r"EXECKIT")
+        results.append(("REPL state persists across writes", ok2, f"saw EXECKIT = {ok2}"))
 
         ok3, out3 = p.send_expect("import math; print(math.factorial(5))\n", r"\b120\b")
         results.append(("REPL multi-step interaction", ok3, f"saw 120 = {ok3}"))

@@ -23,14 +23,14 @@ pub trait Transport: Send {
 /// Disable echo + prompts, then block until the shell confirms readiness.
 ///
 /// Transport-agnostic and race-free: the readiness tag is printed via
-/// `NEXUMrdy''<n>` so the *output* is the contiguous tag while the *echoed
+/// `EXECKITrdy''<n>` so the *output* is the contiguous tag while the *echoed
 /// command line* contains the `''` — we match only real output, never the
 /// pre-`stty -echo` echo.
 pub(crate) fn shell_init(t: &mut dyn Transport) -> Result<()> {
-    const TAG: &[u8] = b"NEXUMrdy9f3a7c";
+    const TAG: &[u8] = b"EXECKITrdy9f3a7c";
     t.write_all(
         b"stty -echo 2>/dev/null; PS1=''; PS2=''; PROMPT_COMMAND=''; \
-          printf '%s\\n' NEXUMrdy''9f3a7c\n",
+          printf '%s\\n' EXECKITrdy''9f3a7c\n",
     )?;
     let mut acc = Vec::new();
     let deadline = Instant::now() + Duration::from_secs(8);

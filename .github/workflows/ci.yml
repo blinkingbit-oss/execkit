@@ -33,14 +33,14 @@ jobs:
       - name: Clippy (all features)
         run: cargo clippy --workspace --all-targets --all-features -- -D warnings
 
-      - name: Clippy (nexum, no default features — lean local-only build)
-        run: cargo clippy -p nexum --no-default-features --all-targets -- -D warnings
+      - name: Clippy (execkit, no default features — lean local-only build)
+        run: cargo clippy -p execkit --no-default-features --all-targets -- -D warnings
 
       - name: Build
         run: cargo build --workspace --all-targets
 
       # Includes the MCP stdio E2E (drives the built binary) and the local PTY
-      # tests. ssh_smoke self-skips without NEXUM_TEST_SSH.
+      # tests. ssh_smoke self-skips without EXECKIT_TEST_SSH.
       - name: Test
         run: cargo test --workspace
 
@@ -70,8 +70,8 @@ jobs:
 
       - name: Run SSH smoke + drop-after-timeout regression
         env:
-          NEXUM_TEST_SSH: root:testpw@127.0.0.1:2222
-        run: cargo test -p nexum --test ssh_smoke -- --nocapture
+          EXECKIT_TEST_SSH: root:testpw@127.0.0.1:2222
+        run: cargo test -p execkit --test ssh_smoke -- --nocapture
 
       - name: Stop sshd
         if: always()

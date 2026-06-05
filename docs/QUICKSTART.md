@@ -1,6 +1,6 @@
 # Quickstart
 
-Two ways to use nexum: as a **Rust library**, or as an **MCP server** an AI agent
+Two ways to use execkit: as a **Rust library**, or as an **MCP server** an AI agent
 drives directly.
 
 ## A) Drive it from an AI agent (MCP)
@@ -8,7 +8,7 @@ drives directly.
 Build the server and point your agent at it.
 
 ```bash
-cargo build -p nexum-mcp --release
+cargo build -p execkit-mcp --release
 ```
 
 Add to your MCP client config (Claude Code, Cursor, Gemini CLI):
@@ -16,28 +16,28 @@ Add to your MCP client config (Claude Code, Cursor, Gemini CLI):
 ```json
 {
   "mcpServers": {
-    "nexum": { "command": "/path/to/target/release/nexum-mcp" }
+    "execkit": { "command": "/path/to/target/release/execkit-mcp" }
   }
 }
 ```
 
 The agent now has three tools: `session_create` → `session_exec` → `session_destroy`.
 `session_exec` returns a structured result (split stdout/stderr, exit code, cwd),
-already secret-redacted and bounded. See [`crates/nexum-mcp/README.md`](../crates/nexum-mcp/README.md)
+already secret-redacted and bounded. See [`crates/execkit-mcp/README.md`](../crates/execkit-mcp/README.md)
 for the operator security settings (host-key verification, key dir, audit, limits).
 
 ## B) Use it as a Rust library
 
 ```toml
 [dependencies]
-nexum = "0.1"                                   # local + SSH
-# nexum = { version = "0.1", default-features = false }  # local PTY only (no russh/tokio)
+execkit = "0.1"                                   # local + SSH
+# execkit = { version = "0.1", default-features = false }  # local PTY only (no russh/tokio)
 ```
 
 ```rust
-use nexum::{Session, Policy};
+use execkit::{Session, Policy};
 
-fn main() -> Result<(), nexum::Error> {
+fn main() -> Result<(), execkit::Error> {
     let mut s = Session::local()?
         .with_policy(Policy { allow: vec![], deny: vec!["rm".into()] });
 
@@ -53,7 +53,7 @@ Runnable examples:
 
 ```bash
 cargo run --example local
-NEXUM_SSH="user:password@host:22" cargo run --example ssh
+EXECKIT_SSH="user:password@host:22" cargo run --example ssh
 ```
 
 ## What you get

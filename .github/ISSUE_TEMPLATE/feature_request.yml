@@ -6,7 +6,7 @@ body:
     id: problem
     attributes:
       label: The problem / use case
-      description: What are you trying to do that nexum makes hard or impossible today?
+      description: What are you trying to do that execkit makes hard or impossible today?
     validations:
       required: true
   - type: textarea

@@ -80,7 +80,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "nexum-poc"
+name = "execkit-poc"
 version = "0.0.0"
 dependencies = [
  "portable-pty",

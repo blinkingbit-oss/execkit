@@ -54,14 +54,14 @@ def run():
     # initial connect pins the key, set up some state
     s = connect(known, "prod-1", GOOD)
     s.exec("cd /tmp")
-    s.exec("export NEXUM_SESSION=alive")
+    s.exec("export EXECKIT_SESSION=alive")
     snap = capture_state(s)
     s.close()
 
     # 1. reconnect with same key -> accepted + state restored transparently
     try:
         s2 = connect(known, "prod-1", GOOD, restore_from=snap)
-        r = s2.exec("echo $NEXUM_SESSION @ $(pwd)")
+        r = s2.exec("echo $EXECKIT_SESSION @ $(pwd)")
         results.append(("reconnect (same key) restores state",
                         r["stdout"] == "alive @ /tmp", f"got={r['stdout']!r}"))
         s2.close()

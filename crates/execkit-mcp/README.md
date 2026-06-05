@@ -1,7 +1,7 @@
-# nexum-mcp
+# execkit-mcp
 
 An [MCP](https://modelcontextprotocol.io) server (stdio) that exposes
-[`nexum`](../nexum) shell sessions to any MCP-capable agent — Claude Code,
+[`execkit`](../execkit) shell sessions to any MCP-capable agent — Claude Code,
 Cursor, Gemini CLI, and others.
 
 ## Tools
@@ -19,7 +19,7 @@ fence before running.
 ## Install
 
 ```bash
-cargo install nexum-mcp        # or build from source: cargo build -p nexum-mcp
+cargo install execkit-mcp        # or build from source: cargo build -p execkit-mcp
 ```
 
 ## Wire it into an agent
@@ -30,8 +30,8 @@ cargo install nexum-mcp        # or build from source: cargo build -p nexum-mcp
 ```json
 {
   "mcpServers": {
-    "nexum": {
-      "command": "nexum-mcp"
+    "execkit": {
+      "command": "execkit-mcp"
     }
   }
 }
@@ -56,15 +56,15 @@ by the **operator at startup** (env vars), not by per-call agent arguments:
 
 | Env var | Purpose | Default |
 |---|---|---|
-| `NEXUM_MCP_AUDIT` | append a JSONL audit log of every command here | off |
-| `NEXUM_MCP_KEY_DIR` | SSH `key_path` must canonicalize to inside this dir | `~/.ssh` |
-| `NEXUM_MCP_KNOWN_HOSTS` | SSH host-key verification file (TOFU; rejects changed keys) | `~/.ssh/known_hosts` |
-| `NEXUM_MCP_INSECURE_ACCEPT_ANY_HOSTKEY` | **DANGEROUS** — disable host-key checks | unset |
+| `EXECKIT_MCP_AUDIT` | append a JSONL audit log of every command here | off |
+| `EXECKIT_MCP_KEY_DIR` | SSH `key_path` must canonicalize to inside this dir | `~/.ssh` |
+| `EXECKIT_MCP_KNOWN_HOSTS` | SSH host-key verification file (TOFU; rejects changed keys) | `~/.ssh/known_hosts` |
+| `EXECKIT_MCP_INSECURE_ACCEPT_ANY_HOSTKEY` | **DANGEROUS** — disable host-key checks | unset |
 
 - **Host keys are verified by default** (TOFU against known_hosts; a changed key
   is rejected as a likely MITM). Pass a `fingerprint` to require an exact key, or
   set the insecure env var only for throwaway/test hosts.
-- **`key_path` is sandboxed** to `NEXUM_MCP_KEY_DIR`; out-of-bounds/traversal paths
+- **`key_path` is sandboxed** to `EXECKIT_MCP_KEY_DIR`; out-of-bounds/traversal paths
   are rejected with a generic error (no path-existence leak).
 - **Audit destination is operator-chosen**, never a tool argument (prevents an
   injected agent from writing to arbitrary files).

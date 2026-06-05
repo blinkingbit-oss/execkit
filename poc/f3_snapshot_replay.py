@@ -20,9 +20,9 @@ from _policy import Policy, redact_env
 from _state import capture_state
 from _session import PtySession
 
-SNAP_PLAIN = "/tmp/nexum_snap.json"
-SNAP_ENC = "/tmp/nexum_snap.enc"
-REPLAY_TARGET = "/tmp/nexum_replay_target.txt"
+SNAP_PLAIN = "/tmp/execkit_snap.json"
+SNAP_ENC = "/tmp/execkit_snap.enc"
+REPLAY_TARGET = "/tmp/execkit_replay_target.txt"
 
 
 def replay(commands, live=False, policy=None):
@@ -51,9 +51,9 @@ def run():
     s = PtySession()
     try:
         s.exec("cd /tmp")
-        s.exec("export NEXUM_PROJECT=nexum")
+        s.exec("export EXECKIT_PROJECT=execkit")
         s.exec("export AWS_SECRET_ACCESS_KEY=AKIAIOSFODNN7EXAMPLE")
-        s.exec("export NEXUM_TOKEN=ghp_0123456789abcdefghijklmnopqrstuvwxyz")
+        s.exec("export EXECKIT_TOKEN=ghp_0123456789abcdefghijklmnopqrstuvwxyz")
 
         state = capture_state(s)
         state["env"] = redact_env(state["env"])
@@ -72,7 +72,7 @@ def run():
         with open(SNAP_ENC, "wb") as f:
             f.write(token)
         on_disk = open(SNAP_ENC, "rb").read()
-        clean = b"NEXUM_PROJECT" not in on_disk and b"/tmp" not in on_disk
+        clean = b"EXECKIT_PROJECT" not in on_disk and b"/tmp" not in on_disk
         results.append(("encrypted at rest", clean, f"ciphertext_leaks_plaintext={not clean}"))
 
         # 3. round-trips and tamper is detected

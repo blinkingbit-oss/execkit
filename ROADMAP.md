@@ -1,7 +1,7 @@
-# nexum — Roadmap
+# execkit — Roadmap
 
 An embeddable library that gives AI agents **stateful, structured, safe** shell
-sessions on real infrastructure. *What `libssh2` is to SSH, nexum is to agent
+sessions on real infrastructure. *What `libssh2` is to SSH, execkit is to agent
 shell sessions.*
 
 **Operating principle:** ship the simplest thing that works now; defer every
@@ -21,7 +21,7 @@ Legend: ✅ proven in PoC · ⮕ simple version first, complex variant deferred
 - **License: `Apache-2.0`** — explicit patent grant, enterprise-friendly, allows
   free embedding (incl. commercial). Add `LICENSE` (Apache 2.0 text) + a `NOTICE`
   file (your attribution) + SPDX headers.
-- **Name clearance:** confirm `nexum` is free on **crates.io, PyPI, npm, GitHub
+- **Name clearance:** confirm `execkit` is free on **crates.io, PyPI, npm, GitHub
   org, pkg.go.dev**, and do a basic trademark sanity check. Reserve the names early
   (publish a placeholder `0.0.0` crate to hold it).
 - **Contribution model:** use **DCO** (`Signed-off-by`), not a CLA — lower friction
@@ -61,7 +61,7 @@ Legend: ✅ proven in PoC · ⮕ simple version first, complex variant deferred
 **Ship & grow**
 - 📦 Publish core crate to **crates.io** (`cargo publish`); **docs.rs** builds automatically
 - 🏷️ Tag `v0.1.0` + GitHub Release with notes; start `CHANGELOG`
-- 📚 **Quickstart** + **"Add nexum to Claude Code / Cursor / Gemini CLI" MCP guide** + rustdoc on the public API
+- 📚 **Quickstart** + **"Add execkit to Claude Code / Cursor / Gemini CLI" MCP guide** + rustdoc on the public API
 - 🧪 3 runnable **examples**: local exec, persistent SSH session, MCP server config (with a demo GIF/asciinema)
 - 📣 **Launch:** problem-first blog post ("agents are running shell on prod with no guardrails — here's the gap"), Show HN, r/rust + r/LocalLLaMA, submit to **awesome-mcp / MCP registry**
 
@@ -130,7 +130,7 @@ Legend: ✅ proven in PoC · ⮕ simple version first, complex variant deferred
 
 Lead with the **pain**, not the product: articles about agents nuking servers,
 context-window blowup from huge logs, and the absent audit trail for autonomous
-actions. Each naturally arrives at "…which is the gap nexum fills." Dev tools win
+actions. Each naturally arrives at "…which is the gap execkit fills." Dev tools win
 on **docs + a 30-second working demo**, not announcements.
 
 ## Deferred — decide if/when a user asks

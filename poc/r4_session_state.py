@@ -22,14 +22,14 @@ def run():
                         f"stdout={r['stdout']!r} cwd={r['cwd']!r}"))
 
         # env var set in one call is visible in the next
-        s.exec("export NEXUM_FLAG=heaven")
-        r = s.exec("echo $NEXUM_FLAG")
+        s.exec("export EXECKIT_FLAG=heaven")
+        r = s.exec("echo $EXECKIT_FLAG")
         results.append(("env var persists", r["stdout"] == "heaven", f"stdout={r['stdout']!r}"))
 
         # shell function defined once, callable later
         s.exec("greet() { echo hi-$1; }")
-        r = s.exec("greet nexum")
-        results.append(("shell function persists", r["stdout"] == "hi-nexum", f"stdout={r['stdout']!r}"))
+        r = s.exec("greet execkit")
+        results.append(("shell function persists", r["stdout"] == "hi-execkit", f"stdout={r['stdout']!r}"))
 
         # exit code is per-command and accurate
         r = s.exec("false")
@@ -38,11 +38,11 @@ def run():
         results.append(("exit code: custom==42", r["exit_code"] == 42, f"exit={r['exit_code']}"))
 
         # relative cd accumulates (real statefulness)
-        s.exec("mkdir -p /tmp/nexum_poc_dir/sub")
-        s.exec("cd /tmp/nexum_poc_dir")
+        s.exec("mkdir -p /tmp/execkit_poc_dir/sub")
+        s.exec("cd /tmp/execkit_poc_dir")
         r = s.exec("cd sub; pwd")
         results.append(("relative cd accumulates",
-                        r["stdout"] == "/tmp/nexum_poc_dir/sub",
+                        r["stdout"] == "/tmp/execkit_poc_dir/sub",
                         f"stdout={r['stdout']!r}"))
     finally:
         s.close()

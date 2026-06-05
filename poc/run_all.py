@@ -1,4 +1,4 @@
-"""nexum feasibility PoC — run every risk probe and print a verdict table."""
+"""execkit feasibility PoC — run every risk probe and print a verdict table."""
 import importlib
 import sys
 
@@ -14,7 +14,7 @@ RISKS = [
 
 def main():
     print("=" * 70)
-    print("nexum — feasibility PoC")
+    print("execkit — feasibility PoC")
     print("=" * 70)
     summary = []
     for rid, title, mod in RISKS:

@@ -1,16 +1,16 @@
 <div align="center">
 
-# nexum
+# execkit
 
 **The safety layer that lets an AI agent run shell on real infrastructure — without you holding your breath.**
 
 Persistent local + SSH sessions · structured results · secret-safe · default-deny policy · embeddable · open source
 
-*What `libssh2` is to SSH, nexum is to agent shell sessions.*
+*What `libssh2` is to SSH, execkit is to agent shell sessions.*
 
-[![CI](https://github.com/nexum-rs/nexum/actions/workflows/ci.yml/badge.svg)](https://github.com/nexum-rs/nexum/actions/workflows/ci.yml)
-[![crates.io](https://img.shields.io/crates/v/nexum.svg)](https://crates.io/crates/nexum)
-[![docs.rs](https://img.shields.io/docsrs/nexum)](https://docs.rs/nexum)
+[![CI](https://github.com/execkit/execkit/actions/workflows/ci.yml/badge.svg)](https://github.com/execkit/execkit/actions/workflows/ci.yml)
+[![crates.io](https://img.shields.io/crates/v/execkit.svg)](https://crates.io/crates/execkit)
+[![docs.rs](https://img.shields.io/docsrs/execkit)](https://docs.rs/execkit)
 [![license](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](LICENSE)
 
 </div>
@@ -35,19 +35,19 @@ terrifying — thing you can give it. Today your options are bad:
 - **Raw SSH / tmux hacks** are stateless-per-command, leak escape codes, and have
   zero notion of "is this command allowed?"
 
-So most teams just... don't let agents touch real infrastructure. nexum exists to
+So most teams just... don't let agents touch real infrastructure. execkit exists to
 remove that fear.
 
 ## The core idea: the agent is the adversary
 
-A traditional tool trusts its caller. nexum can't — the LLM driving it can be
+A traditional tool trusts its caller. execkit can't — the LLM driving it can be
 **hijacked by prompt injection** from any data it reads (a poisoned file, a web
-page, a CI log). So nexum's first job is to **contain its own caller.**
+page, a CI log). So execkit's first job is to **contain its own caller.**
 
 Every command passes through a fence *before* it reaches a shell:
 
 ```
-agent ──▶ nexum ──▶ [ default-deny policy ] ──▶ [ dangerous-pattern intercept ]
+agent ──▶ execkit ──▶ [ default-deny policy ] ──▶ [ dangerous-pattern intercept ]
                           │ blocked                    │ HITL approval
                           ▼                             ▼
                     never executed              human approves / denies
@@ -67,7 +67,7 @@ roadmap promises — each gate is verified in [`poc/run_flashy.py`](./poc/).
 
 ```python
 # target API (v0.1) — illustrative
-sess = nexum.create(transport="ssh://deploy@prod-1", policy=Policy.default_deny(
+sess = execkit.create(transport="ssh://deploy@prod-1", policy=Policy.default_deny(
     allow=["ls", "cat", "systemctl status", "docker ps"],
 ))
 
@@ -94,12 +94,12 @@ sess.exec("env | grep AWS")
   process. No daemon you don't control, no vendor.
 
 > Structured output is a feature, not the pitch. LLMs read raw terminal text
-> fine. nexum's value is **trust**: persistence, multi-transport reach, and the
+> fine. execkit's value is **trust**: persistence, multi-transport reach, and the
 > safety to point an agent at infrastructure you actually care about.
 
 ## Using it from an AI agent
 
-- **Claude Code · Cursor · Gemini CLI** — nexum ships an **MCP server** (v0.1).
+- **Claude Code · Cursor · Gemini CLI** — execkit ships an **MCP server** (v0.1).
   Add it to your MCP config and the agent calls its tools directly; no model
   changes, no special access.
 - **Custom agents** (Claude / Gemini / OpenAI APIs, LangChain, CrewAI, OpenHands)
@@ -142,7 +142,7 @@ Be upfront — this is a young library. Today:
 - **Recovery/time-travel, Docker/K8s transports, streaming, and more SDKs** are
   roadmap, not built. See [`ROADMAP.md`](./ROADMAP.md).
 
-Found something rough? Please [open an issue](https://github.com/nexum-rs/nexum/issues).
+Found something rough? Please [open an issue](https://github.com/execkit/execkit/issues).
 
 ## Contributing & security
 

@@ -1,8 +1,8 @@
 blank_issues_enabled: false
 contact_links:
   - name: Security vulnerability
-    url: https://github.com/nexum-rs/nexum/security/advisories/new
+    url: https://github.com/execkit/execkit/security/advisories/new
     about: Report security issues privately — please do NOT open a public issue.
   - name: Question / discussion
-    url: https://github.com/nexum-rs/nexum/discussions
+    url: https://github.com/execkit/execkit/discussions
     about: Ask questions and discuss ideas here.

@@ -14,7 +14,7 @@ import sys
 import uuid
 
 IMAGE = "alpine:latest"
-CONTAINER = f"nexum_poc_{uuid.uuid4().hex[:8]}"
+CONTAINER = f"execkit_poc_{uuid.uuid4().hex[:8]}"
 
 
 def _have_docker():

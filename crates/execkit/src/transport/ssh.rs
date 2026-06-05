@@ -350,7 +350,7 @@ mod tests {
     #[test]
     fn known_hosts_tofu_then_pins_and_detects_change() {
         let dir = std::env::temp_dir();
-        let path = dir.join(format!("nexum_kh_test_{}", std::process::id()));
+        let path = dir.join(format!("execkit_kh_test_{}", std::process::id()));
         let _ = std::fs::remove_file(&path);
         let p = HostKeyVerification::KnownHosts(path.clone());
 
