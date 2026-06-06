@@ -77,6 +77,49 @@ jobs:
         if: always()
         run: docker rm -f sshd || true
 
+  ssh-rsa-key-e2e:
+    name: SSH RSA key auth (rsa-sha2 enforced)
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v6
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Generate an RSA key
+        run: ssh-keygen -t rsa -b 2048 -N "" -f /tmp/ek_rsa -q
+
+      # Server accepts the RSA key ONLY via rsa-sha2; it rejects legacy ssh-rsa
+      # (SHA-1). If execkit ever signs RSA with ssh-rsa again, auth is denied and
+      # the smoke test fails - a regression guard for the rsa-sha2 fix.
+      - name: Start sshd (RSA key, rsa-sha2 only)
+        run: |
+          PUB64=$(base64 -w0 /tmp/ek_rsa.pub)
+          docker run -d --name sshd_rsa -p 127.0.0.1:2223:22 alpine sh -c \
+            "apk add --no-cache openssh >/dev/null 2>&1 && ssh-keygen -A && \
+             mkdir -p /root/.ssh && chmod 700 /root/.ssh && \
+             echo '$PUB64' | base64 -d > /root/.ssh/authorized_keys && \
+             chmod 600 /root/.ssh/authorized_keys && \
+             sed -i 's/^#\?PermitRootLogin.*/PermitRootLogin prohibit-password/' /etc/ssh/sshd_config && \
+             echo 'PubkeyAcceptedAlgorithms rsa-sha2-256,rsa-sha2-512' >> /etc/ssh/sshd_config && \
+             /usr/sbin/sshd -D -e"
+          for i in $(seq 1 40); do
+            docker logs sshd_rsa 2>&1 | grep -q "Server listening" && { echo "sshd up"; break; }
+            sleep 1
+          done
+          docker logs sshd_rsa 2>&1 | grep -q "Server listening" \
+            || { echo "ERROR: sshd did not start"; docker logs sshd_rsa; exit 1; }
+
+      - name: Run RSA-key smoke (proves rsa-sha2 negotiation)
+        env:
+          EXECKIT_TEST_SSH_KEYSPEC: root@127.0.0.1:2223
+          EXECKIT_TEST_SSH_KEY: /tmp/ek_rsa
+        run: cargo test -p execkit --test ssh_smoke ssh_rsa_key -- --nocapture
+
+      - name: Stop sshd
+        if: always()
+        run: docker rm -f sshd_rsa || true
+
   docker-e2e:
     name: Docker transport (real container)
     runs-on: ubuntu-latest

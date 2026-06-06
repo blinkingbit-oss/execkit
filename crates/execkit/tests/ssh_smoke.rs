@@ -45,6 +45,39 @@ fn ssh_echo_roundtrip() {
     assert_eq!(s.exec("pwd").unwrap().cwd, "/tmp");
 }
 
+/// Regression for the RSA rsa-sha2 fix: authenticate with an RSA *key* against a
+/// server that rejects legacy `ssh-rsa` (SHA-1). If we ever sign with `ssh-rsa`
+/// again (e.g. by passing `None` for the hash), the server denies auth and this
+/// fails. Gated on:
+///   EXECKIT_TEST_SSH_KEYSPEC="user@host:port"  EXECKIT_TEST_SSH_KEY="/path/to/key"
+#[test]
+fn ssh_rsa_key_uses_rsa_sha2() {
+    let (Ok(spec), Ok(key)) = (
+        std::env::var("EXECKIT_TEST_SSH_KEYSPEC"),
+        std::env::var("EXECKIT_TEST_SSH_KEY"),
+    ) else {
+        eprintln!("skip: set EXECKIT_TEST_SSH_KEYSPEC + EXECKIT_TEST_SSH_KEY to run");
+        return;
+    };
+    let (user, hostport) = spec.split_once('@').expect("EXECKIT_TEST_SSH_KEYSPEC=user@host:port");
+    let (host, port) = hostport.split_once(':').expect("host:port");
+
+    let mut cfg = SshConfig::new(
+        host,
+        user,
+        SshAuth::Key {
+            path: key.into(),
+            passphrase: None,
+        },
+        HostKeyVerification::AcceptAny,
+    );
+    cfg.port = port.parse().expect("port");
+
+    // Connecting at all proves rsa-sha2 was negotiated (the server rejects ssh-rsa).
+    let mut s = Session::ssh(cfg).expect("RSA-key auth via rsa-sha2");
+    assert_eq!(s.exec("echo rsa-ok").expect("exec").stdout, "rsa-ok");
+}
+
 /// Regression: dropping a session after a flood/timeout must not hang (the
 /// runtime thread is parked in a full blocking read send, not in select!).
 #[test]
