@@ -59,7 +59,9 @@ fn ssh_rsa_key_uses_rsa_sha2() {
         eprintln!("skip: set EXECKIT_TEST_SSH_KEYSPEC + EXECKIT_TEST_SSH_KEY to run");
         return;
     };
-    let (user, hostport) = spec.split_once('@').expect("EXECKIT_TEST_SSH_KEYSPEC=user@host:port");
+    let (user, hostport) = spec
+        .split_once('@')
+        .expect("EXECKIT_TEST_SSH_KEYSPEC=user@host:port");
     let (host, port) = hostport.split_once(':').expect("host:port");
 
     let mut cfg = SshConfig::new(
