@@ -41,6 +41,33 @@ GitHub Release -> `cargo publish`. It activates once these prerequisites are met
 3. **Merge the Release PR** -> the `release` job publishes to crates.io and creates
    the GitHub Release. That's it.
 
+## Prebuilt binaries (cargo-dist) + the tag-trigger PAT
+
+`execkit-mcp` ships prebuilt binaries for 6 targets via cargo-dist
+(`dist-workspace.toml` + `.github/workflows/release.yml`). On the release tag,
+release-plz creates the GitHub Release as a **draft**; cargo-dist then builds the
+binaries, uploads them to the draft, and publishes it.
+
+**Gotcha:** a tag pushed with the default `GITHUB_TOKEN` does **not** trigger
+other workflows (GitHub's anti-recursion rule). So cargo-dist never fires and the
+Release is left an empty draft. Give release-plz a token that *can* trigger
+workflows:
+
+1. Create a **fine-grained PAT** on this repo with `Contents: read/write` +
+   `Workflows: read/write` (or a classic PAT with `repo` + `workflow`; a GitHub
+   App token is even better for orgs).
+2. Add it as a repo secret named **`RELEASE_PLZ_TOKEN`** (Settings -> Secrets and
+   variables -> Actions). `release-plz.yml` already prefers it over `GITHUB_TOKEN`.
+
+**Fallback if the PAT isn't set:** the crate still publishes, but the Release sits
+as an empty draft. Build its binaries by re-pushing the tag yourself (a *user*
+push triggers cargo-dist):
+
+```bash
+git push origin :refs/tags/vX.Y.Z   # delete the tag
+git push origin vX.Y.Z              # re-push -> triggers cargo-dist
+```
+
 ## Add the other registries later
 
 - v0.2 PyPI: `maturin generate-ci github` + a PyPI Trusted Publisher.

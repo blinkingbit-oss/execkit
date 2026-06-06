@@ -57,7 +57,14 @@ jobs:
         with:
           command: release
         env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # A PAT (RELEASE_PLZ_TOKEN) makes the git tag this job pushes TRIGGER
+          # downstream workflows - specifically cargo-dist's release.yml, which
+          # builds the prebuilt binaries. Tags pushed with the default
+          # GITHUB_TOKEN do NOT trigger other workflows (GitHub anti-recursion).
+          # Falls back to GITHUB_TOKEN if the PAT isn't set: the release still
+          # publishes, but you must re-push the tag manually to build binaries.
+          # See RELEASE_SETUP.md.
+          GITHUB_TOKEN: ${{ secrets.RELEASE_PLZ_TOKEN || secrets.GITHUB_TOKEN }}
           CARGO_REGISTRY_TOKEN: ${{ steps.auth.outputs.token }}
           # Option B (simplest first publish): comment out the OIDC step above and
           # use a stored token instead:
@@ -84,4 +91,5 @@ jobs:
         with:
           command: release-pr
         env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # Same optional PAT, so the Release PR's commits trigger CI checks.
+          GITHUB_TOKEN: ${{ secrets.RELEASE_PLZ_TOKEN || secrets.GITHUB_TOKEN }}
