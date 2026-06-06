@@ -50,21 +50,21 @@ impl Session {
     ///
     /// `container` is a name or ID. Requires the `docker` CLI on PATH and a
     /// running container with a POSIX `/bin/sh`. No extra dependencies - this is
-    /// the local PTY transport driving `docker exec -i`, so the same framing,
+    /// the local PTY transport driving `docker exec`, so the same framing,
     /// policy, redaction, and bounding apply.
+    ///
+    /// On drop (including after a timeout) it makes a best-effort attempt to kill
+    /// the in-container shell and any command it spawned - killing the local
+    /// `docker exec` client alone would leave them running in the container.
     pub fn docker(container: &str) -> Result<Self> {
         // `container` is caller/agent-controlled (untrusted via MCP). Validate it
-        // against Docker's name/id charset so it can't carry shell/flag tricks,
-        // and pass it after `--` so a value starting with `-` can't smuggle flags
-        // into `docker exec`.
+        // against Docker's name/id charset so it can't carry shell/flag tricks
+        // (the transport also passes it after `--`).
         if !is_valid_container_ref(container) {
             return Err(Error::Transport("invalid docker container name/id".into()));
         }
-        // -t allocates a TTY in the container so its shell line-buffers stdout
-        // (a bare pipe block-buffers, and our sentinel markers never flush). The
-        // host side is already a PTY (portable-pty), so -t is valid here.
-        let pty = LocalPty::spawn("docker", &["exec", "-it", "--", container, "/bin/sh"])?;
-        Self::from_transport(Box::new(pty))
+        let t = crate::transport::docker::DockerExec::spawn(container, &unique_token())?;
+        Self::from_transport(Box::new(t))
     }
 
     /// Build a session over any transport: run the readiness handshake and set
@@ -284,5 +284,8 @@ mod tests {
         assert!(!is_valid_container_ref("a b"));
         assert!(!is_valid_container_ref("a;rm -rf /"));
         assert!(!is_valid_container_ref("a$(whoami)"));
+        assert!(!is_valid_container_ref("a\nrm")); // embedded newline
+        assert!(!is_valid_container_ref("..")); // leading dot
+        assert!(!is_valid_container_ref("ａlpine")); // unicode fullwidth lookalike
     }
 }

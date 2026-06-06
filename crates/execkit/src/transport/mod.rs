@@ -9,6 +9,7 @@ use std::time::{Duration, Instant};
 
 use crate::error::{Error, Result};
 
+pub mod docker;
 pub mod local;
 pub mod ssh;
 
