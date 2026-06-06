@@ -43,9 +43,17 @@ flowchart LR
 
 ## Use it from an agent (MCP)
 
+Install the server - **no Rust toolchain needed**:
+
 ```bash
+# Prebuilt binary (Linux/macOS, x86_64 + arm64):
+curl --proto '=https' --tlsv1.2 -LsSf https://github.com/blinkingbit-oss/execkit/releases/latest/download/execkit-mcp-installer.sh | sh
+
+# ...or with cargo:
 cargo install execkit-mcp
 ```
+
+Point your MCP client at it (`claude mcp add execkit -- execkit-mcp`, or a config block):
 
 ```json
 { "mcpServers": { "execkit": { "command": "execkit-mcp" } } }
@@ -53,8 +61,18 @@ cargo install execkit-mcp
 
 The agent gets three tools - `session_create` (local, ssh, or docker) -> `session_exec` ->
 `session_destroy`. `session_exec` returns a structured `ExecResult` (split
-stdout/stderr, exit code, cwd), already secret-redacted and bounded. See
-[`crates/execkit-mcp/README.md`](./crates/execkit-mcp/README.md) for the operator
+stdout/stderr, exit code, cwd), already secret-redacted and bounded.
+
+State persists across calls, and every result is parsed - not scraped from a terminal:
+
+```jsonc
+// session_exec {"command": "cd /app && npm ci"}   -> { "exit_code": 0, "cwd": "/app" }
+// session_exec {"command": "npm run build"}        // cwd is still /app
+//   -> { "stderr": "Error: Cannot find module 'webpack'",
+//        "exit_code": 1, "duration_ms": 3420, "cwd": "/app", "truncated": false }
+```
+
+See [`crates/execkit-mcp/README.md`](./crates/execkit-mcp/README.md) for the operator
 security settings (host-key verification, key dir, audit, session limits).
 
 ## Use it as a library
