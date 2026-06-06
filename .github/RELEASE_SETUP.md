@@ -41,6 +41,11 @@ GitHub Release -> `cargo publish`. It activates once these prerequisites are met
 3. **Merge the Release PR** -> the `release` job publishes to crates.io and creates
    the GitHub Release. That's it.
 
+> **On a minor bump (e.g. 0.2 -> 0.3):** release-plz updates `Cargo.toml` and the
+> changelog, but NOT README prose. Hand-update the dependency examples in
+> `README.md` + `docs/QUICKSTART.md` (`execkit = "0.x"`), since `^0.2` won't pull
+> `0.3`. The "Early `0.x` release" banner is version-agnostic on purpose.
+
 ## Prebuilt binaries (cargo-dist) + the tag-trigger PAT
 
 `execkit-mcp` ships prebuilt binaries for 6 targets via cargo-dist

@@ -11,7 +11,7 @@
 
 </div>
 
-> **Early `0.1.x` release - not production-ready.** See [Limitations](#limitations).
+> **Early `0.x` release - not production-ready.** See [Limitations](#limitations).
 
 execkit gives an AI agent a **persistent session** on a machine - a local shell, an
 SSH host, or a Docker container - and returns a **structured result** for every command. Crucially, it
@@ -79,8 +79,8 @@ security settings (host-key verification, key dir, audit, session limits).
 
 ```toml
 [dependencies]
-execkit = "0.1"                                           # local + SSH + Docker
-# execkit = { version = "0.1", default-features = false }  # local + Docker only (no SSH; no russh/tokio)
+execkit = "0.2"                                           # local + SSH + Docker
+# execkit = { version = "0.2", default-features = false }  # local + Docker only (no SSH; no russh/tokio)
 ```
 
 ```rust
