@@ -53,10 +53,17 @@ impl Session {
     /// the local PTY transport driving `docker exec -i`, so the same framing,
     /// policy, redaction, and bounding apply.
     pub fn docker(container: &str) -> Result<Self> {
+        // `container` is caller/agent-controlled (untrusted via MCP). Validate it
+        // against Docker's name/id charset so it can't carry shell/flag tricks,
+        // and pass it after `--` so a value starting with `-` can't smuggle flags
+        // into `docker exec`.
+        if !is_valid_container_ref(container) {
+            return Err(Error::Transport("invalid docker container name/id".into()));
+        }
         // -t allocates a TTY in the container so its shell line-buffers stdout
         // (a bare pipe block-buffers, and our sentinel markers never flush). The
         // host side is already a PTY (portable-pty), so -t is valid here.
-        let pty = LocalPty::spawn("docker", &["exec", "-it", container, "/bin/sh"])?;
+        let pty = LocalPty::spawn("docker", &["exec", "-it", "--", container, "/bin/sh"])?;
         Self::from_transport(Box::new(pty))
     }
 
@@ -231,6 +238,18 @@ fn find(hay: &[u8], needle: &[u8]) -> Option<usize> {
     hay.windows(needle.len()).position(|w| w == needle)
 }
 
+/// Docker container names/ids: first char alphanumeric, then `[A-Za-z0-9_.-]`.
+/// Covers 64-hex ids too. Rejects empty, a leading `-`, and any shell/flag
+/// metacharacters - so the value can't smuggle `docker exec` flags or shell tricks.
+fn is_valid_container_ref(s: &str) -> bool {
+    let mut chars = s.chars();
+    match chars.next() {
+        Some(c) if c.is_ascii_alphanumeric() => {}
+        _ => return false,
+    }
+    chars.all(|c| c.is_ascii_alphanumeric() || matches!(c, '_' | '.' | '-'))
+}
+
 fn unique_token() -> String {
     static COUNTER: AtomicU64 = AtomicU64::new(0);
     let nanos = SystemTime::now()
@@ -246,4 +265,24 @@ fn unique_token() -> String {
     }
     let rhex: String = rnd.iter().map(|b| format!("{b:02x}")).collect();
     format!("{nanos:x}{n:x}{rhex}")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::is_valid_container_ref;
+
+    #[test]
+    fn container_ref_validation() {
+        // Valid: names and 64-hex ids.
+        assert!(is_valid_container_ref("my_app"));
+        assert!(is_valid_container_ref("web-1.test"));
+        assert!(is_valid_container_ref("0a1b2c3d4e5f"));
+        // Invalid: flag smuggling, empty, shell metacharacters.
+        assert!(!is_valid_container_ref(""));
+        assert!(!is_valid_container_ref("-it"));
+        assert!(!is_valid_container_ref("--privileged"));
+        assert!(!is_valid_container_ref("a b"));
+        assert!(!is_valid_container_ref("a;rm -rf /"));
+        assert!(!is_valid_container_ref("a$(whoami)"));
+    }
 }
