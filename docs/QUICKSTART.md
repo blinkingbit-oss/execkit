@@ -30,8 +30,8 @@ for the operator security settings (host-key verification, key dir, audit, limit
 
 ```toml
 [dependencies]
-execkit = "0.1"                                   # local + SSH
-# execkit = { version = "0.1", default-features = false }  # local PTY only (no russh/tokio)
+execkit = "0.1"                                   # local + SSH + Docker
+# execkit = { version = "0.1", default-features = false }  # local + Docker only (no SSH; no russh/tokio)
 ```
 
 ```rust
@@ -62,6 +62,6 @@ EXECKIT_SSH="user:password@host:22" cargo run --example ssh
 - **Structured `ExecResult`** - stdout/stderr split, exit code, duration, cwd.
 - **Safe by default** - advisory command fence, secret redaction, bounded output,
   SSH host-key verification.
-- **One API, many transports** - local PTY and SSH today; same `ExecResult`.
+- **One API, many transports** - local PTY, SSH, and Docker; same `ExecResult`.
 
 See [`README.md`](../README.md) for the full picture.

@@ -2,7 +2,7 @@
 
 # execkit
 
-**Stateful, structured, safe command execution for AI agents - over local shells and SSH.**
+**Stateful, structured, safe command execution for AI agents - over local shells, SSH, and Docker.**
 
 [![CI](https://github.com/blinkingbit-oss/execkit/actions/workflows/ci.yml/badge.svg)](https://github.com/blinkingbit-oss/execkit/actions/workflows/ci.yml)
 [![crates.io](https://img.shields.io/crates/v/execkit.svg)](https://crates.io/crates/execkit)
@@ -13,8 +13,8 @@
 
 > **Early `0.1.x` release - not production-ready.** See [Limitations](#limitations).
 
-execkit gives an AI agent a **persistent session** on a machine - a local shell or
-an SSH host - and returns a **structured result** for every command. Crucially, it
+execkit gives an AI agent a **persistent session** on a machine - a local shell, an
+SSH host, or a Docker container - and returns a **structured result** for every command. Crucially, it
 treats the agent itself as untrusted: every command passes a policy fence, output
 is scrubbed of secrets, and flooding output is bounded. Use it as an **embeddable
 Rust library** or as an **MCP server** any agent can drive.
@@ -34,7 +34,7 @@ SSH host key fails loudly instead of reconnecting into a MITM.
 flowchart LR
     A([AI agent]) -->|command| F{policy fence}
     F -->|blocked| X([rejected, never runs])
-    F -->|allowed| T[transport: local PTY or SSH]
+    F -->|allowed| T[transport: local / SSH / Docker]
     T --> O[raw output]
     O --> R[redact secrets, bound output]
     R --> E([structured ExecResult])
@@ -51,7 +51,7 @@ cargo install execkit-mcp
 { "mcpServers": { "execkit": { "command": "execkit-mcp" } } }
 ```
 
-The agent gets three tools - `session_create` (local or ssh) -> `session_exec` ->
+The agent gets three tools - `session_create` (local, ssh, or docker) -> `session_exec` ->
 `session_destroy`. `session_exec` returns a structured `ExecResult` (split
 stdout/stderr, exit code, cwd), already secret-redacted and bounded. See
 [`crates/execkit-mcp/README.md`](./crates/execkit-mcp/README.md) for the operator
@@ -61,8 +61,8 @@ security settings (host-key verification, key dir, audit, session limits).
 
 ```toml
 [dependencies]
-execkit = "0.1"                                           # local + SSH
-# execkit = { version = "0.1", default-features = false }  # local PTY only (no russh/tokio)
+execkit = "0.1"                                           # local + SSH + Docker
+# execkit = { version = "0.1", default-features = false }  # local + Docker only (no SSH; no russh/tokio)
 ```
 
 ```rust
@@ -79,13 +79,14 @@ fn main() -> Result<(), execkit::Error> {
 }
 ```
 
-Runnable examples: `cargo run --example local` and
-`EXECKIT_SSH="user:password@host:22" cargo run --example ssh`.
+Runnable examples: `cargo run --example local`,
+`EXECKIT_SSH="user:password@host:22" cargo run --example ssh`, and
+`EXECKIT_DOCKER=<container> cargo run --example docker`.
 
 ## What you get
 
 - **Persistent, stateful sessions** - `cd`/env/state persist across commands, over
-  **local PTY or SSH**.
+  **local PTY, SSH, or Docker**.
 - **Structured `ExecResult`** - split stdout/stderr, exit code, duration, cwd.
 - **Safe by construction** - advisory command policy, **secret redaction**, bounded
   (anti-flood) output, SSH host-key verification.

@@ -89,8 +89,11 @@ struct ExeckitServer {
 
 #[derive(Deserialize, JsonSchema)]
 struct CreateParams {
-    /// Transport: "local" (a local shell) or "ssh".
+    /// Transport: "local" (a local shell), "ssh", or "docker".
     transport: String,
+    /// Docker container name or id (required for docker).
+    #[serde(default)]
+    container: Option<String>,
     /// SSH host (required for ssh).
     #[serde(default)]
     host: Option<String>,
@@ -144,9 +147,10 @@ impl ExeckitServer {
     }
 
     #[tool(
-        description = "Open a stateful shell session. transport is \"local\" or \"ssh\" \
-                       (ssh needs host, user, and password or key_path). Optional fingerprint \
-                       (pin host key), allow/deny command lists. Returns a session_id."
+        description = "Open a stateful shell session. transport is \"local\", \"ssh\", or \
+                       \"docker\". ssh needs host, user, and password or key_path; docker needs \
+                       container (a running container name/id). Optional fingerprint (pin host \
+                       key), allow/deny command lists. Returns a session_id."
     )]
     async fn session_create(
         &self,
@@ -274,6 +278,12 @@ fn build_session(p: CreateParams, config: &Config) -> Result<Session, execkit::E
                 cfg.port = port;
             }
             Session::ssh(cfg)?
+        }
+        "docker" => {
+            let container = p
+                .container
+                .ok_or_else(|| execkit::Error::Transport("docker: 'container' required".into()))?;
+            Session::docker(&container)?
         }
         _ => Session::local()?,
     };

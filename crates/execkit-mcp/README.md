@@ -8,7 +8,7 @@ Cursor, Gemini CLI, and others.
 
 | Tool | Args | Returns |
 |---|---|---|
-| `session_create` | `transport` (`"local"`/`"ssh"`), and for ssh: `host`, `user`, `password` or `key_path`, optional `port`, `fingerprint` (pin host key); optional `allow`/`deny` command lists | `{ "session_id": "..." }` |
+| `session_create` | `transport` (`"local"`/`"ssh"`/`"docker"`); for ssh: `host`, `user`, `password` or `key_path`, optional `port`, `fingerprint` (pin host key); for docker: `container` (running name/id); optional `allow`/`deny` command lists | `{ "session_id": "..." }` |
 | `session_exec` | `session_id`, `command` | structured `ExecResult` JSON: `stdout`, `stderr` (split!), `exit_code`, `duration_ms`, `cwd`, `truncated` |
 | `session_destroy` | `session_id` | `{ "destroyed": true }` |
 
@@ -89,6 +89,9 @@ by the **operator at startup** (env vars), not by per-call agent arguments:
   are rejected with a generic error (no path-existence leak).
 - **Audit destination is operator-chosen**, never a tool argument (prevents an
   injected agent from writing to arbitrary files).
+- **Docker** sessions run `docker exec` against any container the daemon can see,
+  so the agent reaches whatever your `docker` context exposes. Grant the server
+  Docker access only when you want that, and scope the daemon/context accordingly.
 - The server speaks MCP on **stdout**; all diagnostics go to **stderr**.
 - Use `allow`/`deny` for a command fence, and run the agent + SSH user with least
   privilege. The fence is advisory - defense in depth, not a sandbox.

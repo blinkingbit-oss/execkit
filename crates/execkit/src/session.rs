@@ -46,6 +46,20 @@ impl Session {
         Self::from_transport(Box::new(t))
     }
 
+    /// Open a session inside a running Docker container via `docker exec`.
+    ///
+    /// `container` is a name or ID. Requires the `docker` CLI on PATH and a
+    /// running container with a POSIX `/bin/sh`. No extra dependencies - this is
+    /// the local PTY transport driving `docker exec -i`, so the same framing,
+    /// policy, redaction, and bounding apply.
+    pub fn docker(container: &str) -> Result<Self> {
+        // -t allocates a TTY in the container so its shell line-buffers stdout
+        // (a bare pipe block-buffers, and our sentinel markers never flush). The
+        // host side is already a PTY (portable-pty), so -t is valid here.
+        let pty = LocalPty::spawn("docker", &["exec", "-it", container, "/bin/sh"])?;
+        Self::from_transport(Box::new(pty))
+    }
+
     /// Build a session over any transport: run the readiness handshake and set
     /// up the per-session sentinel token.
     fn from_transport(mut io: Box<dyn Transport>) -> Result<Self> {

@@ -77,6 +77,27 @@ jobs:
         if: always()
         run: docker rm -f sshd || true
 
+  docker-e2e:
+    name: Docker transport (real container)
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v6
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Start a container
+        run: docker run -d --name ek alpine sleep 600
+
+      - name: Run docker_smoke against it
+        env:
+          EXECKIT_TEST_DOCKER: ek
+        run: cargo test -p execkit --test docker_smoke -- --nocapture
+
+      - name: Stop container
+        if: always()
+        run: docker rm -f ek || true
+
   audit:
     name: cargo audit (advisories)
     runs-on: ubuntu-latest
