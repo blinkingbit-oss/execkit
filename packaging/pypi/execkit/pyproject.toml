@@ -1,0 +1,20 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "execkit"
+version = "0.0.1"
+description = "Name reserved for the execkit Python SDK - see https://github.com/blinkingbit-oss/execkit"
+readme = "README.md"
+requires-python = ">=3.8"
+license = "Apache-2.0"
+authors = [{ name = "jayashankarvr" }]
+keywords = ["ai", "agent", "shell", "ssh", "docker", "mcp"]
+
+[project.urls]
+Homepage = "https://github.com/blinkingbit-oss/execkit"
+Repository = "https://github.com/blinkingbit-oss/execkit"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/execkit"]
