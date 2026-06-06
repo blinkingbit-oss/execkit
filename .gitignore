@@ -19,3 +19,7 @@ __pycache__/
 
 # internal planning / scratch - kept locally, not published
 _internal/
+
+# packaging build artifacts
+packaging/**/dist/
+packaging/**/*.egg-info/
