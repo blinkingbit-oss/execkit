@@ -10,9 +10,6 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use crate::audit::AuditLog;
-// `checkpoint::self`, `Checkpoint`, and `RestoreReport` are used by the
-// checkpoint API added in Task 5/6; imported now per plan.
-#[allow(unused_imports)]
 use crate::checkpoint::{self, Checkpoint, Checkpointer, RestoreReport};
 use crate::error::{Error, Result};
 use crate::exec::ExecResult;
@@ -35,8 +32,6 @@ pub struct Session {
     /// framing, so the session refuses further commands.
     poisoned: bool,
     /// Some only for remote (ssh/docker) sessions; None for local.
-    /// Read by the checkpoint API added in Task 5/6.
-    #[allow(dead_code)]
     checkpointer: Option<Checkpointer>,
 }
 
@@ -161,6 +156,174 @@ impl Session {
     /// Stub until Task 6.
     fn maybe_auto_snapshot(&mut self, _command: &str) {}
 
+    /// Enable/disable auto-snapshot before changing remote commands (default on
+    /// for remote sessions; no-op on local).
+    pub fn with_auto_snapshot(mut self, on: bool) -> Self {
+        if let Some(cp) = &mut self.checkpointer {
+            cp.auto = on;
+        }
+        self
+    }
+
+    /// Set the remote workspace root checkpoints anchor at (default: cwd at first
+    /// snapshot). No-op on local.
+    pub fn with_workspace(mut self, root: impl Into<String>) -> Self {
+        if let Some(cp) = &mut self.checkpointer {
+            cp.workspace = Some(root.into());
+        }
+        self
+    }
+
+    /// Set the sub-paths under the root to checkpoint (default ["."]). No-op on local.
+    pub fn with_checkpoint_paths<I, S>(mut self, paths: I) -> Self
+    where
+        I: IntoIterator<Item = S>,
+        S: Into<String>,
+    {
+        if let Some(cp) = &mut self.checkpointer {
+            let v: Vec<String> = paths.into_iter().map(Into::into).collect();
+            if !v.is_empty() {
+                cp.set_paths(v);
+            }
+        }
+        self
+    }
+
+    /// Take a checkpoint now. Remote-only.
+    pub fn checkpoint(&mut self, label: Option<&str>) -> Result<crate::CheckpointId> {
+        self.require_remote()?;
+        self.ensure_init()?;
+        let label = label.unwrap_or("checkpoint").to_string();
+        let root = self.cp_root();
+        let cmd = self
+            .checkpointer
+            .as_ref()
+            .unwrap()
+            .snapshot_cmd(&root, &label);
+        let f = self.run_framed(&cmd)?;
+        let sha = checkpoint::parse_sha(&f.stdout)
+            .ok_or_else(|| Error::Transport(format!("checkpoint failed: {}", f.stderr.trim())))?;
+        self.checkpointer.as_mut().unwrap().last = Some(sha.clone());
+        Ok(crate::CheckpointId(sha))
+    }
+
+    /// List checkpoints, newest first. Remote-only.
+    pub fn checkpoints(&mut self) -> Result<Vec<Checkpoint>> {
+        self.require_remote()?;
+        if !self.checkpointer.as_ref().unwrap().initialized {
+            return Ok(vec![]);
+        }
+        let root = self.cp_root();
+        let cmd = self.checkpointer.as_ref().unwrap().list_cmd(&root);
+        let f = self.run_framed(&cmd)?;
+        Ok(checkpoint::parse_log(&f.stdout))
+    }
+
+    /// Restore the workspace files to a checkpoint. Remote-only.
+    pub fn restore(&mut self, id: &crate::CheckpointId) -> Result<RestoreReport> {
+        self.require_remote()?;
+        let root = self.cp_root();
+        // Count differing files BEFORE reverting (best-effort; informational).
+        let diff_cmd = self
+            .checkpointer
+            .as_ref()
+            .unwrap()
+            .diff_count_cmd(&root, &id.0);
+        let changed = self
+            .run_framed(&diff_cmd)
+            .ok()
+            .and_then(|f| f.stdout.trim().parse::<usize>().ok())
+            .unwrap_or(0);
+        let cmd = self
+            .checkpointer
+            .as_ref()
+            .unwrap()
+            .restore_cmd(&root, &id.0);
+        let f = self.run_framed(&cmd)?;
+        if f.exit_code != 0 {
+            return Err(Error::Transport(format!(
+                "restore failed: {}",
+                f.stderr.trim()
+            )));
+        }
+        Ok(RestoreReport {
+            restored_to: id.0.clone(),
+            files_changed: changed,
+        })
+    }
+
+    /// Restore the most recent checkpoint. Remote-only.
+    pub fn restore_last(&mut self) -> Result<RestoreReport> {
+        self.require_remote()?;
+        let last = self
+            .checkpointer
+            .as_ref()
+            .unwrap()
+            .last
+            .clone()
+            .ok_or_else(|| Error::Unsupported("no checkpoint to restore".into()))?;
+        self.restore(&crate::CheckpointId(last))
+    }
+
+    fn require_remote(&self) -> Result<()> {
+        match &self.checkpointer {
+            Some(_) => Ok(()),
+            None => Err(Error::Unsupported(
+                "checkpoints are available only for remote sessions".into(),
+            )),
+        }
+    }
+
+    fn cp_root(&self) -> String {
+        self.checkpointer
+            .as_ref()
+            .unwrap()
+            .root
+            .clone()
+            .unwrap_or_else(|| ".".into())
+    }
+
+    /// Lazily detect git and init the shadow repo. Sets `git_unavailable` if git
+    /// is missing (caller decides whether to error or skip).
+    fn ensure_init(&mut self) -> Result<()> {
+        let cp = self.checkpointer.as_ref().unwrap();
+        if cp.initialized {
+            return Ok(());
+        }
+        if cp.git_unavailable {
+            return Err(Error::Unsupported(
+                "checkpoints need git on the remote host - install it (e.g. apt/apk/yum install git)"
+                    .into(),
+            ));
+        }
+        // git present?
+        let probe = self.run_framed("command -v git >/dev/null 2>&1 && echo OK || echo NO")?;
+        if probe.stdout.trim() != "OK" {
+            self.checkpointer.as_mut().unwrap().git_unavailable = true;
+            return Err(Error::Unsupported(
+                "checkpoints need git on the remote host - install it (e.g. apt/apk/yum install git)"
+                    .into(),
+            ));
+        }
+        // resolve root: explicit workspace, else current cwd
+        let root = match self.checkpointer.as_ref().unwrap().workspace.clone() {
+            Some(w) => w,
+            None => self.run_framed("pwd")?.stdout.trim().to_string(),
+        };
+        let init = self.checkpointer.as_ref().unwrap().init_cmd(&root);
+        let f = self.run_framed(&init)?;
+        if f.exit_code != 0 {
+            return Err(Error::Transport(format!(
+                "checkpoint init failed: {}",
+                f.stderr.trim()
+            )));
+        }
+        let cp = self.checkpointer.as_mut().unwrap();
+        cp.root = Some(root);
+        cp.initialized = true;
+        Ok(())
+    }
+
     /// Run one command through the sentinel framing; return raw cleaned output.
     /// No policy, redaction, bounding, audit, or auto-snapshot - callers add what
     /// they need. Poisons the session on timeout.
@@ -283,6 +446,20 @@ fn unique_token() -> String {
     }
     let rhex: String = rnd.iter().map(|b| format!("{b:02x}")).collect();
     format!("{nanos:x}{n:x}{rhex}")
+}
+
+#[cfg(test)]
+mod checkpoint_api_tests {
+    use crate::error::Error;
+    use crate::Session;
+
+    #[test]
+    fn checkpoints_unsupported_on_local() {
+        let mut s = Session::local().unwrap();
+        assert!(matches!(s.checkpoint(None), Err(Error::Unsupported(_))));
+        assert!(matches!(s.restore_last(), Err(Error::Unsupported(_))));
+        assert!(matches!(s.checkpoints(), Err(Error::Unsupported(_))));
+    }
 }
 
 #[cfg(test)]

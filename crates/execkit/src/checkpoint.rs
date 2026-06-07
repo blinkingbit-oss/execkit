@@ -5,11 +5,6 @@
 //! classification. `Session` runs the commands over its transport (see
 //! `session.rs`); keeping the logic transport-free makes it unit-testable.
 
-// The classifier, shell-quote, ignore list, and several builders/parsers are
-// wired into `Session` in Task 5/6; they are exercised by the unit tests here
-// but otherwise unused until then.
-#![allow(dead_code)]
-
 use serde::Serialize;
 
 /// A checkpoint identifier: a commit SHA in the shadow git repo.
@@ -33,6 +28,8 @@ pub struct RestoreReport {
 
 /// Programs that never write the filesystem in normal use. Conservative:
 /// anything not here, any redirection, or command substitution => snapshot.
+// Wired into the auto-snapshot hook in Task 6; only the unit tests use it now.
+#[allow(dead_code)]
 pub(crate) const READ_ONLY: &[&str] = &[
     "ls", "cat", "head", "tail", "grep", "egrep", "fgrep", "find", "pwd", "echo", "printf", "env",
     "printenv", "which", "whoami", "id", "hostname", "uname", "date", "stat", "file", "wc", "cut",
@@ -40,6 +37,8 @@ pub(crate) const READ_ONLY: &[&str] = &[
 ];
 
 /// True if `command` is unambiguously read-only (auto-snapshot can be skipped).
+// Wired into the auto-snapshot hook in Task 6; only the unit tests use it now.
+#[allow(dead_code)]
 pub(crate) fn is_read_only(command: &str) -> bool {
     // Redirections and command substitution can write or hide writes.
     if command.contains('>') || command.contains("$(") || command.contains('`') {
@@ -165,6 +164,20 @@ impl Checkpointer {
     pub fn list_cmd(&self, root: &str) -> String {
         // <sha>\x1f<unix>\x1f<subject> per line, newest first.
         format!("{} log --format='%H%x1f%ct%x1f%s'", self.git(root))
+    }
+
+    pub fn set_paths(&mut self, paths: Vec<String>) {
+        self.paths = paths;
+    }
+
+    /// Count files differing from `id` within the checkpoint paths.
+    pub fn diff_count_cmd(&self, root: &str, id: &str) -> String {
+        format!(
+            "{} diff --name-only {} -- {} | wc -l",
+            self.git(root),
+            shq(id),
+            self.pathspec()
+        )
     }
 }
 
