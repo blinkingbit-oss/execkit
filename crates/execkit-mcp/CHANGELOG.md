@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.3.0](https://github.com/blinkingbit-oss/execkit/compare/v0.2.0...v0.3.0) - 2026-06-07
+
+### Added
+
+- *(mcp)* checkpoint/restore tools + auto_snapshot/workspace/paths
+
+### Other
+
+- checkpoints feature + git-on-remote prerequisite
+
 ## [0.2.0](https://github.com/blinkingbit-oss/execkit/compare/v0.1.3...v0.2.0) - 2026-06-06
 
 ### Added
