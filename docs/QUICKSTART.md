@@ -63,5 +63,7 @@ EXECKIT_SSH="user:password@host:22" cargo run --example ssh
 - **Safe by default** - advisory command fence, secret redaction, bounded output,
   SSH host-key verification.
 - **One API, many transports** - local PTY, SSH, and Docker; same `ExecResult`.
+- **Checkpoints (remote)** - `git`-backed file undo for SSH/Docker sessions
+  (requires git on the remote).
 
 See [`README.md`](../README.md) for the full picture.

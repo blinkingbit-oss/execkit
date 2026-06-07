@@ -110,6 +110,9 @@ Runnable examples: `cargo run --example local`,
   (anti-flood) output, SSH host-key verification.
 - **One small API, every transport** - the same `ExecResult` regardless of transport.
 - **Embeddable, never a service** - `cargo add`, in *your* process; no daemon, no vendor.
+- **Undo for agent actions** - on remote sessions, snapshot the workspace and
+  restore files if a command goes wrong (requires `git` on the remote; files only,
+  not side effects).
 
 ## Limitations
 

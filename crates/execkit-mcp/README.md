@@ -11,10 +11,22 @@ Cursor, Gemini CLI, and others.
 | `session_create` | `transport` (`"local"`/`"ssh"`/`"docker"`); for ssh: `host`, `user`, `password` or `key_path`, optional `port`, `fingerprint` (pin host key); for docker: `container` (running name/id); optional `allow`/`deny` command lists | `{ "session_id": "..." }` |
 | `session_exec` | `session_id`, `command` | structured `ExecResult` JSON: `stdout`, `stderr` (split!), `exit_code`, `duration_ms`, `cwd`, `truncated` |
 | `session_destroy` | `session_id` | `{ "destroyed": true }` |
+| `session_checkpoint` | `session_id`, optional `label` | `{ "checkpoint_id": "..." }` |
+| `session_checkpoints` | `session_id` | `[{ id, label, created }]` |
+| `session_restore` | `session_id`, optional `checkpoint_id` | `{ restored_to, files_changed }` |
 
 Sessions are **stateful** - `cd`/env persist across `session_exec` calls. Output
 is ANSI-stripped, secret-redacted, and bounded; commands pass the optional policy
 fence before running.
+
+## Checkpoints (remote only)
+
+On SSH/Docker sessions execkit can snapshot the workspace before changing commands
+and restore it on demand - a filesystem "undo." **Requires `git` on the remote
+host.** It undoes FILES only, never side effects (DB writes, network, installs).
+Control it via `session_create`: `auto_snapshot` (default true), `workspace`
+(root), `paths` (sub-dirs). If git is absent, auto-snapshot disables itself and
+checkpoint calls return a clear "install git on the remote" error.
 
 ## Install
 
