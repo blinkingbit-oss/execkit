@@ -123,7 +123,14 @@ impl Checkpointer {
     }
 
     fn git(&self, root: &str) -> String {
-        format!("git --git-dir={} --work-tree={}", self.git_dir(), shq(root))
+        // -C <root> so git runs WITH cwd = the work-tree: the session's cwd is not
+        // necessarily the workspace root, and pathspecs (`.`, `src`, ...) resolve
+        // relative to cwd. Without this, `add -- .` captures nothing.
+        format!(
+            "git -C {root} --git-dir={gd} --work-tree={root}",
+            root = shq(root),
+            gd = self.git_dir()
+        )
     }
 
     /// One-time: detect git, ensure the shadow repo exists with excludes set.
@@ -162,8 +169,10 @@ impl Checkpointer {
     }
 
     pub fn list_cmd(&self, root: &str) -> String {
-        // <sha>\x1f<unix>\x1f<subject> per line, newest first.
-        format!("{} log --format='%H%x1f%ct%x1f%s'", self.git(root))
+        // "<sha> <unixtime> <subject>" per line, newest first. Space-delimited
+        // (NOT a control char): SHA and unixtime are space-free, so splitn(3, ' ')
+        // is unambiguous, and it survives the PTY + framing unmangled.
+        format!("{} log --format='%H %ct %s'", self.git(root))
     }
 
     pub fn set_paths(&mut self, paths: Vec<String>) {
@@ -190,9 +199,10 @@ pub(crate) fn parse_sha(out: &str) -> Option<String> {
 pub(crate) fn parse_log(out: &str) -> Vec<Checkpoint> {
     out.lines()
         .filter_map(|line| {
-            let mut it = line.splitn(3, '\u{1f}');
+            let mut it = line.splitn(3, ' ');
             let id = it.next()?.trim();
-            if id.is_empty() {
+            // SHA is 40 hex chars; ignore any non-commit noise lines.
+            if id.len() != 40 || !id.bytes().all(|b| b.is_ascii_hexdigit()) {
                 return None;
             }
             let created = it.next().unwrap_or("").to_string();
@@ -256,13 +266,19 @@ mod builder_tests {
 
     #[test]
     fn parse_log_reads_records() {
-        // format: <sha>\x1f<unix>\x1f<subject> per line
-        let out = "deadbeef\u{1f}1700000000\u{1f}before refactor\ncab\u{1f}1699999999\u{1f}init\n";
-        let list = super::parse_log(out);
+        // "<40-hex sha> <unixtime> <subject>" per line.
+        let a = "deadbeefdeadbeefdeadbeefdeadbeefdeadbeef";
+        let b = "cafebabecafebabecafebabecafebabecafebabe";
+        let out = format!("{a} 1700000000 before refactor\n{b} 1699999999 init\n");
+        let list = super::parse_log(&out);
         assert_eq!(list.len(), 2);
-        assert_eq!(list[0].id, "deadbeef");
+        assert_eq!(list[0].id, a);
+        assert_eq!(list[0].created, "1700000000");
         assert_eq!(list[0].label, "before refactor");
-        assert_eq!(list[1].id, "cab");
+        assert_eq!(list[1].id, b);
+        // non-commit noise lines are ignored (only 40-hex-sha lines count).
+        let noisy = format!("{a} 1700000000 x\n~~~ junk ~~~\n");
+        assert_eq!(super::parse_log(&noisy).len(), 1);
     }
 }
 
