@@ -7,6 +7,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.4.0](https://github.com/blinkingbit-oss/execkit/compare/v0.3.1...v0.4.0) - 2026-06-07
+
+### Added
+
+- *(mcp)* output budget params on session_create/session_exec
+
+### Fixed
+
+- *(budget)* guard HeadTail against untrusted extreme counts (final review)
+
+### Other
+
+- output budgets (README, QUICKSTART, mcp README) + truncated doc
+- *(budget)* MCP e2e for output budgets (shape + report + bad regex)
+
 ## [0.3.0](https://github.com/blinkingbit-oss/execkit/compare/v0.2.0...v0.3.0) - 2026-06-07
 
 ### Added
