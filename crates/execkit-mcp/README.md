@@ -9,7 +9,7 @@ Cursor, Gemini CLI, and others.
 | Tool | Args | Returns |
 |---|---|---|
 | `session_create` | `transport` (`"local"`/`"ssh"`/`"docker"`); for ssh: `host`, `user`, `password` or `key_path`, optional `port`, `fingerprint` (pin host key); for docker: `container` (running name/id); optional `allow`/`deny` command lists | `{ "session_id": "..." }` |
-| `session_exec` | `session_id`, `command` | structured `ExecResult` JSON: `stdout`, `stderr` (split!), `exit_code`, `duration_ms`, `cwd`, `truncated` |
+| `session_exec` | `session_id`, `command`, optional `budget` (shape output: grep/tail/head/head_tail + max_chars) | structured `ExecResult` JSON: `stdout`, `stderr` (split!), `exit_code`, `duration_ms`, `cwd`, `truncated` |
 | `session_destroy` | `session_id` | `{ "destroyed": true }` |
 | `session_checkpoint` | `session_id`, optional `label` | `{ "checkpoint_id": "..." }` |
 | `session_checkpoints` | `session_id` | `[{ id, label, created }]` |
@@ -27,6 +27,25 @@ host.** It undoes FILES only, never side effects (DB writes, network, installs).
 Control it via `session_create`: `auto_snapshot` (default true), `workspace`
 (root), `paths` (sub-dirs). If git is absent, auto-snapshot disables itself and
 checkpoint calls return a clear "install git on the remote" error.
+
+## Output budgets
+
+Pass `budget` to `session_exec` (or `output_budget` to `session_create` for a
+session default) to shape output and protect the agent's context window:
+
+```jsonc
+// keep the last 200 lines of a noisy build
+{ "session_id": "...", "command": "npm run build",
+  "budget": { "keep": { "mode": "tail", "n": 200 } } }
+
+// grep a 50k-line log for errors, with 2 lines of context
+{ "session_id": "...", "command": "cat big.log",
+  "budget": { "grep": { "pattern": "error|fail", "context": 2 } } }
+```
+
+Shaping is line-based, client-side, and runs AFTER secret redaction; it never
+changes the exit code or side effects. When applied, the result includes a
+`budget` report: per-stream `mode`, `lines_total`, `lines_kept`.
 
 ## Install
 

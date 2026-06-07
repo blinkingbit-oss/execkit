@@ -66,5 +66,7 @@ EXECKIT_SSH="user:password@host:22" cargo run --example ssh
 - **One API, many transports** - local PTY, SSH, and Docker; same `ExecResult`.
 - **Checkpoints (remote)** - `git`-backed file undo for SSH/Docker sessions
   (requires git on the remote).
+- **Output budgets** - per-command `tail`/`head`/`grep` + char cap so big logs do
+  not blow the context window.
 
 See [`README.md`](../README.md) for the full picture.

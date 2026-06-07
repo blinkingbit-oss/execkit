@@ -114,6 +114,10 @@ Runnable examples: `cargo run --example local`,
 - **Undo for agent actions** - on remote sessions, snapshot the workspace and
   restore files if a command goes wrong (requires `git` on the remote; files only,
   not side effects).
+- **Output budgets** - shape any command's output so huge logs do not blow the
+  agent's context: `tail`/`head`/`head+tail` by line, a `grep` filter with
+  context, and a char cap. Per-call or a session default; the result reports what
+  was kept.
 
 ## Limitations
 

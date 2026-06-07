@@ -14,7 +14,8 @@ pub struct ExecResult {
     pub exit_code: i32,
     pub duration_ms: u64,
     pub cwd: String,
-    /// True if output was truncated to fit the session's byte/char budget.
+    /// True if output was shortened: a char-cap hit, lines dropped by an output
+    /// budget, or anti-flood overflow.
     pub truncated: bool,
     /// Present only when a non-default budget shaped this result.
     #[serde(skip_serializing_if = "Option::is_none", default)]
