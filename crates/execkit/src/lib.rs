@@ -24,6 +24,7 @@
 //! ```
 
 mod audit;
+pub mod budget;
 pub mod checkpoint;
 mod error;
 mod exec;

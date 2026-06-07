@@ -33,6 +33,10 @@ pub enum Error {
     /// local session, or git missing on the remote).
     #[error("unsupported: {0}")]
     Unsupported(String),
+
+    /// An output budget was invalid (e.g. a malformed grep regex).
+    #[error("invalid output budget: {0}")]
+    Budget(String),
 }
 
 pub type Result<T> = std::result::Result<T, Error>;
