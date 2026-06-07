@@ -59,9 +59,10 @@ Point your MCP client at it (`claude mcp add execkit -- execkit-mcp`, or a confi
 { "mcpServers": { "execkit": { "command": "execkit-mcp" } } }
 ```
 
-The agent gets three tools - `session_create` (local, ssh, or docker) -> `session_exec` ->
-`session_destroy`. `session_exec` returns a structured `ExecResult` (split
-stdout/stderr, exit code, cwd), already secret-redacted and bounded.
+The agent gets `session_create` (local, ssh, or docker) -> `session_exec` ->
+`session_destroy`, plus `session_checkpoint`/`session_restore` for remote undo.
+`session_exec` returns a structured `ExecResult` (split stdout/stderr, exit code,
+cwd), already secret-redacted and bounded.
 
 State persists across calls, and every result is parsed - not scraped from a terminal:
 
