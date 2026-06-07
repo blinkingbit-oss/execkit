@@ -112,3 +112,50 @@ mod builder_tests {
         assert!(b.grep.is_none());
     }
 }
+
+/// Indices of `content` to keep: every line matching `re`, plus `context` lines
+/// on each side, merged and sorted. Empty input -> empty.
+fn grep_keep_indices(content: &[&str], re: &regex::Regex, context: usize) -> Vec<usize> {
+    let mut keep = vec![false; content.len()];
+    for (i, line) in content.iter().enumerate() {
+        if re.is_match(line) {
+            let lo = i.saturating_sub(context);
+            let hi = (i + context).min(content.len().saturating_sub(1));
+            for k in keep.iter_mut().take(hi + 1).skip(lo) {
+                *k = true;
+            }
+        }
+    }
+    (0..content.len()).filter(|&i| keep[i]).collect()
+}
+
+#[cfg(test)]
+mod grep_tests {
+    use super::*;
+
+    fn idx(text: &str, pat: &str, ctx: usize) -> Vec<usize> {
+        let content: Vec<&str> = text.lines().collect();
+        grep_keep_indices(&content, &regex::Regex::new(pat).unwrap(), ctx)
+    }
+
+    #[test]
+    fn match_only_no_context() {
+        assert_eq!(idx("a\nERR\nb\nERR\nc", "ERR", 0), vec![1, 3]);
+    }
+
+    #[test]
+    fn context_expands_and_merges_overlaps() {
+        // matches at 1 and 3, context 1 -> {0,1,2} and {2,3,4} merge to 0..=4
+        assert_eq!(idx("a\nERR\nb\nERR\nc", "ERR", 1), vec![0, 1, 2, 3, 4]);
+    }
+
+    #[test]
+    fn context_clamps_at_edges() {
+        assert_eq!(idx("ERR\nb\nc", "ERR", 5), vec![0, 1, 2]);
+    }
+
+    #[test]
+    fn no_match_is_empty() {
+        assert!(idx("a\nb\nc", "ZZZ", 2).is_empty());
+    }
+}
