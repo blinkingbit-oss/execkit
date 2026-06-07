@@ -106,7 +106,17 @@ fn lists_tools_and_runs_a_command() {
         .map(|t| t["name"].as_str().unwrap().to_string())
         .collect();
     names.sort();
-    assert_eq!(names, ["session_create", "session_destroy", "session_exec"]);
+    assert_eq!(
+        names,
+        [
+            "session_checkpoint",
+            "session_checkpoints",
+            "session_create",
+            "session_destroy",
+            "session_exec",
+            "session_restore",
+        ]
+    );
 
     let created = m.call(3, "session_create", json!({"transport":"local"}));
     let sid = result_json(&created)["session_id"]

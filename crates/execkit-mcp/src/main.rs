@@ -120,6 +120,19 @@ struct CreateParams {
     /// Optional command denylist (program names).
     #[serde(default)]
     deny: Vec<String>,
+    /// Auto-snapshot before changing remote commands (default true; remote only).
+    #[serde(default = "default_true")]
+    auto_snapshot: bool,
+    /// Remote workspace root for checkpoints (optional; default: cwd at 1st snapshot).
+    #[serde(default)]
+    workspace: Option<String>,
+    /// Sub-paths under the root to checkpoint (optional; default: whole root).
+    #[serde(default)]
+    paths: Vec<String>,
+}
+
+fn default_true() -> bool {
+    true
 }
 
 #[derive(Deserialize, JsonSchema)]
@@ -136,6 +149,24 @@ struct SessionIdParams {
     session_id: String,
 }
 
+#[derive(Deserialize, JsonSchema)]
+struct CheckpointParams {
+    /// Session id from session_create.
+    session_id: String,
+    /// Optional human label for the checkpoint.
+    #[serde(default)]
+    label: Option<String>,
+}
+
+#[derive(Deserialize, JsonSchema)]
+struct RestoreParams {
+    /// Session id from session_create.
+    session_id: String,
+    /// Checkpoint id to restore; omit to restore the most recent.
+    #[serde(default)]
+    checkpoint_id: Option<String>,
+}
+
 #[tool_router]
 impl ExeckitServer {
     fn new(config: Config) -> Self {
@@ -150,7 +181,9 @@ impl ExeckitServer {
         description = "Open a stateful shell session. transport is \"local\", \"ssh\", or \
                        \"docker\". ssh needs host, user, and password or key_path; docker needs \
                        container (a running container name/id). Optional fingerprint (pin host \
-                       key), allow/deny command lists. Returns a session_id."
+                       key), allow/deny command lists. Returns a session_id. \
+                       Remote sessions support workspace checkpoints (auto_snapshot, \
+                       workspace, paths) - requires git on the remote."
     )]
     async fn session_create(
         &self,
@@ -197,6 +230,72 @@ impl ExeckitServer {
                 let json = serde_json::to_string_pretty(&r).map_err(internal)?;
                 Ok(text(json))
             }
+            Err(e) => Ok(tool_error(e.to_string())),
+        }
+    }
+
+    #[tool(
+        description = "Take a workspace checkpoint on a REMOTE session (snapshot of \
+                       files you can restore). Requires git on the remote host. \
+                       Undoes FILES only - not side effects (DB, network, installs). \
+                       Returns { checkpoint_id }."
+    )]
+    async fn session_checkpoint(
+        &self,
+        Parameters(p): Parameters<CheckpointParams>,
+    ) -> Result<CallToolResult, ErrorData> {
+        let session = self.get(&p.session_id)?;
+        let label = p.label;
+        let outcome =
+            tokio::task::spawn_blocking(move || lock(&session).checkpoint(label.as_deref()))
+                .await
+                .map_err(internal)?;
+        match outcome {
+            Ok(id) => Ok(text(format!("{{\"checkpoint_id\":\"{}\"}}", id.0))),
+            Err(e) => Ok(tool_error(e.to_string())),
+        }
+    }
+
+    #[tool(description = "List checkpoints (newest first) for a remote session.")]
+    async fn session_checkpoints(
+        &self,
+        Parameters(p): Parameters<SessionIdParams>,
+    ) -> Result<CallToolResult, ErrorData> {
+        let session = self.get(&p.session_id)?;
+        let outcome = tokio::task::spawn_blocking(move || lock(&session).checkpoints())
+            .await
+            .map_err(internal)?;
+        match outcome {
+            Ok(list) => {
+                let json = serde_json::to_string_pretty(&list).map_err(internal)?;
+                Ok(text(json))
+            }
+            Err(e) => Ok(tool_error(e.to_string())),
+        }
+    }
+
+    #[tool(
+        description = "Restore a remote session's workspace FILES to a checkpoint \
+                       (omit checkpoint_id to restore the most recent). Does not \
+                       undo side effects."
+    )]
+    async fn session_restore(
+        &self,
+        Parameters(p): Parameters<RestoreParams>,
+    ) -> Result<CallToolResult, ErrorData> {
+        let session = self.get(&p.session_id)?;
+        let id = p.checkpoint_id;
+        let outcome = tokio::task::spawn_blocking(move || {
+            let mut s = lock(&session);
+            match id {
+                Some(cid) => s.restore(&execkit::CheckpointId(cid)),
+                None => s.restore_last(),
+            }
+        })
+        .await
+        .map_err(internal)?;
+        match outcome {
+            Ok(r) => Ok(text(serde_json::to_string(&r).map_err(internal)?)),
             Err(e) => Ok(tool_error(e.to_string())),
         }
     }
@@ -287,6 +386,12 @@ fn build_session(p: CreateParams, config: &Config) -> Result<Session, execkit::E
         }
         _ => Session::local()?,
     };
+    session = session
+        .with_auto_snapshot(p.auto_snapshot)
+        .with_checkpoint_paths(p.paths.clone());
+    if let Some(ws) = p.workspace.clone() {
+        session = session.with_workspace(ws);
+    }
     if !p.allow.is_empty() || !p.deny.is_empty() {
         session = session.with_policy(Policy {
             allow: p.allow,
