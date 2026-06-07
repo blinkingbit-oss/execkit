@@ -28,10 +28,13 @@ pub struct RestoreReport {
 
 /// Programs that never write the filesystem in normal use. Conservative:
 /// anything not here, any redirection, or command substitution => snapshot.
+// Note: `find` (-delete/-exec), `env`/`printenv` (run an arbitrary command), and
+// `sort`/`sed`/`awk`/`tee` are deliberately EXCLUDED - they can write or execute,
+// so they always snapshot.
 pub(crate) const READ_ONLY: &[&str] = &[
-    "ls", "cat", "head", "tail", "grep", "egrep", "fgrep", "find", "pwd", "echo", "printf", "env",
-    "printenv", "which", "whoami", "id", "hostname", "uname", "date", "stat", "file", "wc", "cut",
-    "uniq", "ps", "df", "du", "free", "uptime",
+    "ls", "cat", "head", "tail", "grep", "egrep", "fgrep", "pwd", "echo", "printf", "which",
+    "whoami", "id", "hostname", "uname", "date", "stat", "file", "wc", "cut", "uniq", "ps", "df",
+    "du", "free", "uptime",
 ];
 
 /// True if `command` is unambiguously read-only (auto-snapshot can be skipped).
@@ -40,9 +43,11 @@ pub(crate) fn is_read_only(command: &str) -> bool {
     if command.contains('>') || command.contains("$(") || command.contains('`') {
         return false;
     }
-    // Every segment of a pipeline / chain must start with an allowlisted program.
+    // Every segment of a pipeline / chain / multi-line script must start with an
+    // allowlisted program. Newlines count: run_framed wraps the whole command in
+    // `{ ...; }`, so every line runs.
     #[allow(clippy::manual_pattern_char_comparison)]
-    for seg in command.split(|c| matches!(c, '|' | ';' | '&')) {
+    for seg in command.split(|c| matches!(c, '|' | ';' | '&' | '\n' | '\r')) {
         let seg = seg.trim();
         if seg.is_empty() {
             continue;
@@ -298,5 +303,9 @@ mod read_only_tests {
         assert!(!is_read_only("cat $(whoami)")); // command substitution
         assert!(!is_read_only("tee f")); // tee can write
         assert!(!is_read_only("npm install")); // unknown program
+                                               // regression (final review): command/file gateways + newline-separated writes
+        assert!(!is_read_only("find . -delete")); // find can delete / -exec
+        assert!(!is_read_only("env X=1 rm -rf y")); // env runs a command
+        assert!(!is_read_only("uptime\nrm -rf /tmp/x")); // newline -> second line writes
     }
 }
