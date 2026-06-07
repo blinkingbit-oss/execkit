@@ -6,11 +6,13 @@
 //! library's job is to contain its own caller: every command passes a policy
 //! fence, output is redacted of secrets, and results are recorded.
 //!
-//! Sessions persist state (cwd, env) across commands and run over a **local PTY**
-//! or **SSH** ([`Session::local`] / [`Session::ssh`]), returning a structured
-//! [`ExecResult`] checked by an advisory [`Policy`], with secret redaction, bounded
-//! output, and an append-only audit log. An MCP server (`execkit-mcp`) exposes the
-//! same sessions to MCP agents.
+//! Sessions persist state (cwd, env) across commands and run over a **local PTY**,
+//! **SSH**, or **Docker** ([`Session::local`] / [`Session::ssh`] / [`Session::docker`]),
+//! returning a structured [`ExecResult`] checked by an advisory [`Policy`], with
+//! secret redaction, bounded output, and an append-only audit log. Remote sessions
+//! also support git-backed workspace checkpoints - a filesystem "undo" for an
+//! agent's changes ([`Session::checkpoint`] / [`Session::restore`]). An MCP server
+//! (`execkit-mcp`) exposes the same sessions to MCP agents.
 //!
 //! ```no_run
 //! use execkit::Session;

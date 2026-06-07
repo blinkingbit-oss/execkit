@@ -21,7 +21,8 @@ Add to your MCP client config (Claude Code, Cursor, Gemini CLI):
 }
 ```
 
-The agent now has three tools: `session_create` -> `session_exec` -> `session_destroy`.
+The agent now has `session_create` -> `session_exec` -> `session_destroy`, plus
+`session_checkpoint`/`session_checkpoints`/`session_restore` for remote workspace undo.
 `session_exec` returns a structured result (split stdout/stderr, exit code, cwd),
 already secret-redacted and bounded. See [`crates/execkit-mcp/README.md`](../crates/execkit-mcp/README.md)
 for the operator security settings (host-key verification, key dir, audit, limits).
@@ -30,8 +31,8 @@ for the operator security settings (host-key verification, key dir, audit, limit
 
 ```toml
 [dependencies]
-execkit = "0.2"                                   # local + SSH + Docker
-# execkit = { version = "0.2", default-features = false }  # local + Docker only (no SSH; no russh/tokio)
+execkit = "0.3"                                   # local + SSH + Docker
+# execkit = { version = "0.3", default-features = false }  # local + Docker only (no SSH; no russh/tokio)
 ```
 
 ```rust
