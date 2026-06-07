@@ -7,6 +7,32 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.3.0](https://github.com/blinkingbit-oss/execkit/compare/execkit-v0.2.0...execkit-v0.3.0) - 2026-06-07
+
+### Added
+
+- *(checkpoint)* auto-snapshot before changing remote commands
+- *(checkpoint)* remote-only checkpoint/restore/list API + lazy git init
+- *(checkpoint)* Checkpointer config, git command builders, parsers
+- *(checkpoint)* conservative read-only command classifier
+- *(checkpoint)* error variant + checkpoint types + module skeleton
+
+### Fixed
+
+- *(checkpoint)* close <(...) bypass, drop uniq, re-check poison (pre-merge review)
+- *(checkpoint)* tighten read-only classifier (final review)
+- *(checkpoint)* run git in the work-tree (-C) + space-delimited log
+
+### Other
+
+- drop stray em-dashes in source comments
+- reflect six MCP tools (checkpoint/restore) in README
+- checkpoints feature + git-on-remote prerequisite
+- *(checkpoint)* Docker integration (roundtrip, auto-skip, multi-path)
+- rustfmt the checkpoint module + session refactor
+- *(session)* extract run_framed; hold an optional Checkpointer
+- fix stale version refs after 0.2.0 bump
+
 ## [0.2.0](https://github.com/blinkingbit-oss/execkit/compare/execkit-v0.1.3...execkit-v0.2.0) - 2026-06-06
 
 ### Added
