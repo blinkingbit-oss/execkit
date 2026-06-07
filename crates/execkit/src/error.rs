@@ -28,6 +28,11 @@ pub enum Error {
     /// Blocked by the advisory policy before reaching the shell.
     #[error("blocked by policy: {0}")]
     PolicyDenied(String),
+
+    /// The operation is not supported for this session (e.g. checkpoints on a
+    /// local session, or git missing on the remote).
+    #[error("unsupported: {0}")]
+    Unsupported(String),
 }
 
 pub type Result<T> = std::result::Result<T, Error>;

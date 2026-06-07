@@ -28,9 +28,11 @@ mod output;
 mod policy;
 mod redact;
 mod session;
+pub mod checkpoint;
 pub mod transport;
 
 pub use audit::AuditLog;
+pub use checkpoint::{Checkpoint, CheckpointId, RestoreReport};
 pub use error::{Error, Result};
 pub use exec::{ExecResult, ShellState};
 pub use output::strip_ansi;
