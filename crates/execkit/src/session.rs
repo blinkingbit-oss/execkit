@@ -147,10 +147,9 @@ impl Session {
         if self.poisoned {
             return Err(Error::SessionPoisoned);
         }
-        // Fail fast on a bad grep regex BEFORE running the command.
+        // Fail fast on a bad/oversized grep regex BEFORE running the command.
         if let Some(g) = &budget.grep {
-            regex::Regex::new(&g.pattern)
-                .map_err(|e| Error::Budget(format!("invalid grep pattern: {e}")))?;
+            budget::compile_grep(&g.pattern)?;
         }
         if let Some(p) = &self.policy {
             if let Err(reason) = p.check(command) {

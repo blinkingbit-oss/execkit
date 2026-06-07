@@ -280,6 +280,26 @@ fn keep_label(keep: Keep) -> Option<&'static str> {
     }
 }
 
+/// Max grep pattern length. The pattern is agent/MCP-controlled (untrusted), so
+/// bound it: a huge pattern can be expensive to COMPILE even though matching is
+/// linear. Paired with a compiled-program size limit below.
+const MAX_GREP_PATTERN_LEN: usize = 4096;
+
+/// Compile a grep pattern defensively (length cap + bounded compiled size) so an
+/// untrusted caller cannot submit one that is pathologically costly to compile.
+pub(crate) fn compile_grep(pattern: &str) -> Result<regex::Regex> {
+    if pattern.len() > MAX_GREP_PATTERN_LEN {
+        return Err(Error::Budget(format!(
+            "grep pattern too long ({} bytes; max {MAX_GREP_PATTERN_LEN})",
+            pattern.len()
+        )));
+    }
+    regex::RegexBuilder::new(pattern)
+        .size_limit(1 << 20) // 1 MiB compiled-program cap
+        .build()
+        .map_err(|e| Error::Budget(format!("invalid grep pattern: {e}")))
+}
+
 /// Shape one already-redacted stream. Returns (text, report, char_capped).
 pub(crate) fn apply(
     text: &str,
@@ -292,8 +312,7 @@ pub(crate) fn apply(
     let mut idx: Vec<usize> = (0..total).collect();
     let mut parts: Vec<&str> = Vec::new();
     if let Some(g) = &budget.grep {
-        let re = regex::Regex::new(&g.pattern)
-            .map_err(|e| Error::Budget(format!("invalid grep pattern: {e}")))?;
+        let re = compile_grep(&g.pattern)?;
         idx = grep_keep_indices(&content, &re, g.context);
         parts.push("grep");
     }
@@ -368,6 +387,16 @@ mod apply_tests {
     fn invalid_regex_errors() {
         let err = apply("x", &Budget::grep("("), 100).unwrap_err();
         assert!(matches!(err, Error::Budget(_)));
+    }
+
+    #[test]
+    fn oversized_pattern_rejected() {
+        let huge = "a".repeat(MAX_GREP_PATTERN_LEN + 1);
+        let err = apply("x", &Budget::grep(huge), 100).unwrap_err();
+        match err {
+            Error::Budget(m) => assert!(m.contains("too long"), "{m}"),
+            other => panic!("expected Budget error, got {other:?}"),
+        }
     }
 
     #[test]
