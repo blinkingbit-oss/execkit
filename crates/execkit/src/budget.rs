@@ -170,11 +170,14 @@ fn keep_subset(idx: &[usize], keep: Keep) -> Vec<usize> {
         Keep::Tail(k) => idx[n.saturating_sub(k)..].to_vec(),
         Keep::Head(k) => idx[..k.min(n)].to_vec(),
         Keep::HeadTail(h, t) => {
-            if h + t >= n {
+            // `h`/`t` are untrusted (usize straight from JSON); use saturating
+            // math and clamp the slice bounds so extreme values can't overflow or
+            // index out of range - they just collapse to "keep everything".
+            if h.saturating_add(t) >= n {
                 idx.to_vec()
             } else {
-                let mut v = idx[..h].to_vec();
-                v.extend_from_slice(&idx[n - t..]);
+                let mut v = idx[..h.min(n)].to_vec();
+                v.extend_from_slice(&idx[n - t.min(n)..]);
                 v
             }
         }
@@ -232,6 +235,18 @@ mod keep_tests {
         assert_eq!(keep_subset(&idx, Keep::Head(99)), idx);
         assert_eq!(keep_subset(&idx, Keep::HeadTail(2, 2)), idx); // h+t>=n -> all
         assert!(keep_subset(&idx, Keep::Tail(0)).is_empty());
+    }
+
+    #[test]
+    fn keep_headtail_extreme_counts_do_not_panic() {
+        // Untrusted usize from JSON: must not overflow `h+t` nor index OOB.
+        let idx: Vec<usize> = (0..20).collect();
+        assert_eq!(keep_subset(&idx, Keep::HeadTail(usize::MAX, 1)), idx);
+        assert_eq!(keep_subset(&idx, Keep::HeadTail(1, usize::MAX)), idx);
+        assert_eq!(
+            keep_subset(&idx, Keep::HeadTail(usize::MAX, usize::MAX)),
+            idx
+        );
     }
 
     #[test]

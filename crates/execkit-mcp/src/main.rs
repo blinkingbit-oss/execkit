@@ -282,7 +282,7 @@ impl ExeckitServer {
         description = "Run a command in a session; returns a structured ExecResult JSON \
                           (stdout, stderr, exit_code, duration_ms, cwd, truncated). \
                           Optionally pass budget to shape output: {grep:{pattern,context?}, \
-                          keep:{mode:\"tail\"|\"head\"|\"head_tail\",n?|head?+tail?}, max_chars?}. \
+                          keep:{mode:\"all\"|\"tail\"|\"head\"|\"head_tail\",n?|head?+tail?}, max_chars?}. \
                           Shaping is line-based, client-side, AFTER secret redaction; it never \
                           changes the exit code or side effects. When applied, the result \
                           includes a budget report (per-stream mode + lines_total/lines_kept)."
