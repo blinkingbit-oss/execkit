@@ -22,11 +22,24 @@ fence before running.
 ## Checkpoints (remote only)
 
 On SSH/Docker sessions execkit can snapshot the workspace before changing commands
-and restore it on demand - a filesystem "undo." **Requires `git` on the remote
-host.** It undoes FILES only, never side effects (DB writes, network, installs).
-Control it via `session_create`: `auto_snapshot` (default true), `workspace`
-(root), `paths` (sub-dirs). If git is absent, auto-snapshot disables itself and
-checkpoint calls return a clear "install git on the remote" error.
+and restore it on demand - a filesystem "undo." It undoes FILES only, never side
+effects (DB writes, network, installs).
+
+Two requirements: **`git` on the remote host**, and an explicit **`workspace`**.
+Without a `workspace`, checkpoints and auto-snapshot are disabled - execkit will
+**not** default to the cwd or home directory (snapshotting `$HOME` is slow and
+would capture secrets). Set `workspace` to the project dir you want undo for (use
+`$HOME` explicitly if you really mean it).
+
+Control it via `session_create`:
+- `workspace` (root - REQUIRED to enable checkpoints)
+- `auto_snapshot` (default true; effective only with a workspace)
+- `paths` (sub-dirs under the root)
+- `checkpoint_ignores` (extra gitignore-style patterns; added to the built-in
+  defaults: `.git`, `node_modules`, build dirs, caches, `.ssh`, `.aws`, ...)
+
+If git is absent, auto-snapshot disables itself and checkpoint calls return a clear
+"install git on the remote" error.
 
 ## Output budgets
 

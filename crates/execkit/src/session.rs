@@ -202,7 +202,10 @@ impl Session {
     /// for local sessions, when auto is off, for read-only commands, and silently
     /// if git is missing on the remote (so the user's command still runs).
     fn maybe_auto_snapshot(&mut self, command: &str) {
-        let should = matches!(&self.checkpointer, Some(cp) if cp.auto && !cp.git_unavailable)
+        // Auto-snapshot only when a workspace is explicitly set: without one we
+        // will NOT silently snapshot the cwd (often $HOME - slow + leaks secrets).
+        let should = matches!(&self.checkpointer,
+            Some(cp) if cp.auto && !cp.git_unavailable && cp.workspace.is_some())
             && !checkpoint::is_read_only(command);
         if !should {
             return;
@@ -257,9 +260,22 @@ impl Session {
         self
     }
 
+    /// Add exclude patterns (gitignore syntax) to snapshots, on top of the
+    /// built-in defaults. Written to the shadow repo's info/exclude. No-op on local.
+    pub fn with_checkpoint_ignores<I, S>(mut self, ignores: I) -> Self
+    where
+        I: IntoIterator<Item = S>,
+        S: Into<String>,
+    {
+        if let Some(cp) = &mut self.checkpointer {
+            cp.set_ignores(ignores.into_iter().map(Into::into).collect());
+        }
+        self
+    }
+
     /// Take a checkpoint now. Remote-only.
     pub fn checkpoint(&mut self, label: Option<&str>) -> Result<crate::CheckpointId> {
-        self.require_remote()?;
+        self.require_workspace()?;
         self.ensure_init()?;
         let label = label.unwrap_or("checkpoint").to_string();
         let root = self.cp_root();
@@ -277,7 +293,7 @@ impl Session {
 
     /// List checkpoints, newest first. Remote-only.
     pub fn checkpoints(&mut self) -> Result<Vec<Checkpoint>> {
-        self.require_remote()?;
+        self.require_workspace()?;
         if !self.checkpointer.as_ref().unwrap().initialized {
             return Ok(vec![]);
         }
@@ -289,7 +305,7 @@ impl Session {
 
     /// Restore the workspace files to a checkpoint. Remote-only.
     pub fn restore(&mut self, id: &crate::CheckpointId) -> Result<RestoreReport> {
-        self.require_remote()?;
+        self.require_workspace()?;
         let root = self.cp_root();
         // Count differing files BEFORE reverting (best-effort; informational).
         let diff_cmd = self
@@ -322,7 +338,7 @@ impl Session {
 
     /// Restore the most recent checkpoint. Remote-only.
     pub fn restore_last(&mut self) -> Result<RestoreReport> {
-        self.require_remote()?;
+        self.require_workspace()?;
         let last = self
             .checkpointer
             .as_ref()
@@ -338,6 +354,19 @@ impl Session {
             Some(_) => Ok(()),
             None => Err(Error::Unsupported(
                 "checkpoints are available only for remote sessions".into(),
+            )),
+        }
+    }
+
+    /// Remote AND an explicit workspace set (checkpoints never default to cwd).
+    fn require_workspace(&self) -> Result<()> {
+        self.require_remote()?;
+        match &self.checkpointer {
+            Some(cp) if cp.workspace.is_some() => Ok(()),
+            _ => Err(Error::Unsupported(
+                "checkpoints require an explicit workspace; set it with with_workspace() \
+                 (library) or the 'workspace' param (MCP)"
+                    .into(),
             )),
         }
     }
@@ -373,11 +402,20 @@ impl Session {
                     .into(),
             ));
         }
-        // resolve root: explicit workspace, else current cwd
-        let root = match self.checkpointer.as_ref().unwrap().workspace.clone() {
-            Some(w) => w,
-            None => self.run_framed("pwd")?.stdout.trim().to_string(),
-        };
+        // An explicit workspace is REQUIRED - never fall back to cwd ($HOME).
+        let root = self
+            .checkpointer
+            .as_ref()
+            .unwrap()
+            .workspace
+            .clone()
+            .ok_or_else(|| {
+                Error::Unsupported(
+                    "checkpoints require an explicit workspace; set it with \
+                     with_workspace() (library) or the 'workspace' param (MCP)"
+                        .into(),
+                )
+            })?;
         let init = self.checkpointer.as_ref().unwrap().init_cmd(&root);
         let f = self.run_framed(&init)?;
         if f.exit_code != 0 {

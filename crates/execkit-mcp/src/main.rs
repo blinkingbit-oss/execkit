@@ -122,15 +122,21 @@ struct CreateParams {
     /// Optional command denylist (program names).
     #[serde(default)]
     deny: Vec<String>,
-    /// Auto-snapshot before changing remote commands (default true; remote only).
+    /// Auto-snapshot before changing remote commands (default true, but only takes
+    /// effect once `workspace` is set; remote only).
     #[serde(default = "default_true")]
     auto_snapshot: bool,
-    /// Remote workspace root for checkpoints (optional; default: cwd at 1st snapshot).
+    /// Remote workspace root for checkpoints. REQUIRED to enable checkpoints; there
+    /// is no default (it will not snapshot the cwd/home dir).
     #[serde(default)]
     workspace: Option<String>,
     /// Sub-paths under the root to checkpoint (optional; default: whole root).
     #[serde(default)]
     paths: Vec<String>,
+    /// Extra exclude patterns (gitignore syntax) added to the snapshot, on top of
+    /// the built-in defaults (.git, node_modules, caches, .ssh, ...).
+    #[serde(default)]
+    checkpoint_ignores: Vec<String>,
     /// Default output budget for every exec in this session (optional).
     #[serde(default)]
     output_budget: Option<BudgetParams>,
@@ -248,8 +254,10 @@ impl ExeckitServer {
                        \"docker\". ssh needs host, user, and password or key_path; docker needs \
                        container (a running container name/id). Optional fingerprint (pin host \
                        key), allow/deny command lists. Returns a session_id. \
-                       Remote sessions support workspace checkpoints (auto_snapshot, \
-                       workspace, paths) - requires git on the remote. \
+                       Remote sessions support workspace checkpoints - requires git on \
+                       the remote AND an explicit workspace (set 'workspace'; without it \
+                       checkpoints/auto_snapshot are disabled, never defaulting to the \
+                       home dir). Tune with auto_snapshot, paths, checkpoint_ignores. \
                        Pass output_budget (same shape as session_exec's budget) to \
                        default-shape every command's output."
     )]
@@ -469,7 +477,8 @@ fn build_session(p: CreateParams, config: &Config) -> Result<Session, execkit::E
     };
     session = session
         .with_auto_snapshot(p.auto_snapshot)
-        .with_checkpoint_paths(p.paths.clone());
+        .with_checkpoint_paths(p.paths.clone())
+        .with_checkpoint_ignores(p.checkpoint_ignores.clone());
     if let Some(ws) = p.workspace.clone() {
         session = session.with_workspace(ws);
     }

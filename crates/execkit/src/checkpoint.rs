@@ -68,8 +68,12 @@ pub(crate) fn is_read_only(command: &str) -> bool {
     true
 }
 
-/// Directories never captured (kept fast + avoids nuking regenerable trees).
+/// Patterns never captured: regenerable build trees (kept fast + avoids nuking
+/// them on restore) plus common cache/secret paths (defense in depth - you should
+/// not snapshot or restore these even when the workspace is, say, a home dir).
+/// Users add more via `Session::with_checkpoint_ignores`.
 const DEFAULT_IGNORES: &[&str] = &[
+    // regenerable build output
     ".git",
     "node_modules",
     "target",
@@ -78,6 +82,12 @@ const DEFAULT_IGNORES: &[&str] = &[
     ".mypy_cache",
     "dist",
     "build",
+    // caches + secrets (never want these in a snapshot)
+    ".cache",
+    ".ssh",
+    ".gnupg",
+    ".aws",
+    ".netrc",
 ];
 
 /// Single-quote a value for safe use in a `/bin/sh` command.
@@ -90,8 +100,9 @@ pub(crate) fn shq(s: &str) -> String {
 pub(crate) struct Checkpointer {
     token: String,
     pub auto: bool,
-    pub workspace: Option<String>, // explicit root; else resolved lazily from cwd
+    pub workspace: Option<String>, // explicit root; REQUIRED (no cwd fallback)
     paths: Vec<String>,            // sub-paths under root; default ["."]
+    ignores: Vec<String>,          // extra exclude patterns (additive to defaults)
     pub root: Option<String>,      // resolved root (set on first snapshot)
     pub initialized: bool,
     pub git_unavailable: bool,
@@ -110,6 +121,7 @@ impl Checkpointer {
             auto,
             workspace,
             paths,
+            ignores: Vec::new(),
             root: None,
             initialized: false,
             git_unavailable: false,
@@ -143,7 +155,10 @@ impl Checkpointer {
 
     /// One-time: detect git, ensure the shadow repo exists with excludes set.
     pub fn init_cmd(&self, root: &str) -> String {
-        let excludes = DEFAULT_IGNORES.join("\n");
+        // Built-in defaults first, then any user-supplied patterns (additive).
+        let mut all: Vec<&str> = DEFAULT_IGNORES.to_vec();
+        all.extend(self.ignores.iter().map(String::as_str));
+        let excludes = all.join("\n");
         let g = self.git(root);
         format!(
             "mkdir -p \"$HOME/.execkit\" && {g} init -q && \
@@ -181,6 +196,10 @@ impl Checkpointer {
         // (NOT a control char): SHA and unixtime are space-free, so splitn(3, ' ')
         // is unambiguous, and it survives the PTY + framing unmangled.
         format!("{} log --format='%H %ct %s'", self.git(root))
+    }
+
+    pub fn set_ignores(&mut self, ignores: Vec<String>) {
+        self.ignores = ignores;
     }
 
     pub fn set_paths(&mut self, paths: Vec<String>) {
@@ -287,6 +306,19 @@ mod builder_tests {
         // non-commit noise lines are ignored (only 40-hex-sha lines count).
         let noisy = format!("{a} 1700000000 x\n~~~ junk ~~~\n");
         assert_eq!(super::parse_log(&noisy).len(), 1);
+    }
+
+    #[test]
+    fn init_cmd_excludes_defaults_plus_user_ignores() {
+        let mut cp = Checkpointer::new("tok", true, Some("/srv/app".into()), vec![".".into()]);
+        cp.set_ignores(vec!["*.log".into(), "secrets".into()]);
+        let cmd = cp.init_cmd("/srv/app");
+        // a built-in default, the new secret default, and both user patterns.
+        assert!(cmd.contains("node_modules"));
+        assert!(cmd.contains(".ssh"));
+        assert!(cmd.contains("*.log"));
+        assert!(cmd.contains("secrets"));
+        assert!(cmd.contains("info/exclude"));
     }
 }
 

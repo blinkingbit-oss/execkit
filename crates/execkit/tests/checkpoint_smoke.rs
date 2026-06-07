@@ -105,3 +105,52 @@ fn multi_path_only_reverts_listed_dirs() {
     assert_eq!(s.exec(&format!("cat {ws}/src/a")).unwrap().stdout, "s1"); // reverted
     assert_eq!(s.exec(&format!("cat {ws}/docs/b")).unwrap().stdout, "d2"); // untouched
 }
+
+#[test]
+fn no_workspace_disables_checkpoints() {
+    let Ok(c) = std::env::var("EXECKIT_TEST_DOCKER") else {
+        eprintln!("skip: set EXECKIT_TEST_DOCKER=<container> (needs git) to run");
+        return;
+    };
+    // auto_snapshot defaults ON, but NO workspace is set.
+    let mut s = Session::docker(&c).expect("docker session");
+    // A changing command still runs fine; the auto-snapshot path is skipped
+    // because there is no workspace (so it never defaults to the cwd / home dir).
+    // (We assert the deterministic, isolation-safe behavior below rather than the
+    // shared ~/.execkit dir, which other parallel tests legitimately create.)
+    s.exec("mkdir -p /root/nw && printf v > /root/nw/f")
+        .unwrap();
+    // Explicit ops fail loudly with a clear, workspace-mentioning error.
+    let e1 = s.checkpoint(None).unwrap_err();
+    assert!(
+        matches!(&e1, execkit::Error::Unsupported(m) if m.contains("workspace")),
+        "checkpoint: got {e1:?}"
+    );
+    let e2 = s.checkpoints().unwrap_err();
+    assert!(
+        matches!(&e2, execkit::Error::Unsupported(m) if m.contains("workspace")),
+        "checkpoints: got {e2:?}"
+    );
+}
+
+#[test]
+fn custom_ignores_are_not_snapshotted_or_restored() {
+    let Ok(c) = std::env::var("EXECKIT_TEST_DOCKER") else {
+        eprintln!("skip: set EXECKIT_TEST_DOCKER=<container> (needs git) to run");
+        return;
+    };
+    let ws = "/root/ck_ignores";
+    let mut s = session(&c, ws).with_checkpoint_ignores(["*.log"]);
+    s.exec(&format!(
+        "rm -rf {ws} && mkdir -p {ws} && printf v1 > {ws}/keep.txt && printf L1 > {ws}/app.log"
+    ))
+    .unwrap();
+    let id = s.checkpoint(Some("base")).unwrap();
+    s.exec(&format!(
+        "printf v2 > {ws}/keep.txt; printf L2 > {ws}/app.log"
+    ))
+    .unwrap();
+    s.restore(&id).unwrap();
+    assert_eq!(s.exec(&format!("cat {ws}/keep.txt")).unwrap().stdout, "v1"); // reverted
+    assert_eq!(s.exec(&format!("cat {ws}/app.log")).unwrap().stdout, "L2"); // ignored -> untouched
+}
