@@ -4,6 +4,8 @@
 //! -> char-cap) operates on already ANSI-stripped, secret-redacted text and is
 //! applied independently to stdout and stderr by `Session`.
 
+use crate::error::{Error, Result};
+use crate::output::bound;
 use serde::{Deserialize, Serialize};
 
 /// A per-stream output-shaping pipeline. `Budget::default()` is a no-op.
@@ -248,5 +250,131 @@ mod keep_tests {
         let content: Vec<&str> = "a\nb".lines().collect();
         assert_eq!(render(&content, &[], 2), "... 2 lines elided ...");
         assert_eq!(render(&[], &[], 0), "");
+    }
+}
+
+/// What a budget did to one stream. Present on `ExecResult` only when a
+/// non-default budget was applied.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct StreamReport {
+    /// Short label of the pipeline that ran: "all","tail","head","head_tail",
+    /// "grep", or composed like "grep+tail".
+    pub mode: String,
+    pub lines_total: usize,
+    pub lines_kept: usize,
+}
+
+/// Per-stream reports for a shaped `ExecResult`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct BudgetReport {
+    pub stdout: StreamReport,
+    pub stderr: StreamReport,
+}
+
+fn keep_label(keep: Keep) -> Option<&'static str> {
+    match keep {
+        Keep::All => None,
+        Keep::Tail(_) => Some("tail"),
+        Keep::Head(_) => Some("head"),
+        Keep::HeadTail(_, _) => Some("head_tail"),
+    }
+}
+
+/// Shape one already-redacted stream. Returns (text, report, char_capped).
+#[allow(dead_code)] // used in Task 5+ (session wiring)
+pub(crate) fn apply(
+    text: &str,
+    budget: &Budget,
+    fallback_max_chars: usize,
+) -> Result<(String, StreamReport, bool)> {
+    let content: Vec<&str> = text.lines().collect();
+    let total = content.len();
+
+    let mut idx: Vec<usize> = (0..total).collect();
+    let mut parts: Vec<&str> = Vec::new();
+    if let Some(g) = &budget.grep {
+        let re = regex::Regex::new(&g.pattern)
+            .map_err(|e| Error::Budget(format!("invalid grep pattern: {e}")))?;
+        idx = grep_keep_indices(&content, &re, g.context);
+        parts.push("grep");
+    }
+    idx = keep_subset(&idx, budget.keep);
+    if let Some(l) = keep_label(budget.keep) {
+        parts.push(l);
+    }
+    let lines_kept = idx.len();
+    let rendered = render(&content, &idx, total);
+
+    let cap = budget.max_chars.unwrap_or(fallback_max_chars);
+    let (capped_text, capped) = bound(&rendered, cap);
+
+    let mode = if parts.is_empty() {
+        "all".to_string()
+    } else {
+        parts.join("+")
+    };
+    Ok((
+        capped_text,
+        StreamReport {
+            mode,
+            lines_total: total,
+            lines_kept,
+        },
+        capped,
+    ))
+}
+
+#[cfg(test)]
+mod apply_tests {
+    use super::*;
+
+    #[test]
+    fn default_budget_is_passthrough_until_cap() {
+        let (t, r, capped) = apply("a\nb\nc", &Budget::default(), 1000).unwrap();
+        assert_eq!(t, "a\nb\nc");
+        assert_eq!(r.mode, "all");
+        assert_eq!((r.lines_total, r.lines_kept), (3, 3));
+        assert!(!capped);
+    }
+
+    #[test]
+    fn tail_keeps_last_n_with_report() {
+        let text = (0..100)
+            .map(|i| i.to_string())
+            .collect::<Vec<_>>()
+            .join("\n");
+        let (t, r, _) = apply(&text, &Budget::tail(3), 100_000).unwrap();
+        assert!(t.starts_with("... 97 lines elided ..."));
+        assert!(t.ends_with("97\n98\n99"));
+        assert_eq!(
+            (r.lines_total, r.lines_kept, r.mode.as_str()),
+            (100, 3, "tail")
+        );
+    }
+
+    #[test]
+    fn grep_then_tail_composes() {
+        let mut lines: Vec<String> = (0..50).map(|i| format!("info {i}")).collect();
+        lines[10] = "ERROR ten".into();
+        lines[40] = "ERROR forty".into();
+        let text = lines.join("\n");
+        let b = Budget::grep("ERROR").keep(Keep::Tail(1));
+        let (t, r, _) = apply(&text, &b, 100_000).unwrap();
+        assert!(t.contains("ERROR forty"));
+        assert!(!t.contains("ERROR ten")); // tail(1) of the 2 matches
+        assert_eq!((r.lines_kept, r.mode.as_str()), (1, "grep+tail"));
+    }
+
+    #[test]
+    fn invalid_regex_errors() {
+        let err = apply("x", &Budget::grep("("), 100).unwrap_err();
+        assert!(matches!(err, Error::Budget(_)));
+    }
+
+    #[test]
+    fn char_cap_flags_capped() {
+        let text = "x".repeat(1000);
+        let (_t, _r, capped) = apply(&text, &Budget::default(), 10).unwrap();
+        assert!(capped);
     }
 }
