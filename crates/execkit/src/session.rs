@@ -132,6 +132,11 @@ impl Session {
             }
         }
         self.maybe_auto_snapshot(command);
+        // A slow auto-snapshot can time out and poison the session; running the
+        // real command now would desync framing on the still-busy channel.
+        if self.poisoned {
+            return Err(Error::SessionPoisoned);
+        }
         let started = Instant::now();
         let f = self.run_framed(command)?;
         let (stdout, t1) = bound(&redact(&f.stdout), self.max_output);

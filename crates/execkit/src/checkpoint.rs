@@ -28,19 +28,26 @@ pub struct RestoreReport {
 
 /// Programs that never write the filesystem in normal use. Conservative:
 /// anything not here, any redirection, or command substitution => snapshot.
-// Note: `find` (-delete/-exec), `env`/`printenv` (run an arbitrary command), and
-// `sort`/`sed`/`awk`/`tee` are deliberately EXCLUDED - they can write or execute,
-// so they always snapshot.
+// Note: `find` (-delete/-exec), `env`/`printenv` (run an arbitrary command),
+// `uniq` (writes via its OUTPUT positional arg), and `sort`/`sed`/`awk`/`tee` are
+// deliberately EXCLUDED - they can write or execute, so they always snapshot.
+// Membership here assumes default (filesystem-read) usage of the program.
 pub(crate) const READ_ONLY: &[&str] = &[
     "ls", "cat", "head", "tail", "grep", "egrep", "fgrep", "pwd", "echo", "printf", "which",
-    "whoami", "id", "hostname", "uname", "date", "stat", "file", "wc", "cut", "uniq", "ps", "df",
-    "du", "free", "uptime",
+    "whoami", "id", "hostname", "uname", "date", "stat", "file", "wc", "cut", "ps", "df", "du",
+    "free", "uptime",
 ];
 
 /// True if `command` is unambiguously read-only (auto-snapshot can be skipped).
 pub(crate) fn is_read_only(command: &str) -> bool {
-    // Redirections and command substitution can write or hide writes.
-    if command.contains('>') || command.contains("$(") || command.contains('`') {
+    // Redirections, command substitution `$(...)`/backtick, and process
+    // substitution `<(...)` can write or hide writes/execution. (`>(...)` is
+    // covered by the `>` check.)
+    if command.contains('>')
+        || command.contains("$(")
+        || command.contains('`')
+        || command.contains("<(")
+    {
         return false;
     }
     // Every segment of a pipeline / chain / multi-line script must start with an
@@ -307,5 +314,7 @@ mod read_only_tests {
         assert!(!is_read_only("find . -delete")); // find can delete / -exec
         assert!(!is_read_only("env X=1 rm -rf y")); // env runs a command
         assert!(!is_read_only("uptime\nrm -rf /tmp/x")); // newline -> second line writes
+        assert!(!is_read_only("cat <(rm x)")); // process substitution executes rm
+        assert!(!is_read_only("uniq in out")); // uniq OUTPUT positional writes a file
     }
 }
