@@ -154,3 +154,21 @@ fn custom_ignores_are_not_snapshotted_or_restored() {
     assert_eq!(s.exec(&format!("cat {ws}/keep.txt")).unwrap().stdout, "v1"); // reverted
     assert_eq!(s.exec(&format!("cat {ws}/app.log")).unwrap().stdout, "L2"); // ignored -> untouched
 }
+
+#[test]
+fn restore_before_any_checkpoint_errors_cleanly() {
+    let Ok(c) = std::env::var("EXECKIT_TEST_DOCKER") else {
+        eprintln!("skip: set EXECKIT_TEST_DOCKER=<container> (needs git) to run");
+        return;
+    };
+    // Workspace set, but no snapshot ever taken: restore must error clearly and
+    // never run git against a default cwd.
+    let mut s = session(&c, "/root/ck_noinit").with_auto_snapshot(false);
+    let err = s
+        .restore(&execkit::CheckpointId("deadbeef".into()))
+        .unwrap_err();
+    assert!(
+        matches!(&err, execkit::Error::Unsupported(m) if m.contains("no checkpoint")),
+        "got {err:?}"
+    );
+}

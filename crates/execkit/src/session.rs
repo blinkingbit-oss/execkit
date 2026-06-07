@@ -236,8 +236,9 @@ impl Session {
         self
     }
 
-    /// Set the remote workspace root checkpoints anchor at (default: cwd at first
-    /// snapshot). No-op on local.
+    /// Set the remote workspace root checkpoints anchor at. REQUIRED to enable
+    /// checkpoints - there is no default and it never falls back to the cwd/home
+    /// dir. No-op on local.
     pub fn with_workspace(mut self, root: impl Into<String>) -> Self {
         if let Some(cp) = &mut self.checkpointer {
             cp.workspace = Some(root.into());
@@ -306,6 +307,13 @@ impl Session {
     /// Restore the workspace files to a checkpoint. Remote-only.
     pub fn restore(&mut self, id: &crate::CheckpointId) -> Result<RestoreReport> {
         self.require_workspace()?;
+        // No shadow repo yet => nothing to restore. Guard before cp_root() so we
+        // never point git at a default cwd.
+        if !self.checkpointer.as_ref().unwrap().initialized {
+            return Err(Error::Unsupported(
+                "no checkpoints yet in this session".into(),
+            ));
+        }
         let root = self.cp_root();
         // Count differing files BEFORE reverting (best-effort; informational).
         let diff_cmd = self
