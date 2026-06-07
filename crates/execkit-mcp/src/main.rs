@@ -31,7 +31,9 @@ use rmcp::{tool, tool_handler, tool_router, ErrorData, ServerHandler, ServiceExt
 use schemars::JsonSchema;
 use serde::Deserialize;
 
-use execkit::{AuditLog, HostKeyVerification, Policy, Session, SshAuth, SshConfig};
+use execkit::{
+    AuditLog, Budget, Grep, HostKeyVerification, Keep, Policy, Session, SshAuth, SshConfig,
+};
 
 /// A session guarded by its own mutex (execkit::Session is Send but not Sync;
 /// blocking `exec` runs on a blocking thread holding only this lock).
@@ -129,10 +131,71 @@ struct CreateParams {
     /// Sub-paths under the root to checkpoint (optional; default: whole root).
     #[serde(default)]
     paths: Vec<String>,
+    /// Default output budget for every exec in this session (optional).
+    #[serde(default)]
+    output_budget: Option<BudgetParams>,
 }
 
 fn default_true() -> bool {
     true
+}
+
+#[derive(Deserialize, JsonSchema)]
+struct GrepParams {
+    /// Regex; keep only matching lines.
+    pattern: String,
+    /// Context lines kept on each side of a match (default 0).
+    #[serde(default)]
+    context: usize,
+}
+
+#[derive(Deserialize, JsonSchema)]
+struct KeepParams {
+    /// One of: "all", "tail", "head", "head_tail".
+    mode: String,
+    /// Line count for tail/head.
+    #[serde(default)]
+    n: Option<usize>,
+    /// For head_tail: leading lines.
+    #[serde(default)]
+    head: Option<usize>,
+    /// For head_tail: trailing lines.
+    #[serde(default)]
+    tail: Option<usize>,
+}
+
+/// Output-shaping budget: grep -> line-keep -> char cap. All fields optional.
+#[derive(Deserialize, JsonSchema)]
+struct BudgetParams {
+    #[serde(default)]
+    grep: Option<GrepParams>,
+    #[serde(default)]
+    keep: Option<KeepParams>,
+    #[serde(default)]
+    max_chars: Option<usize>,
+}
+
+impl BudgetParams {
+    fn to_budget(&self) -> Result<Budget, String> {
+        let keep = match &self.keep {
+            None => Keep::All,
+            Some(k) => match k.mode.as_str() {
+                "all" => Keep::All,
+                "tail" => Keep::Tail(k.n.unwrap_or(0)),
+                "head" => Keep::Head(k.n.unwrap_or(0)),
+                "head_tail" => Keep::HeadTail(k.head.unwrap_or(0), k.tail.unwrap_or(0)),
+                other => return Err(format!("unknown keep mode: {other}")),
+            },
+        };
+        Ok(Budget {
+            grep: self.grep.as_ref().map(|g| Grep {
+                pattern: g.pattern.clone(),
+                context: g.context,
+            }),
+            keep,
+            max_chars: self.max_chars,
+        })
+    }
 }
 
 #[derive(Deserialize, JsonSchema)]
@@ -141,6 +204,9 @@ struct ExecParams {
     session_id: String,
     /// The shell command to run.
     command: String,
+    /// Shape THIS command's output (overrides the session default).
+    #[serde(default)]
+    budget: Option<BudgetParams>,
 }
 
 #[derive(Deserialize, JsonSchema)]
@@ -183,7 +249,9 @@ impl ExeckitServer {
                        container (a running container name/id). Optional fingerprint (pin host \
                        key), allow/deny command lists. Returns a session_id. \
                        Remote sessions support workspace checkpoints (auto_snapshot, \
-                       workspace, paths) - requires git on the remote."
+                       workspace, paths) - requires git on the remote. \
+                       Pass output_budget (same shape as session_exec's budget) to \
+                       default-shape every command's output."
     )]
     async fn session_create(
         &self,
@@ -212,7 +280,12 @@ impl ExeckitServer {
 
     #[tool(
         description = "Run a command in a session; returns a structured ExecResult JSON \
-                          (stdout, stderr, exit_code, duration_ms, cwd, truncated)."
+                          (stdout, stderr, exit_code, duration_ms, cwd, truncated). \
+                          Optionally pass budget to shape output: {grep:{pattern,context?}, \
+                          keep:{mode:\"tail\"|\"head\"|\"head_tail\",n?|head?+tail?}, max_chars?}. \
+                          Shaping is line-based, client-side, AFTER secret redaction; it never \
+                          changes the exit code or side effects. When applied, the result \
+                          includes a budget report (per-stream mode + lines_total/lines_kept)."
     )]
     async fn session_exec(
         &self,
@@ -220,11 +293,19 @@ impl ExeckitServer {
     ) -> Result<CallToolResult, ErrorData> {
         let session = self.get(&p.session_id)?;
         let command = p.command;
+        let budget = match p.budget.as_ref().map(|b| b.to_budget()) {
+            Some(Ok(b)) => Some(b),
+            Some(Err(e)) => return Ok(tool_error(e)),
+            None => None,
+        };
         // Concurrent execs on the SAME session serialize on this lock (the
         // outer map lock is already released). `lock` recovers from poisoning.
-        let outcome = tokio::task::spawn_blocking(move || lock(&session).exec(&command))
-            .await
-            .map_err(internal)?;
+        let outcome = tokio::task::spawn_blocking(move || match budget {
+            Some(b) => lock(&session).exec_budgeted(&command, &b),
+            None => lock(&session).exec(&command),
+        })
+        .await
+        .map_err(internal)?;
         match outcome {
             Ok(r) => {
                 let json = serde_json::to_string_pretty(&r).map_err(internal)?;
@@ -391,6 +472,10 @@ fn build_session(p: CreateParams, config: &Config) -> Result<Session, execkit::E
         .with_checkpoint_paths(p.paths.clone());
     if let Some(ws) = p.workspace.clone() {
         session = session.with_workspace(ws);
+    }
+    if let Some(bp) = &p.output_budget {
+        let b = bp.to_budget().map_err(execkit::Error::Budget)?;
+        session = session.with_output_budget(b);
     }
     if !p.allow.is_empty() || !p.deny.is_empty() {
         session = session.with_policy(Policy {
