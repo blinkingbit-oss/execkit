@@ -206,18 +206,36 @@ printf '{end}\\n'; rm -f \"$__E\"\n",
                 acc = compacted;
                 overflowed = true;
             }
-            let Some(end_pos) = find(&acc, end_b) else { continue };
-            let Some(start_pos) = find(&acc[..end_pos], start_b) else { continue };
+            let Some(end_pos) = find(&acc, end_b) else {
+                continue;
+            };
+            let Some(start_pos) = find(&acc[..end_pos], start_b) else {
+                continue;
+            };
             let between = &acc[start_pos + start_b.len()..end_pos];
-            let seps: Vec<usize> = between.iter().enumerate()
-                .filter(|(_, b)| **b == US).map(|(i, _)| i).collect();
-            if seps.len() < 3 { continue; }
+            let seps: Vec<usize> = between
+                .iter()
+                .enumerate()
+                .filter(|(_, b)| **b == US)
+                .map(|(i, _)| i)
+                .collect();
+            if seps.len() < 3 {
+                continue;
+            }
             let exit_code: i32 = String::from_utf8_lossy(&between[seps[0] + 1..seps[1]])
-                .trim().parse().unwrap_or(-1);
+                .trim()
+                .parse()
+                .unwrap_or(-1);
             let cwd = String::from_utf8_lossy(&between[seps[1] + 1..seps[2]]).into_owned();
             let stderr = clean(&String::from_utf8_lossy(&between[seps[2] + 1..]));
             let stdout = clean(&String::from_utf8_lossy(&acc[..start_pos]));
-            return Ok(Framed { stdout, stderr, exit_code, cwd, overflowed });
+            return Ok(Framed {
+                stdout,
+                stderr,
+                exit_code,
+                cwd,
+                overflowed,
+            });
         }
     }
 }

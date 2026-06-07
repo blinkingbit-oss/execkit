@@ -34,9 +34,9 @@ pub struct RestoreReport {
 /// Programs that never write the filesystem in normal use. Conservative:
 /// anything not here, any redirection, or command substitution => snapshot.
 pub(crate) const READ_ONLY: &[&str] = &[
-    "ls", "cat", "head", "tail", "grep", "egrep", "fgrep", "find", "pwd", "echo",
-    "printf", "env", "printenv", "which", "whoami", "id", "hostname", "uname",
-    "date", "stat", "file", "wc", "cut", "uniq", "ps", "df", "du", "free", "uptime",
+    "ls", "cat", "head", "tail", "grep", "egrep", "fgrep", "find", "pwd", "echo", "printf", "env",
+    "printenv", "which", "whoami", "id", "hostname", "uname", "date", "stat", "file", "wc", "cut",
+    "uniq", "ps", "df", "du", "free", "uptime",
 ];
 
 /// True if `command` is unambiguously read-only (auto-snapshot can be skipped).
@@ -63,8 +63,14 @@ pub(crate) fn is_read_only(command: &str) -> bool {
 
 /// Directories never captured (kept fast + avoids nuking regenerable trees).
 const DEFAULT_IGNORES: &[&str] = &[
-    ".git", "node_modules", "target", ".venv", "__pycache__", ".mypy_cache",
-    "dist", "build",
+    ".git",
+    "node_modules",
+    "target",
+    ".venv",
+    "__pycache__",
+    ".mypy_cache",
+    "dist",
+    "build",
 ];
 
 /// Single-quote a value for safe use in a `/bin/sh` command.
@@ -82,12 +88,16 @@ pub(crate) struct Checkpointer {
     pub root: Option<String>,      // resolved root (set on first snapshot)
     pub initialized: bool,
     pub git_unavailable: bool,
-    pub last: Option<String>,      // last checkpoint id
+    pub last: Option<String>, // last checkpoint id
 }
 
 impl Checkpointer {
     pub fn new(token: &str, auto: bool, workspace: Option<String>, paths: Vec<String>) -> Self {
-        let paths = if paths.is_empty() { vec![".".into()] } else { paths };
+        let paths = if paths.is_empty() {
+            vec![".".into()]
+        } else {
+            paths
+        };
         Self {
             token: token.to_string(),
             auto,
@@ -106,7 +116,11 @@ impl Checkpointer {
     }
 
     fn pathspec(&self) -> String {
-        self.paths.iter().map(|p| shq(p)).collect::<Vec<_>>().join(" ")
+        self.paths
+            .iter()
+            .map(|p| shq(p))
+            .collect::<Vec<_>>()
+            .join(" ")
     }
 
     fn git(&self, root: &str) -> String {
@@ -170,7 +184,11 @@ pub(crate) fn parse_log(out: &str) -> Vec<Checkpoint> {
             }
             let created = it.next().unwrap_or("").to_string();
             let label = it.next().unwrap_or("").to_string();
-            Some(Checkpoint { id: id.to_string(), label, created })
+            Some(Checkpoint {
+                id: id.to_string(),
+                label,
+                created,
+            })
         })
         .collect()
 }
@@ -207,8 +225,12 @@ mod builder_tests {
 
     #[test]
     fn multi_path_scopes_each_path() {
-        let c = Checkpointer::new("t", true, Some("/srv/app".into()),
-            vec!["src".into(), "migrations".into()]);
+        let c = Checkpointer::new(
+            "t",
+            true,
+            Some("/srv/app".into()),
+            vec!["src".into(), "migrations".into()],
+        );
         let snap = c.snapshot_cmd("/srv/app", "x");
         assert!(snap.contains("add -- 'src' 'migrations'"));
     }
@@ -245,11 +267,11 @@ mod read_only_tests {
         assert!(is_read_only("ps aux | grep nginx"));
         // writing / ambiguous -> false
         assert!(!is_read_only("rm -rf build"));
-        assert!(!is_read_only("echo hi > f"));      // redirection
-        assert!(!is_read_only("sed -i s/a/b/ f"));  // sed not allowlisted
-        assert!(!is_read_only("ls && rm x"));       // a segment writes
-        assert!(!is_read_only("cat $(whoami)"));    // command substitution
-        assert!(!is_read_only("tee f"));            // tee can write
-        assert!(!is_read_only("npm install"));      // unknown program
+        assert!(!is_read_only("echo hi > f")); // redirection
+        assert!(!is_read_only("sed -i s/a/b/ f")); // sed not allowlisted
+        assert!(!is_read_only("ls && rm x")); // a segment writes
+        assert!(!is_read_only("cat $(whoami)")); // command substitution
+        assert!(!is_read_only("tee f")); // tee can write
+        assert!(!is_read_only("npm install")); // unknown program
     }
 }

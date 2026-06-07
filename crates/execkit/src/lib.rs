@@ -22,13 +22,13 @@
 //! ```
 
 mod audit;
+pub mod checkpoint;
 mod error;
 mod exec;
 mod output;
 mod policy;
 mod redact;
 mod session;
-pub mod checkpoint;
 pub mod transport;
 
 pub use audit::AuditLog;
