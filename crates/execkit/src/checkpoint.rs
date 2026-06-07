@@ -28,8 +28,6 @@ pub struct RestoreReport {
 
 /// Programs that never write the filesystem in normal use. Conservative:
 /// anything not here, any redirection, or command substitution => snapshot.
-// Wired into the auto-snapshot hook in Task 6; only the unit tests use it now.
-#[allow(dead_code)]
 pub(crate) const READ_ONLY: &[&str] = &[
     "ls", "cat", "head", "tail", "grep", "egrep", "fgrep", "find", "pwd", "echo", "printf", "env",
     "printenv", "which", "whoami", "id", "hostname", "uname", "date", "stat", "file", "wc", "cut",
@@ -37,8 +35,6 @@ pub(crate) const READ_ONLY: &[&str] = &[
 ];
 
 /// True if `command` is unambiguously read-only (auto-snapshot can be skipped).
-// Wired into the auto-snapshot hook in Task 6; only the unit tests use it now.
-#[allow(dead_code)]
 pub(crate) fn is_read_only(command: &str) -> bool {
     // Redirections and command substitution can write or hide writes.
     if command.contains('>') || command.contains("$(") || command.contains('`') {

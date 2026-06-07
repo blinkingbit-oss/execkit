@@ -131,7 +131,7 @@ impl Session {
                 return Err(Error::PolicyDenied(reason));
             }
         }
-        self.maybe_auto_snapshot(command); // Task 6 adds the body; stub for now:
+        self.maybe_auto_snapshot(command);
         let started = Instant::now();
         let f = self.run_framed(command)?;
         let (stdout, t1) = bound(&redact(&f.stdout), self.max_output);
@@ -153,8 +153,31 @@ impl Session {
         Ok(result)
     }
 
-    /// Stub until Task 6.
-    fn maybe_auto_snapshot(&mut self, _command: &str) {}
+    /// Before a changing remote command, take a snapshot (best-effort). Skipped
+    /// for local sessions, when auto is off, for read-only commands, and silently
+    /// if git is missing on the remote (so the user's command still runs).
+    fn maybe_auto_snapshot(&mut self, command: &str) {
+        let should = matches!(&self.checkpointer, Some(cp) if cp.auto && !cp.git_unavailable)
+            && !checkpoint::is_read_only(command);
+        if !should {
+            return;
+        }
+        match self.ensure_init() {
+            Ok(()) => {}
+            Err(_) => return, // git missing / init failed: degrade, run the command
+        }
+        let root = self.cp_root();
+        let cmd = self
+            .checkpointer
+            .as_ref()
+            .unwrap()
+            .snapshot_cmd(&root, "auto");
+        if let Ok(f) = self.run_framed(&cmd) {
+            if let Some(sha) = checkpoint::parse_sha(&f.stdout) {
+                self.checkpointer.as_mut().unwrap().last = Some(sha);
+            }
+        }
+    }
 
     /// Enable/disable auto-snapshot before changing remote commands (default on
     /// for remote sessions; no-op on local).
