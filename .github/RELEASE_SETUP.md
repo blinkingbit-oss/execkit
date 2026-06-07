@@ -73,6 +73,49 @@ git push origin :refs/tags/vX.Y.Z   # delete the tag
 git push origin vX.Y.Z              # re-push -> triggers cargo-dist
 ```
 
+## Pre-release checklist
+
+Run this before merging the Release PR (step 3 above). CI enforces most of it; the
+items marked (manual) are what a human must confirm.
+
+### Code and tests
+- [ ] `cargo fmt --all --check` clean
+- [ ] `cargo clippy --workspace --all-targets --all-features -- -D warnings` clean
+- [ ] `cargo clippy -p execkit --no-default-features --all-targets -- -D warnings` clean (lean local+Docker build, no SSH)
+- [ ] `cargo test --workspace` green
+- [ ] Real-infra e2e green - the CI jobs `ssh-e2e`, `ssh-rsa-key-e2e`, `docker-e2e`, `checkpoints-e2e` (or run locally with containers + the matching `EXECKIT_TEST_*` env)
+- [ ] CI is green on `main` for the release commit (every job)
+
+### Review (manual)
+- [ ] Substantive changes have had a code review
+- [ ] Any command built from agent/untrusted input was checked for shell injection - values go through `shq`/validation (the agent is the adversary)
+- [ ] New attack surface got a security pass
+
+### Docs (manual - release-plz does NOT edit prose)
+- [ ] Dependency version examples in `README.md` + `docs/QUICKSTART.md` match the new version. CRITICAL on a minor bump: `execkit = "0.x"` means `^0.x` and excludes the next minor, so `"0.2"` will not pull `0.3`.
+- [ ] `crates/execkit/src/lib.rs` module doc and the MCP tool list/table reflect the current transports, tools, and API
+- [ ] New features are documented; limitations and honest non-goals are stated
+- [ ] No non-ASCII typography (em-dashes, ellipses, arrows): the repo-wide grep over `git ls-files` returns 0
+- [ ] `cargo doc -p execkit --no-deps --all-features` is warning-clean (no broken/private intra-doc links)
+- [ ] The generated CHANGELOG entry reads correctly (release-plz builds it from Conventional Commits)
+
+### Security and hygiene
+- [ ] `cargo audit --ignore RUSTSEC-2023-0071` clean (no NEW advisories; revisit the ignore when russh updates)
+- [ ] No secrets/tokens committed; planning and dev docs stay in gitignored `_internal/`
+- [ ] `cargo package -p execkit --list` and `-p execkit-mcp --list` contain only intended files (no internal docs leak)
+
+### Release mechanics
+- [ ] Commits use Conventional Commits (only `feat:`/`fix:` bump the version; `docs:`/`chore:`/`ci:` do not)
+- [ ] `RELEASE_PLZ_TOKEN` is set so cargo-dist auto-builds binaries (otherwise do the manual tag re-push above)
+- [ ] Merge the Release PR
+
+### Post-release verification
+- [ ] crates.io shows the new version for BOTH `execkit` and `execkit-mcp`
+- [ ] The GitHub Release is **published (not a draft)** with all 6 binaries + `execkit-mcp-installer.sh`
+- [ ] docs.rs built the new version
+- [ ] (optional) smoke the PUBLISHED `execkit-mcp` against a real container and SSH host
+- [ ] Rotate/revoke any test credentials used during verification
+
 ## Add the other registries later
 
 - v0.2 PyPI: `maturin generate-ci github` + a PyPI Trusted Publisher.
