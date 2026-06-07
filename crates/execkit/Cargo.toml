@@ -46,6 +46,6 @@ required-features = ["ssh"]
 [package.metadata.docs.rs]
 all-features = true
 
-# A library, not a binary — exclude from prebuilt-binary distribution (cargo-dist).
+# A library, not a binary - exclude from prebuilt-binary distribution (cargo-dist).
 [package.metadata.dist]
 dist = false

@@ -291,7 +291,7 @@ mod imp {
             .await
             .map_err(|e| Error::Transport(format!("request pty: {e}")))?;
         // Run a clean POSIX shell rather than request_shell, which starts the
-        // interactive LOGIN shell — its profile/rc, prompt, and readline behavior
+        // interactive LOGIN shell - its profile/rc, prompt, and readline behavior
         // desync the sentinel framing. /bin/sh is universally present (bash is
         // not, e.g. on Alpine); the framing is POSIX-compatible.
         channel
