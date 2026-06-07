@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: Apache-2.0
+use crate::budget::BudgetReport;
 use serde::{Deserialize, Serialize};
 
 /// The structured result of running one command - the agent-facing contract.
@@ -15,6 +16,9 @@ pub struct ExecResult {
     pub cwd: String,
     /// True if output was truncated to fit the session's byte/char budget.
     pub truncated: bool,
+    /// Present only when a non-default budget shaped this result.
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub budget: Option<BudgetReport>,
 }
 
 /// A snapshot of shell state carried alongside results.

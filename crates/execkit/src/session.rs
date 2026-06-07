@@ -149,6 +149,7 @@ impl Session {
             duration_ms: started.elapsed().as_millis() as u64,
             cwd: f.cwd,
             truncated: t1 || t2 || f.overflowed,
+            budget: None,
         };
         if let Some(a) = &self.audit {
             if let Err(e) = a.record(&result) {

@@ -35,6 +35,7 @@ mod session;
 pub mod transport;
 
 pub use audit::AuditLog;
+pub use budget::{Budget, BudgetReport, Grep, Keep, StreamReport};
 pub use checkpoint::{Checkpoint, CheckpointId, RestoreReport};
 pub use error::{Error, Result};
 pub use exec::{ExecResult, ShellState};
