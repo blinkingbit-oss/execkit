@@ -177,3 +177,38 @@ fn rejects_key_path_traversal_generically() {
     assert!(!t.contains("passwd"), "must not leak the path: {t}");
     let _ = std::fs::remove_dir_all(&key_dir);
 }
+
+#[test]
+fn output_budget_shapes_and_reports() {
+    let mut m = Mcp::start(&[]);
+    let created = m.call(3, "session_create", json!({"transport":"local"}));
+    let sid = result_json(&created)["session_id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+
+    // 200 lines, keep last 5
+    let e = m.call(
+        4,
+        "session_exec",
+        json!({"session_id": sid,
+               "command": "for i in $(seq 1 200); do echo line$i; done",
+               "budget": {"keep": {"mode": "tail", "n": 5}}}),
+    );
+    let r = result_json(&e);
+    assert!(r["stdout"].as_str().unwrap().ends_with("line200"));
+    assert_eq!(r["budget"]["stdout"]["lines_total"], 200);
+    assert_eq!(r["budget"]["stdout"]["lines_kept"], 5);
+    assert_eq!(r["budget"]["stdout"]["mode"], "tail");
+
+    // invalid regex -> tool error, no crash
+    let bad = m.call(
+        5,
+        "session_exec",
+        json!({"session_id": sid, "command": "echo hi", "budget": {"grep": {"pattern": "("}}}),
+    );
+    assert!(is_error(&bad));
+    assert!(result_text(&bad).contains("invalid grep pattern"));
+
+    let _ = m.call(6, "session_destroy", json!({"session_id": sid}));
+}
