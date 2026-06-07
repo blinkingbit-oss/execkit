@@ -7,6 +7,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.4.0](https://github.com/blinkingbit-oss/execkit/compare/execkit-v0.3.1...execkit-v0.4.0) - 2026-06-07
+
+### Added
+
+- *(budget)* session exec_budgeted + with_output_budget + report wiring
+- *(budget)* ExecResult.budget report field + re-exports
+- *(budget)* apply() pipeline + StreamReport/BudgetReport
+- *(budget)* line-keep subset + gap-marker rendering
+- *(budget)* grep line-index selection with context merge
+- *(budget)* Budget/Grep/Keep types + Error::Budget
+
+### Fixed
+
+- *(budget)* guard HeadTail against untrusted extreme counts (final review)
+- *(budget)* bound untrusted grep pattern (length cap + compiled-size limit)
+
+### Other
+
+- output budgets (README, QUICKSTART, mcp README) + truncated doc
+
 ## [0.3.1](https://github.com/blinkingbit-oss/execkit/compare/execkit-v0.3.0...execkit-v0.3.1) - 2026-06-07
 
 ### Other
