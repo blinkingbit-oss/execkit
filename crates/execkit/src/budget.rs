@@ -159,3 +159,94 @@ mod grep_tests {
         assert!(idx("a\nb\nc", "ZZZ", 2).is_empty());
     }
 }
+
+/// Reduce a sorted index list to the head/tail window requested by `keep`.
+fn keep_subset(idx: &[usize], keep: Keep) -> Vec<usize> {
+    let n = idx.len();
+    match keep {
+        Keep::All => idx.to_vec(),
+        Keep::Tail(k) => idx[n.saturating_sub(k)..].to_vec(),
+        Keep::Head(k) => idx[..k.min(n)].to_vec(),
+        Keep::HeadTail(h, t) => {
+            if h + t >= n {
+                idx.to_vec()
+            } else {
+                let mut v = idx[..h].to_vec();
+                v.extend_from_slice(&idx[n - t..]);
+                v
+            }
+        }
+    }
+}
+
+/// Render the kept lines with `... N lines elided ...` markers for every gap
+/// (leading, internal, trailing) relative to the original `total` lines.
+fn render(content: &[&str], kept: &[usize], total: usize) -> String {
+    if kept.is_empty() {
+        return if total == 0 {
+            String::new()
+        } else {
+            format!("... {total} lines elided ...")
+        };
+    }
+    let mut out: Vec<String> = Vec::new();
+    let marker = |n: usize| format!("... {n} lines elided ...");
+    if kept[0] > 0 {
+        out.push(marker(kept[0]));
+    }
+    for (pos, &i) in kept.iter().enumerate() {
+        if pos > 0 {
+            let prev = kept[pos - 1];
+            if i > prev + 1 {
+                out.push(marker(i - prev - 1));
+            }
+        }
+        out.push(content[i].to_string());
+    }
+    let last = *kept.last().unwrap();
+    if last < total - 1 {
+        out.push(marker(total - 1 - last));
+    }
+    out.join("\n")
+}
+
+#[cfg(test)]
+mod keep_tests {
+    use super::*;
+
+    #[test]
+    fn tail_head_headtail_windows() {
+        let idx: Vec<usize> = (0..10).collect();
+        assert_eq!(keep_subset(&idx, Keep::Tail(3)), vec![7, 8, 9]);
+        assert_eq!(keep_subset(&idx, Keep::Head(2)), vec![0, 1]);
+        assert_eq!(keep_subset(&idx, Keep::HeadTail(2, 2)), vec![0, 1, 8, 9]);
+        assert_eq!(keep_subset(&idx, Keep::All), idx);
+    }
+
+    #[test]
+    fn keep_windows_clamp() {
+        let idx: Vec<usize> = (0..3).collect();
+        assert_eq!(keep_subset(&idx, Keep::Tail(99)), idx); // n>len -> all
+        assert_eq!(keep_subset(&idx, Keep::Head(99)), idx);
+        assert_eq!(keep_subset(&idx, Keep::HeadTail(2, 2)), idx); // h+t>=n -> all
+        assert!(keep_subset(&idx, Keep::Tail(0)).is_empty());
+    }
+
+    #[test]
+    fn render_marks_leading_internal_trailing_gaps() {
+        let content: Vec<&str> = "l0\nl1\nl2\nl3\nl4".lines().collect();
+        // keep indices 1 and 3 of 5 total
+        let r = render(&content, &[1, 3], 5);
+        assert_eq!(
+            r,
+            "... 1 lines elided ...\nl1\n... 1 lines elided ...\nl3\n... 1 lines elided ..."
+        );
+    }
+
+    #[test]
+    fn render_empty_kept() {
+        let content: Vec<&str> = "a\nb".lines().collect();
+        assert_eq!(render(&content, &[], 2), "... 2 lines elided ...");
+        assert_eq!(render(&[], &[], 0), "");
+    }
+}
