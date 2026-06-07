@@ -10,6 +10,10 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use crate::audit::AuditLog;
+// `checkpoint::self`, `Checkpoint`, and `RestoreReport` are used by the
+// checkpoint API added in Task 5/6; imported now per plan.
+#[allow(unused_imports)]
+use crate::checkpoint::{self, Checkpoint, Checkpointer, RestoreReport};
 use crate::error::{Error, Result};
 use crate::exec::ExecResult;
 use crate::output::{bound, clean};
@@ -30,20 +34,24 @@ pub struct Session {
     /// Set after a timeout: the prior command is still running and would desync
     /// framing, so the session refuses further commands.
     poisoned: bool,
+    /// Some only for remote (ssh/docker) sessions; None for local.
+    /// Read by the checkpoint API added in Task 5/6.
+    #[allow(dead_code)]
+    checkpointer: Option<Checkpointer>,
 }
 
 impl Session {
     /// Open a session backed by a local `bash` PTY.
     pub fn local() -> Result<Self> {
         let pty = LocalPty::spawn("bash", &["--norc", "--noprofile"])?;
-        Self::from_transport(Box::new(pty))
+        Self::from_transport(Box::new(pty), false)
     }
 
     /// Open a session over SSH.
     #[cfg(feature = "ssh")]
     pub fn ssh(config: crate::transport::ssh::SshConfig) -> Result<Self> {
         let t = crate::transport::ssh::SshTransport::connect(config)?;
-        Self::from_transport(Box::new(t))
+        Self::from_transport(Box::new(t), true)
     }
 
     /// Open a session inside a running Docker container via `docker exec`.
@@ -64,21 +72,24 @@ impl Session {
             return Err(Error::Transport("invalid docker container name/id".into()));
         }
         let t = crate::transport::docker::DockerExec::spawn(container, &unique_token())?;
-        Self::from_transport(Box::new(t))
+        Self::from_transport(Box::new(t), true)
     }
 
     /// Build a session over any transport: run the readiness handshake and set
     /// up the per-session sentinel token.
-    fn from_transport(mut io: Box<dyn Transport>) -> Result<Self> {
+    fn from_transport(mut io: Box<dyn Transport>, remote: bool) -> Result<Self> {
         transport::shell_init(io.as_mut())?;
+        let token = unique_token();
+        let checkpointer = remote.then(|| Checkpointer::new(&token, true, None, vec![".".into()]));
         Ok(Self {
             io,
-            token: unique_token(),
+            token,
             policy: None,
             audit: None,
             timeout: Duration::from_secs(30),
             max_output: 100_000,
             poisoned: false,
+            checkpointer,
         })
     }
 
@@ -125,34 +136,48 @@ impl Session {
                 return Err(Error::PolicyDenied(reason));
             }
         }
+        self.maybe_auto_snapshot(command); // Task 6 adds the body; stub for now:
+        let started = Instant::now();
+        let f = self.run_framed(command)?;
+        let (stdout, t1) = bound(&redact(&f.stdout), self.max_output);
+        let (stderr, t2) = bound(&redact(&f.stderr), self.max_output);
+        let result = ExecResult {
+            command: command.to_string(),
+            stdout,
+            stderr,
+            exit_code: f.exit_code,
+            duration_ms: started.elapsed().as_millis() as u64,
+            cwd: f.cwd,
+            truncated: t1 || t2 || f.overflowed,
+        };
+        if let Some(a) = &self.audit {
+            if let Err(e) = a.record(&result) {
+                eprintln!("execkit: audit write failed: {e}");
+            }
+        }
+        Ok(result)
+    }
 
+    /// Stub until Task 6.
+    fn maybe_auto_snapshot(&mut self, _command: &str) {}
+
+    /// Run one command through the sentinel framing; return raw cleaned output.
+    /// No policy, redaction, bounding, audit, or auto-snapshot - callers add what
+    /// they need. Poisons the session on timeout.
+    fn run_framed(&mut self, command: &str) -> Result<Framed> {
         let start_m = format!("__EXECKIT_{}__", self.token);
         let end_m = format!("__EXECKITEND_{}__", self.token);
-        // stderr -> a remote temp file (mktemp = 0600), cat back through the
-        // channel between the start/end sentinels, then removed. Works
-        // identically for local and SSH; nothing touches the local filesystem.
-        // Layout on the wire: <stdout>\n<START>\x1f<exit>\x1f<cwd>\x1f<stderr><END>\n
-        // The fallback temp file (no `mktemp`) is created with umask 077 INSIDE
-        // the command substitution, so it's 0600 and the umask never leaks into
-        // the user's command.
         let payload = format!(
             "__E=$(umask 077; mktemp 2>/dev/null||{{ f=/tmp/execkitE_{tok}; : >\"$f\"; echo \"$f\"; }}); \
 {{ {cmd} ; }} 2>\"$__E\"; \
 printf '\\n{start}\\037%d\\037%s\\037' \"$?\" \"$PWD\"; cat \"$__E\" 2>/dev/null; \
 printf '{end}\\n'; rm -f \"$__E\"\n",
-            tok = self.token,
-            cmd = command,
-            start = start_m,
-            end = end_m,
+            tok = self.token, cmd = command, start = start_m, end = end_m,
         );
-
-        let started = Instant::now();
         self.io.write_all(payload.as_bytes())?;
 
         let start_b = start_m.as_bytes();
         let end_b = end_m.as_bytes();
-        // Bound in-memory accumulation. The trailer (START..END) arrives last and
-        // is small, so a head+tail keep always retains it.
         let max_acc = self.max_output.saturating_mul(2).max(65_536);
         let mut acc: Vec<u8> = Vec::new();
         let mut overflowed = false;
@@ -172,7 +197,6 @@ printf '{end}\\n'; rm -f \"$__E\"\n",
                 }
             };
             acc.extend_from_slice(&chunk);
-
             if acc.len() > max_acc {
                 let keep = max_acc / 2;
                 let tail_start = acc.len() - keep;
@@ -182,53 +206,29 @@ printf '{end}\\n'; rm -f \"$__E\"\n",
                 acc = compacted;
                 overflowed = true;
             }
-
-            // Completion = the END sentinel has arrived.
-            let Some(end_pos) = find(&acc, end_b) else {
-                continue;
-            };
-            let Some(start_pos) = find(&acc[..end_pos], start_b) else {
-                continue;
-            };
+            let Some(end_pos) = find(&acc, end_b) else { continue };
+            let Some(start_pos) = find(&acc[..end_pos], start_b) else { continue };
             let between = &acc[start_pos + start_b.len()..end_pos];
-            let seps: Vec<usize> = between
-                .iter()
-                .enumerate()
-                .filter(|(_, b)| **b == US)
-                .map(|(i, _)| i)
-                .collect();
-            if seps.len() < 3 {
-                continue;
-            }
+            let seps: Vec<usize> = between.iter().enumerate()
+                .filter(|(_, b)| **b == US).map(|(i, _)| i).collect();
+            if seps.len() < 3 { continue; }
             let exit_code: i32 = String::from_utf8_lossy(&between[seps[0] + 1..seps[1]])
-                .trim()
-                .parse()
-                .unwrap_or(-1);
+                .trim().parse().unwrap_or(-1);
             let cwd = String::from_utf8_lossy(&between[seps[1] + 1..seps[2]]).into_owned();
-            // Everything after the 3rd separator is stderr (may itself contain
-            // separators - we only consume the first three).
-            let raw_err = clean(&String::from_utf8_lossy(&between[seps[2] + 1..]));
-            let raw_out = clean(&String::from_utf8_lossy(&acc[..start_pos]));
-            let (stdout, t1) = bound(&redact(&raw_out), self.max_output);
-            let (stderr, t2) = bound(&redact(&raw_err), self.max_output);
-
-            let result = ExecResult {
-                command: command.to_string(),
-                stdout,
-                stderr,
-                exit_code,
-                duration_ms: started.elapsed().as_millis() as u64,
-                cwd,
-                truncated: t1 || t2 || overflowed,
-            };
-            if let Some(a) = &self.audit {
-                if let Err(e) = a.record(&result) {
-                    eprintln!("execkit: audit write failed: {e}");
-                }
-            }
-            return Ok(result);
+            let stderr = clean(&String::from_utf8_lossy(&between[seps[2] + 1..]));
+            let stdout = clean(&String::from_utf8_lossy(&acc[..start_pos]));
+            return Ok(Framed { stdout, stderr, exit_code, cwd, overflowed });
         }
     }
+}
+
+/// Raw result of one framed command (pre-redaction/bounding).
+struct Framed {
+    stdout: String,
+    stderr: String,
+    exit_code: i32,
+    cwd: String,
+    overflowed: bool,
 }
 
 fn find(hay: &[u8], needle: &[u8]) -> Option<usize> {

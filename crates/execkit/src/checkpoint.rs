@@ -5,6 +5,11 @@
 //! classification. `Session` runs the commands over its transport (see
 //! `session.rs`); keeping the logic transport-free makes it unit-testable.
 
+// The classifier, shell-quote, ignore list, and several builders/parsers are
+// wired into `Session` in Task 5/6; they are exercised by the unit tests here
+// but otherwise unused until then.
+#![allow(dead_code)]
+
 use serde::Serialize;
 
 /// A checkpoint identifier: a commit SHA in the shadow git repo.
@@ -41,6 +46,7 @@ pub(crate) fn is_read_only(command: &str) -> bool {
         return false;
     }
     // Every segment of a pipeline / chain must start with an allowlisted program.
+    #[allow(clippy::manual_pattern_char_comparison)]
     for seg in command.split(|c| matches!(c, '|' | ';' | '&')) {
         let seg = seg.trim();
         if seg.is_empty() {
