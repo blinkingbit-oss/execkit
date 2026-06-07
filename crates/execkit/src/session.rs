@@ -10,10 +10,11 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use crate::audit::AuditLog;
+use crate::budget::{self, Budget};
 use crate::checkpoint::{self, Checkpoint, Checkpointer, RestoreReport};
 use crate::error::{Error, Result};
 use crate::exec::ExecResult;
-use crate::output::{bound, clean};
+use crate::output::clean;
 use crate::policy::Policy;
 use crate::redact::redact;
 use crate::transport::{self, local::LocalPty, Transport};
@@ -28,6 +29,8 @@ pub struct Session {
     audit: Option<AuditLog>,
     timeout: Duration,
     max_output: usize,
+    /// Default budget applied to every `exec` that does not pass its own.
+    output_budget: Option<Budget>,
     /// Set after a timeout: the prior command is still running and would desync
     /// framing, so the session refuses further commands.
     poisoned: bool,
@@ -83,6 +86,7 @@ impl Session {
             audit: None,
             timeout: Duration::from_secs(30),
             max_output: 100_000,
+            output_budget: None,
             poisoned: false,
             checkpointer,
         })
@@ -113,6 +117,12 @@ impl Session {
         self
     }
 
+    /// Default output budget applied to every `exec` that does not pass its own.
+    pub fn with_output_budget(mut self, budget: Budget) -> Self {
+        self.output_budget = Some(budget);
+        self
+    }
+
     /// True if a prior timeout left the session unusable.
     pub fn is_poisoned(&self) -> bool {
         self.poisoned
@@ -123,8 +133,24 @@ impl Session {
     /// On a completion timeout this returns [`Error::StillRunning`] and poisons
     /// the session (subsequent calls return [`Error::SessionPoisoned`]).
     pub fn exec(&mut self, command: &str) -> Result<ExecResult> {
+        let budget = self.output_budget.clone().unwrap_or_default();
+        self.exec_inner(command, &budget)
+    }
+
+    /// Like [`Session::exec`], but shape this command's output with `budget`
+    /// (overrides any session-default budget).
+    pub fn exec_budgeted(&mut self, command: &str, budget: &Budget) -> Result<ExecResult> {
+        self.exec_inner(command, budget)
+    }
+
+    fn exec_inner(&mut self, command: &str, budget: &Budget) -> Result<ExecResult> {
         if self.poisoned {
             return Err(Error::SessionPoisoned);
+        }
+        // Fail fast on a bad grep regex BEFORE running the command.
+        if let Some(g) = &budget.grep {
+            regex::Regex::new(&g.pattern)
+                .map_err(|e| Error::Budget(format!("invalid grep pattern: {e}")))?;
         }
         if let Some(p) = &self.policy {
             if let Err(reason) = p.check(command) {
@@ -139,8 +165,18 @@ impl Session {
         }
         let started = Instant::now();
         let f = self.run_framed(command)?;
-        let (stdout, t1) = bound(&redact(&f.stdout), self.max_output);
-        let (stderr, t2) = bound(&redact(&f.stderr), self.max_output);
+        let (stdout, rep_out, cap_out) =
+            budget::apply(&redact(&f.stdout), budget, self.max_output)?;
+        let (stderr, rep_err, cap_err) =
+            budget::apply(&redact(&f.stderr), budget, self.max_output)?;
+        let report = if *budget != Budget::default() {
+            Some(crate::budget::BudgetReport {
+                stdout: rep_out.clone(),
+                stderr: rep_err.clone(),
+            })
+        } else {
+            None
+        };
         let result = ExecResult {
             command: command.to_string(),
             stdout,
@@ -148,8 +184,12 @@ impl Session {
             exit_code: f.exit_code,
             duration_ms: started.elapsed().as_millis() as u64,
             cwd: f.cwd,
-            truncated: t1 || t2 || f.overflowed,
-            budget: None,
+            truncated: cap_out
+                || cap_err
+                || rep_out.lines_kept < rep_out.lines_total
+                || rep_err.lines_kept < rep_err.lines_total
+                || f.overflowed,
+            budget: report,
         };
         if let Some(a) = &self.audit {
             if let Err(e) = a.record(&result) {

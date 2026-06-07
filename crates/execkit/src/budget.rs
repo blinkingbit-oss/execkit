@@ -281,7 +281,6 @@ fn keep_label(keep: Keep) -> Option<&'static str> {
 }
 
 /// Shape one already-redacted stream. Returns (text, report, char_capped).
-#[allow(dead_code)] // used in Task 5+ (session wiring)
 pub(crate) fn apply(
     text: &str,
     budget: &Budget,
