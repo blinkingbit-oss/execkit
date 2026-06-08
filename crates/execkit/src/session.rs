@@ -314,6 +314,15 @@ impl Session {
                 "no checkpoints yet in this session".into(),
             ));
         }
+        // A checkpoint id is ALWAYS a git commit SHA (from parse_sha/parse_log).
+        // It is shq-quoted before use (no shell injection), but a non-hex value
+        // like "--output=/path" would be parsed by git as an OPTION, letting it
+        // write/overwrite files OUTSIDE the workspace. Reject anything that is not
+        // hex BEFORE running diff_count_cmd or restore_cmd (the only two builders
+        // that take the id - confirmed restore() is their sole caller).
+        if !is_valid_checkpoint_id(&id.0) {
+            return Err(Error::Unsupported("invalid checkpoint id".into()));
+        }
         let root = self.cp_root();
         // Count differing files BEFORE reverting (best-effort; informational).
         let diff_cmd = self
@@ -545,6 +554,14 @@ fn is_valid_container_ref(s: &str) -> bool {
     chars.all(|c| c.is_ascii_alphanumeric() || matches!(c, '_' | '.' | '-'))
 }
 
+/// A checkpoint id is a git commit SHA: 4-40 ASCII hex chars (git accepts
+/// unambiguous short prefixes). Rejecting anything else stops a `-`-leading id
+/// from being parsed by git as an option (e.g. `--output=<file>`).
+fn is_valid_checkpoint_id(s: &str) -> bool {
+    let n = s.len();
+    (4..=40).contains(&n) && s.bytes().all(|b| b.is_ascii_hexdigit())
+}
+
 fn unique_token() -> String {
     static COUNTER: AtomicU64 = AtomicU64::new(0);
     let nanos = SystemTime::now()
@@ -578,7 +595,26 @@ mod checkpoint_api_tests {
 
 #[cfg(test)]
 mod tests {
-    use super::is_valid_container_ref;
+    use super::{is_valid_checkpoint_id, is_valid_container_ref};
+
+    #[test]
+    fn checkpoint_id_validation() {
+        // Valid: full and short SHAs.
+        assert!(is_valid_checkpoint_id("deadbeef"));
+        assert!(is_valid_checkpoint_id("0a1b"));
+        assert!(is_valid_checkpoint_id(
+            "deadbeefdeadbeefdeadbeefdeadbeefdeadbeef"
+        ));
+        // Invalid: option injection, empty/short, over-length, non-hex.
+        assert!(!is_valid_checkpoint_id("--output=/tmp/pwn/victim"));
+        assert!(!is_valid_checkpoint_id("-d"));
+        assert!(!is_valid_checkpoint_id(""));
+        assert!(!is_valid_checkpoint_id("abc")); // too short (<4)
+        assert!(!is_valid_checkpoint_id(&"a".repeat(41))); // too long (>40)
+        assert!(!is_valid_checkpoint_id("dead beef")); // space
+        assert!(!is_valid_checkpoint_id("HEAD~1")); // non-hex ref expression
+        assert!(!is_valid_checkpoint_id("zzzz")); // non-hex letters
+    }
 
     #[test]
     fn container_ref_validation() {

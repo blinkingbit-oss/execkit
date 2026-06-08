@@ -156,6 +156,45 @@ fn custom_ignores_are_not_snapshotted_or_restored() {
 }
 
 #[test]
+fn restore_rejects_option_injecting_id_and_no_file_clobber() {
+    // SEC-1: a checkpoint id is always a git SHA. A `-`-leading id is otherwise
+    // parsed by git as an OPTION, e.g. `--output=/path` makes `git diff` write an
+    // arbitrary file OUTSIDE the workspace (the `-- {paths}` only constrains
+    // pathspecs). restore() must reject any non-hex id BEFORE running git.
+    let Ok(c) = std::env::var("EXECKIT_TEST_DOCKER") else {
+        eprintln!("skip: set EXECKIT_TEST_DOCKER=<container> (needs git) to run");
+        return;
+    };
+    let ws = "/root/ck_sec1";
+    let mut s = session(&c, ws);
+    s.exec(&format!("rm -rf {ws} && mkdir -p {ws}")).unwrap();
+    s.exec(&format!("printf 'v1' > {ws}/keep.txt")).unwrap();
+    // a real checkpoint so the shadow repo is initialized (restore gets past the
+    // "no checkpoints yet" guard and reaches the vulnerable builders).
+    s.checkpoint(Some("baseline")).expect("checkpoint");
+
+    // victim file OUTSIDE the workspace.
+    s.exec("mkdir -p /tmp/pwn && printf ORIGINAL > /tmp/pwn/victim")
+        .unwrap();
+
+    // the exploit: a `-`-leading id that git would treat as `--output=<file>`.
+    let evil = execkit::CheckpointId("--output=/tmp/pwn/victim".into());
+    let err = s.restore(&evil).unwrap_err();
+    assert!(
+        matches!(&err, execkit::Error::Unsupported(m)
+            if m.contains("checkpoint id") || m.contains("invalid")),
+        "expected Unsupported(invalid checkpoint id), got {err:?}"
+    );
+
+    // the victim file must be untouched (NOT clobbered by a `git diff --output`).
+    assert_eq!(
+        s.exec("cat /tmp/pwn/victim").unwrap().stdout,
+        "ORIGINAL",
+        "victim file outside the workspace was clobbered"
+    );
+}
+
+#[test]
 fn restore_before_any_checkpoint_errors_cleanly() {
     let Ok(c) = std::env::var("EXECKIT_TEST_DOCKER") else {
         eprintln!("skip: set EXECKIT_TEST_DOCKER=<container> (needs git) to run");
