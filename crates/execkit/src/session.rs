@@ -453,12 +453,30 @@ impl Session {
     fn run_framed(&mut self, command: &str) -> Result<Framed> {
         let start_m = format!("__EXECKIT_{}__", self.token);
         let end_m = format!("__EXECKITEND_{}__", self.token);
+        // Rust owns the stderr temp path; it is embedded LITERALLY (single-quoted)
+        // and NEVER exposed as a shell variable. The unguessable token makes the
+        // path unpredictable, so the command can neither name it (no `$__E` to
+        // forge the stderr field) nor pre-plant a symlink at it (no TOCTOU).
+        let errfile = format!("/tmp/execkitE_{}", self.token);
+        // The cwd arg strips any US (0x1f) byte from $PWD so a directory whose
+        // name contains US cannot inject an extra separator and spoof framing.
+        // `tr -d '\037'` uses tr's OWN octal escape for 0x1f rather than a raw
+        // 0x1f byte: the command line travels through a canonical-mode PTY whose
+        // line discipline mangles raw control bytes, so a literal byte here would
+        // break execution. `\037` is plain ASCII on the wire and tr decodes it.
+        // The command runs in the CURRENT shell (NOT a subshell) so `cd`/env
+        // changes persist across execs. The errfile is pre-created 0600 inside a
+        // subshell so the umask change does not leak into the command.
         let payload = format!(
-            "__E=$(umask 077; mktemp 2>/dev/null||{{ f=/tmp/execkitE_{tok}; : >\"$f\"; echo \"$f\"; }}); \
-{{ {cmd} ; }} 2>\"$__E\"; \
-printf '\\n{start}\\037%d\\037%s\\037' \"$?\" \"$PWD\"; cat \"$__E\" 2>/dev/null; \
-printf '{end}\\n'; rm -f \"$__E\"\n",
-            tok = self.token, cmd = command, start = start_m, end = end_m,
+            "(umask 077; : > '{err}') 2>/dev/null; \
+{{ {cmd} ; }} 2>'{err}'; \
+printf '\\n{start}\\037%d\\037%s\\037' \"$?\" \"$(printf %s \"$PWD\" | tr -d '\\037')\"; \
+cat '{err}' 2>/dev/null; \
+printf '{end}\\n'; rm -f '{err}'\n",
+            err = errfile,
+            cmd = command,
+            start = start_m,
+            end = end_m,
         );
         self.io.write_all(payload.as_bytes())?;
 
@@ -512,7 +530,7 @@ printf '{end}\\n'; rm -f \"$__E\"\n",
                 .trim()
                 .parse()
                 .unwrap_or(-1);
-            let cwd = String::from_utf8_lossy(&between[seps[1] + 1..seps[2]]).into_owned();
+            let cwd = clean(&String::from_utf8_lossy(&between[seps[1] + 1..seps[2]]));
             let stderr = clean(&String::from_utf8_lossy(&between[seps[2] + 1..]));
             let stdout = clean(&String::from_utf8_lossy(&acc[..start_pos]));
             return Ok(Framed {

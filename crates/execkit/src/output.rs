@@ -39,12 +39,21 @@ pub fn strip_ansi(s: &str) -> String {
     String::from_utf8_lossy(&out).to_string()
 }
 
-/// Normalize PTY output: strip ANSI, drop CRs (ONLCR), trim surrounding blanks.
+/// Normalize PTY output: strip ANSI, drop CRs (ONLCR), strip C0 control bytes
+/// (everything below 0x20 except `\n` and `\t`), then trim surrounding blanks.
+///
+/// Removing the remaining C0 bytes is defense-in-depth for the sentinel framing:
+/// it scrubs any residual US (0x1f) or NUL (0x00) so a hostile command cannot
+/// smuggle separators or embedded NULs into the final stdout/stderr/cwd fields.
 pub fn clean(s: &str) -> String {
     strip_ansi(s)
-        .replace('\r', "")
+        .chars()
+        .filter(|&c| c == '\n' || c == '\t' || c >= '\u{20}')
+        .collect::<String>()
         .trim_matches('\n')
         .to_string()
+    // Note: `\r` (0x0d) is < 0x20 and not `\n`/`\t`, so it is dropped here too -
+    // this subsumes the old explicit CR strip used for ONLCR-translated output.
 }
 
 /// Bound output to roughly `max` characters using a head+tail keep with an
@@ -77,6 +86,16 @@ mod tests {
         assert_eq!(strip_ansi("\x1b[31mred\x1b[0m"), "red");
         assert_eq!(strip_ansi("abc\x1b[2Kdef"), "abcdef");
         assert_eq!(strip_ansi("\x1b]0;title\x07visible"), "visible");
+    }
+
+    #[test]
+    fn clean_strips_c0_controls_but_keeps_tab_and_newline() {
+        // CR removed, lines preserved, surrounding newlines trimmed.
+        assert_eq!(clean("a\r\nb\r\n"), "a\nb");
+        // US (0x1f) and NUL (0x00) scrubbed; tab kept.
+        assert_eq!(clean("x\u{1f}y\0z\tw"), "xyz\tw");
+        // ANSI still stripped before the control filter runs.
+        assert_eq!(clean("\x1b[31mr\x1b[0m"), "r");
     }
 
     #[test]
