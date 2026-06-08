@@ -2,7 +2,8 @@
 //! execkit-mcp - an MCP (stdio) server exposing execkit shell sessions to any
 //! MCP-capable agent (Claude Code, Cursor, Gemini CLI, ...).
 //!
-//! Tools: `session_create`, `session_exec`, `session_destroy`. Sessions are
+//! Tools: `session_create`, `session_exec`, `session_destroy`, and (remote only)
+//! `session_checkpoint`, `session_checkpoints`, `session_restore`. Sessions are
 //! stateful and outlive a single tool call; `session_exec` returns the
 //! structured `ExecResult` as JSON (split stdout/stderr, exit code, cwd, ...),
 //! already policy-checked, secret-redacted, and bounded.
@@ -444,8 +445,10 @@ impl ServerHandler for ExeckitServer {
         let mut info = ServerInfo::default();
         info.instructions = Some(
             "Stateful, structured, safe shell sessions for agents. Call session_create \
-             (local or ssh) to get a session_id, session_exec to run commands (structured \
-             results), and session_destroy when done. State (cwd, env) persists across execs."
+             (local, ssh, or docker) to get a session_id, session_exec to run commands \
+             (structured results), and session_destroy when done. State (cwd, env) persists \
+             across execs. Remote (ssh/docker) sessions also support workspace checkpoints \
+             (session_checkpoint/session_checkpoints/session_restore)."
                 .into(),
         );
         info.capabilities = ServerCapabilities::builder().enable_tools().build();

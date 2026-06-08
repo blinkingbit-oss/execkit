@@ -44,6 +44,22 @@ jobs:
       - name: Test
         run: cargo test --workspace
 
+      # The lean local-only build is a documented use case; test it, not just lint it.
+      - name: Test (execkit, no default features)
+        run: cargo test -p execkit --no-default-features
+
+  msrv:
+    name: MSRV (rust-version) builds
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v6
+      # Pin to the declared rust-version so a dependency bump can't silently
+      # raise the MSRV without a CI signal.
+      - uses: dtolnay/rust-toolchain@1.85.0
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo build --workspace --all-targets
+
   ssh-e2e:
     name: SSH end-to-end (real sshd)
     runs-on: ubuntu-latest

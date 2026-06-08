@@ -14,8 +14,10 @@ pub struct CheckpointId(pub String);
 /// One checkpoint in the linear history.
 #[derive(Debug, Clone, Serialize)]
 pub struct Checkpoint {
+    /// Commit SHA (the checkpoint id).
     pub id: String,
     pub label: String,
+    /// Unix timestamp (seconds since the epoch) as a decimal string (git `%ct`).
     pub created: String,
 }
 
@@ -182,6 +184,12 @@ impl Checkpointer {
         )
     }
 
+    // Always commits with --allow-empty: auto-snapshot runs BEFORE each changing
+    // command (to capture the pre-change baseline), so even an empty/unchanged
+    // workspace must produce a restorable point (e.g. to undo the first file
+    // creation in an empty workspace). The cost is one tiny empty commit per
+    // unchanged write-ish command; pruning that growth without losing the baseline
+    // is a future improvement.
     pub fn snapshot_cmd(&self, root: &str, label: &str) -> String {
         let g = self.git(root);
         format!(
@@ -279,7 +287,7 @@ mod builder_tests {
         assert!(snap.contains("--git-dir=\"$HOME/.execkit/ckpt-abc123.git\""));
         assert!(snap.contains("--work-tree='/srv/app'"));
         assert!(snap.contains("add -- '.'"));
-        assert!(snap.contains("commit"));
+        assert!(snap.contains("commit -q --allow-empty"));
 
         let restore = c.restore_cmd(root, "deadbeef");
         assert!(restore.contains("checkout 'deadbeef' -- '.'"));
