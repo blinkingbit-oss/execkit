@@ -41,6 +41,11 @@ Control it via `session_create`:
 If git is absent, auto-snapshot disables itself and checkpoint calls return a clear
 "install git on the remote" error.
 
+WARNING: `session_restore` is destructive. It reverts tracked files AND deletes ALL
+untracked files and directories anywhere under the workspace (via git clean), not
+only files created since the checkpoint. Do not restore if untracked files in the
+workspace must be preserved.
+
 ## Output budgets
 
 Pass `budget` to `session_exec` (or `output_budget` to `session_create` for a

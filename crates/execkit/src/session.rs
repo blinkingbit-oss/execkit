@@ -305,6 +305,10 @@ impl Session {
     }
 
     /// Restore the workspace files to a checkpoint. Remote-only.
+    ///
+    /// WARNING: this is destructive - it reverts tracked files AND deletes untracked
+    /// files/dirs anywhere under the workspace (git clean), not only files created
+    /// since the checkpoint.
     pub fn restore(&mut self, id: &crate::CheckpointId) -> Result<RestoreReport> {
         self.require_workspace()?;
         // No shadow repo yet => nothing to restore. Guard before cp_root() so we
@@ -354,6 +358,10 @@ impl Session {
     }
 
     /// Restore the most recent checkpoint. Remote-only.
+    ///
+    /// WARNING: this is destructive - it reverts tracked files AND deletes untracked
+    /// files/dirs anywhere under the workspace (git clean), not only files created
+    /// since the checkpoint.
     pub fn restore_last(&mut self) -> Result<RestoreReport> {
         self.require_workspace()?;
         let last = self

@@ -85,7 +85,12 @@ const BUILD_IGNORES: &[&str] = &[
 /// LAST matching rules. gitignore semantics are "last match wins," so placing
 /// these after any user-supplied negations (e.g. `!.ssh`) ensures a negation
 /// cannot re-include them. Never capture or restore these paths.
-const SECRET_IGNORES: &[&str] = &[".cache", ".ssh", ".gnupg", ".aws", ".netrc"];
+///
+/// `.execkit` is included here to prevent self-capture: if workspace == $HOME,
+/// `git add` would walk into the live shadow git-dir and corrupt the index.
+/// A user `!.execkit` negation CANNOT re-enable self-capture because SECRET_IGNORES
+/// trails all user patterns.
+const SECRET_IGNORES: &[&str] = &[".cache", ".ssh", ".gnupg", ".aws", ".netrc", ".execkit"];
 
 /// Single-quote a value for safe use in a `/bin/sh` command.
 pub(crate) fn shq(s: &str) -> String {
@@ -108,6 +113,13 @@ pub(crate) struct Checkpointer {
 
 impl Checkpointer {
     pub fn new(token: &str, auto: bool, workspace: Option<String>, paths: Vec<String>) -> Self {
+        // token is interpolated into a double-quoted shell string in git_dir(); it
+        // MUST be all hex so no shell-special characters can sneak in. The caller
+        // (unique_token) always produces hex, so this fires only in tests/dev.
+        debug_assert!(
+            token.bytes().all(|b| b.is_ascii_hexdigit()),
+            "checkpoint token must be hex"
+        );
         let paths = if paths.is_empty() {
             vec![".".into()]
         } else {
@@ -277,7 +289,7 @@ mod builder_tests {
     #[test]
     fn multi_path_scopes_each_path() {
         let c = Checkpointer::new(
-            "t",
+            "deadbeef",
             true,
             Some("/srv/app".into()),
             vec!["src".into(), "migrations".into()],
@@ -311,7 +323,7 @@ mod builder_tests {
 
     #[test]
     fn init_cmd_excludes_defaults_plus_user_ignores() {
-        let mut cp = Checkpointer::new("tok", true, Some("/srv/app".into()), vec![".".into()]);
+        let mut cp = Checkpointer::new("abc123", true, Some("/srv/app".into()), vec![".".into()]);
         cp.set_ignores(vec!["*.log".into(), "secrets".into()]);
         let cmd = cp.init_cmd("/srv/app");
         // a build default, a secret default, and both user patterns must appear.
@@ -320,6 +332,40 @@ mod builder_tests {
         assert!(cmd.contains("*.log"));
         assert!(cmd.contains("secrets"));
         assert!(cmd.contains("info/exclude"));
+        // SEC-6: .execkit must be excluded so workspace==$HOME does not self-capture.
+        assert!(
+            cmd.contains(".execkit"),
+            ".execkit must appear in the excludes to prevent shadow git-dir self-capture"
+        );
+    }
+
+    #[test]
+    fn execkit_dir_excluded_as_non_negotiable_secret_ignore() {
+        // Even if a user passes "!.execkit" as an ignore (trying to re-enable
+        // self-capture), the trailing SECRET_IGNORES entry ".execkit" must win.
+        let mut cp = Checkpointer::new("abc123", true, Some("/home/user".into()), vec![".".into()]);
+        cp.set_ignores(vec!["!.execkit".into()]);
+        let cmd = cp.init_cmd("/home/user");
+
+        // Both the negation and the secret rule must be present.
+        assert!(cmd.contains("!.execkit"), "user negation must appear");
+        assert!(cmd.contains(".execkit"), "secret exclude must appear");
+
+        // The LAST occurrence of ".execkit" in the exclude blob must NOT be
+        // a negation -- i.e. SECRET_IGNORES ".execkit" wins over "!.execkit".
+        let last_pos = cmd
+            .rfind(".execkit")
+            .expect(".execkit not found in command");
+        let byte_before = if last_pos > 0 {
+            cmd.as_bytes().get(last_pos - 1).copied()
+        } else {
+            None
+        };
+        assert_ne!(
+            byte_before,
+            Some(b'!'),
+            "last occurrence of .execkit must not be a negation; SECRET_IGNORES must trail user patterns"
+        );
     }
 
     #[test]
@@ -327,7 +373,7 @@ mod builder_tests {
         // SEC-4: a user-supplied negation like `!.ssh` must be overridden by the
         // trailing SECRET_IGNORES entry.  gitignore last-match-wins means the rule
         // written LAST controls; we verify the position invariant here.
-        let mut cp = Checkpointer::new("tok", true, Some("/srv/app".into()), vec![".".into()]);
+        let mut cp = Checkpointer::new("abc123", true, Some("/srv/app".into()), vec![".".into()]);
         cp.set_ignores(vec!["!.ssh".into()]);
         let cmd = cp.init_cmd("/srv/app");
 

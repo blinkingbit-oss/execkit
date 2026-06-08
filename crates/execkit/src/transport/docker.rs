@@ -64,7 +64,7 @@ impl Drop for DockerExec {
             m = self.marker
         );
         let _ = Command::new("docker")
-            .args(["exec", &self.container, "/bin/sh", "-c", &script])
+            .args(["exec", "--", &self.container, "/bin/sh", "-c", &script])
             .stdin(Stdio::null())
             .stdout(Stdio::null())
             .stderr(Stdio::null())
