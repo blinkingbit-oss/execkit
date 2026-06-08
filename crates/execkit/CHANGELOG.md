@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.4.2](https://github.com/blinkingbit-oss/execkit/compare/execkit-v0.4.1...execkit-v0.4.2) - 2026-06-08
+
+### Fixed
+
+- *(security)* exclude .execkit, validate token, redaction coverage, docker -- , document destructive restore
+- *(security)* framing integrity - unspoofable cwd, unforgeable stderr path, strip C0
+- *(security)* make secret excludes un-negatable by untrusted ignores
+- *(security)* fail closed on unreadable known_hosts (no silent host-key bypass)
+- *(security)* validate checkpoint id is a hex SHA (blocks git option injection)
+
 ## [0.4.1](https://github.com/blinkingbit-oss/execkit/compare/execkit-v0.4.0...execkit-v0.4.1) - 2026-06-07
 
 ### Fixed

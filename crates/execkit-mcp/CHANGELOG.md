@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.4.2](https://github.com/blinkingbit-oss/execkit/compare/v0.4.1...v0.4.2) - 2026-06-08
+
+### Fixed
+
+- *(security)* exclude .execkit, validate token, redaction coverage, docker -- , document destructive restore
+- *(security)* atomic session cap (close TOCTOU that bypassed MAX_SESSIONS)
+
 ## [0.4.1](https://github.com/blinkingbit-oss/execkit/compare/v0.4.0...v0.4.1) - 2026-06-07
 
 ### Fixed
