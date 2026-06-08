@@ -306,10 +306,12 @@ impl Session {
         Ok(crate::CheckpointId(sha))
     }
 
-    /// List checkpoints, newest first. Remote-only.
+    /// List checkpoints, newest first. Remote-only. Returns an empty list (not an
+    /// error) when no workspace is set or nothing has been snapshotted yet.
     pub fn checkpoints(&mut self) -> Result<Vec<Checkpoint>> {
-        self.require_workspace()?;
-        if !self.checkpointer.as_ref().unwrap().initialized {
+        self.require_remote()?;
+        let cp = self.checkpointer.as_ref().unwrap();
+        if cp.workspace.is_none() || !cp.initialized {
             return Ok(vec![]);
         }
         let root = self.cp_root();

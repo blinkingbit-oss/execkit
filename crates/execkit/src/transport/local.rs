@@ -93,5 +93,8 @@ impl Transport for LocalPty {
 impl Drop for LocalPty {
     fn drop(&mut self) {
         let _ = self.child.kill();
+        // Reap the killed shell so it does not linger as a zombie on a long-lived
+        // server that creates/destroys many local sessions.
+        let _ = self.child.wait();
     }
 }

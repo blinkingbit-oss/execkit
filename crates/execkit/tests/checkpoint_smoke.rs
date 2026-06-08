@@ -120,16 +120,16 @@ fn no_workspace_disables_checkpoints() {
     // shared ~/.execkit dir, which other parallel tests legitimately create.)
     s.exec("mkdir -p /root/nw && printf v > /root/nw/f")
         .unwrap();
-    // Explicit ops fail loudly with a clear, workspace-mentioning error.
+    // Writing a checkpoint fails loudly with a clear, workspace-mentioning error.
     let e1 = s.checkpoint(None).unwrap_err();
     assert!(
         matches!(&e1, execkit::Error::Unsupported(m) if m.contains("workspace")),
         "checkpoint: got {e1:?}"
     );
-    let e2 = s.checkpoints().unwrap_err();
+    // Listing degrades gracefully to an empty list (read-only, no error).
     assert!(
-        matches!(&e2, execkit::Error::Unsupported(m) if m.contains("workspace")),
-        "checkpoints: got {e2:?}"
+        s.checkpoints().unwrap().is_empty(),
+        "checkpoints() should be empty without a workspace"
     );
 }
 
