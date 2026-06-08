@@ -80,8 +80,8 @@ security settings (host-key verification, key dir, audit, session limits).
 
 ```toml
 [dependencies]
-execkit = "0.3"                                           # local + SSH + Docker
-# execkit = { version = "0.3", default-features = false }  # local + Docker only (no SSH; no russh/tokio)
+execkit = "0.4"                                           # local + SSH + Docker
+# execkit = { version = "0.4", default-features = false }  # local + Docker only (no SSH; no russh/tokio)
 ```
 
 ```rust

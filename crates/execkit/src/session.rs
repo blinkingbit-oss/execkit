@@ -25,6 +25,11 @@ const US: u8 = 0x1f; // unit separator
 pub struct Session {
     io: Box<dyn Transport>,
     token: String,
+    /// Sentinel markers + stderr temp path, derived once from `token` (cached so
+    /// run_framed does not rebuild them on every command).
+    start_m: String,
+    end_m: String,
+    errfile: String,
     policy: Option<Policy>,
     audit: Option<AuditLog>,
     timeout: Duration,
@@ -79,9 +84,18 @@ impl Session {
         transport::shell_init(io.as_mut())?;
         let token = unique_token();
         let checkpointer = remote.then(|| Checkpointer::new(&token, true, None, vec![".".into()]));
+        let start_m = format!("__EXECKIT_{token}__");
+        let end_m = format!("__EXECKITEND_{token}__");
+        // Honor TMPDIR (falls back to /tmp); token is hex so it is safe between
+        // the double quotes the payload uses, and any attacker-set TMPDIR only
+        // yields a harmless odd path (double-quoted, no word-split/expansion).
+        let errfile = format!("${{TMPDIR:-/tmp}}/execkitE_{token}");
         Ok(Self {
             io,
             token,
+            start_m,
+            end_m,
+            errfile,
             policy: None,
             audit: None,
             timeout: Duration::from_secs(30),
@@ -459,37 +473,36 @@ impl Session {
     /// No policy, redaction, bounding, audit, or auto-snapshot - callers add what
     /// they need. Poisons the session on timeout.
     fn run_framed(&mut self, command: &str) -> Result<Framed> {
-        let start_m = format!("__EXECKIT_{}__", self.token);
-        let end_m = format!("__EXECKITEND_{}__", self.token);
-        // Rust owns the stderr temp path; it is embedded LITERALLY (single-quoted)
-        // and NEVER exposed as a shell variable. The unguessable token makes the
-        // path unpredictable, so the command can neither name it (no `$__E` to
-        // forge the stderr field) nor pre-plant a symlink at it (no TOCTOU).
-        let errfile = format!("/tmp/execkitE_{}", self.token);
-        // The cwd arg strips any US (0x1f) byte from $PWD so a directory whose
-        // name contains US cannot inject an extra separator and spoof framing.
-        // `tr -d '\037'` uses tr's OWN octal escape for 0x1f rather than a raw
-        // 0x1f byte: the command line travels through a canonical-mode PTY whose
-        // line discipline mangles raw control bytes, so a literal byte here would
-        // break execution. `\037` is plain ASCII on the wire and tr decodes it.
-        // The command runs in the CURRENT shell (NOT a subshell) so `cd`/env
-        // changes persist across execs. The errfile is pre-created 0600 inside a
-        // subshell so the umask change does not leak into the command.
+        // Markers + the stderr temp path are cached on the session (derived from
+        // the token), so we do not rebuild them per command.
+        //
+        // The errfile is embedded between DOUBLE quotes so $TMPDIR expands; the
+        // token is hex (unguessable + injection-safe), so the command can neither
+        // name the path (no shell var to forge the stderr field) nor pre-plant a
+        // symlink at it. It is pre-created 0600 in a subshell (umask does not leak
+        // into the command) and removed BEFORE the end marker, so a completed
+        // command never leaks the file.
+        //
+        // The cwd arg strips any US (0x1f) from $PWD via tr's octal escape
+        // `\037` (a raw 0x1f byte would be mangled by the PTY line discipline) so
+        // a directory name cannot inject a separator. The command runs in the
+        // CURRENT shell (NOT a subshell) so `cd`/env changes persist across execs.
         let payload = format!(
-            "(umask 077; : > '{err}') 2>/dev/null; \
-{{ {cmd} ; }} 2>'{err}'; \
+            "(umask 077; : > \"{err}\") 2>/dev/null; \
+{{ {cmd} ; }} 2>\"{err}\"; \
 printf '\\n{start}\\037%d\\037%s\\037' \"$?\" \"$(printf %s \"$PWD\" | tr -d '\\037')\"; \
-cat '{err}' 2>/dev/null; \
-printf '{end}\\n'; rm -f '{err}'\n",
-            err = errfile,
+cat \"{err}\" 2>/dev/null; rm -f \"{err}\"; \
+printf '{end}\\n'\n",
+            err = self.errfile,
             cmd = command,
-            start = start_m,
-            end = end_m,
+            start = self.start_m,
+            end = self.end_m,
         );
         self.io.write_all(payload.as_bytes())?;
 
-        let start_b = start_m.as_bytes();
-        let end_b = end_m.as_bytes();
+        let start_b = self.start_m.clone();
+        let end_b = self.end_m.clone();
+        let (start_b, end_b) = (start_b.as_bytes(), end_b.as_bytes());
         let max_acc = self.max_output.saturating_mul(2).max(65_536);
         let mut acc: Vec<u8> = Vec::new();
         let mut overflowed = false;
@@ -505,7 +518,14 @@ printf '{end}\\n'; rm -f '{err}'\n",
                 Some(c) => c,
                 None => {
                     self.poisoned = true;
-                    return Err(Error::StillRunning);
+                    // None with time still on the clock means the channel closed
+                    // (the shell exited - e.g. the command ran `exit`), which is a
+                    // distinct, immediately-clear failure from a real timeout.
+                    return Err(if Instant::now() >= deadline {
+                        Error::StillRunning
+                    } else {
+                        Error::ShellExited
+                    });
                 }
             };
             acc.extend_from_slice(&chunk);
@@ -525,21 +545,19 @@ printf '{end}\\n'; rm -f '{err}'\n",
                 continue;
             };
             let between = &acc[start_pos + start_b.len()..end_pos];
-            let seps: Vec<usize> = between
-                .iter()
-                .enumerate()
-                .filter(|(_, b)| **b == US)
-                .map(|(i, _)| i)
-                .collect();
-            if seps.len() < 3 {
+            // Only the first three US (0x1f) separators matter; scan for them
+            // without allocating a Vec of every position.
+            let mut us = between.iter().enumerate().filter(|(_, b)| **b == US);
+            let (Some((s0, _)), Some((s1, _)), Some((s2, _))) = (us.next(), us.next(), us.next())
+            else {
                 continue;
-            }
-            let exit_code: i32 = String::from_utf8_lossy(&between[seps[0] + 1..seps[1]])
+            };
+            let exit_code: i32 = String::from_utf8_lossy(&between[s0 + 1..s1])
                 .trim()
                 .parse()
                 .unwrap_or(-1);
-            let cwd = clean(&String::from_utf8_lossy(&between[seps[1] + 1..seps[2]]));
-            let stderr = clean(&String::from_utf8_lossy(&between[seps[2] + 1..]));
+            let cwd = clean(&String::from_utf8_lossy(&between[s1 + 1..s2]));
+            let stderr = clean(&String::from_utf8_lossy(&between[s2 + 1..]));
             let stdout = clean(&String::from_utf8_lossy(&acc[..start_pos]));
             return Ok(Framed {
                 stdout,
