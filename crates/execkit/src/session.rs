@@ -24,9 +24,8 @@ const US: u8 = 0x1f; // unit separator
 /// A live, stateful shell session.
 pub struct Session {
     io: Box<dyn Transport>,
-    token: String,
-    /// Sentinel markers + stderr temp path, derived once from `token` (cached so
-    /// run_framed does not rebuild them on every command).
+    /// Sentinel markers + stderr temp path, derived once from the per-session
+    /// token (cached so run_framed does not rebuild them on every command).
     start_m: String,
     end_m: String,
     errfile: String,
@@ -92,7 +91,6 @@ impl Session {
         let errfile = format!("${{TMPDIR:-/tmp}}/execkitE_{token}");
         Ok(Self {
             io,
-            token,
             start_m,
             end_m,
             errfile,
