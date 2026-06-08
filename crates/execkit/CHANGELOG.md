@@ -7,6 +7,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.4.3](https://github.com/blinkingbit-oss/execkit/compare/execkit-v0.4.2...execkit-v0.4.3) - 2026-06-08
+
+### Fixed
+
+- correct MSRV to 1.88; defer ShellExited (breaking) to keep v0.4.3 a patch
+- drop now-unused Session.token field (dead-code; -D warnings CI gate)
+- reap local shell on drop; checkpoints() degrades to empty list
+- temp-file leak, exit-vs-timeout, TMPDIR, cached markers; docs 0.4
+
+### Other
+
+- document MAX_SESSIONS + checkpoint tools + docker; MSRV + lean-build test
+
 ## [0.4.2](https://github.com/blinkingbit-oss/execkit/compare/execkit-v0.4.1...execkit-v0.4.2) - 2026-06-08
 
 ### Fixed
