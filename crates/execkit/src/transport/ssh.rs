@@ -101,7 +101,16 @@ pub(crate) fn verify_fingerprint(
 
 #[allow(dead_code)]
 fn verify_known_hosts(path: &Path, host: &str, fingerprint: &str) -> Result<bool> {
-    let content = std::fs::read_to_string(path).unwrap_or_default();
+    // SEC-2: distinguish "file absent" (first use -> TOFU) from "file present
+    // but unreadable" (any other I/O error -> fail closed, return Err).
+    // Using read() + from_utf8_lossy so that real ASCII/hashed lines still
+    // parse even if there is a stray high byte, while a genuine read error
+    // propagates instead of silently becoming an empty file (MITM bypass).
+    let content = match std::fs::read(path) {
+        Ok(b) => String::from_utf8_lossy(&b).into_owned(),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => String::new(),
+        Err(e) => return Err(e.into()),
+    };
     for line in content.lines() {
         let mut it = line.split_whitespace();
         if let (Some(h), Some(fp)) = (it.next(), it.next()) {
@@ -383,5 +392,45 @@ mod tests {
     fn auth_debug_redacts_secrets() {
         let a = SshAuth::Password("hunter2".into());
         assert!(!format!("{a:?}").contains("hunter2"));
+    }
+
+    /// SEC-2: a known_hosts file containing any non-UTF-8 / undecodable bytes
+    /// must NOT silently fall through to TOFU and accept a different key.
+    /// The result must be Err (fail closed), not Ok(true).
+    #[test]
+    fn known_hosts_corrupt_file_fails_closed() {
+        let dir = std::env::temp_dir();
+        let path = dir.join(format!("execkit_kh_corrupt_{}", std::process::id()));
+        // Write a valid pinned line followed by a raw non-UTF-8 byte sequence.
+        let mut bytes = b"prod-1 SHA256:GOODKEY\n".to_vec();
+        bytes.extend_from_slice(b"\xff\xfe bad\n");
+        std::fs::write(&path, &bytes).unwrap();
+
+        let p = HostKeyVerification::KnownHosts(path.clone());
+        // Present a DIFFERENT (attacker) fingerprint for the already-pinned host.
+        let result = verify_fingerprint(&p, "prod-1", "SHA256:ATTACKER");
+        let _ = std::fs::remove_file(&path);
+
+        // Must be Ok(false) (pinned entry found and key mismatched) OR Err.
+        // It must NOT be Ok(true) (TOFU bypass / silent MITM accept).
+        if let Ok(true) = result {
+            panic!("SEC-2: corrupt known_hosts silently accepted attacker key (TOFU bypass)");
+        }
+    }
+
+    /// Confirm that an ABSENT known_hosts file still triggers TOFU (first-use accept + pin).
+    #[test]
+    fn known_hosts_absent_file_tofu_preserved() {
+        let dir = std::env::temp_dir();
+        let path = dir.join(format!("execkit_kh_absent_{}", std::process::id()));
+        let _ = std::fs::remove_file(&path);
+        let p = HostKeyVerification::KnownHosts(path.clone());
+
+        // File absent: first sight must be accepted (TOFU).
+        assert!(
+            verify_fingerprint(&p, "new-host", "SHA256:firstkey").unwrap(),
+            "TOFU must accept first-ever connection when known_hosts is absent"
+        );
+        let _ = std::fs::remove_file(&path);
     }
 }
