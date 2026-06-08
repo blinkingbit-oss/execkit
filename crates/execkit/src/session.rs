@@ -143,7 +143,9 @@ impl Session {
     /// Run a command and return a structured [`ExecResult`].
     ///
     /// On a completion timeout this returns [`Error::StillRunning`] and poisons
-    /// the session (subsequent calls return [`Error::SessionPoisoned`]).
+    /// the session (subsequent calls return [`Error::SessionPoisoned`]). If the
+    /// shell itself exits (e.g. the command ran `exit`), it returns
+    /// [`Error::ShellExited`] and likewise poisons the session.
     pub fn exec(&mut self, command: &str) -> Result<ExecResult> {
         let budget = self.output_budget.clone().unwrap_or_default();
         self.exec_inner(command, &budget)
@@ -518,7 +520,16 @@ printf '{end}\\n'\n",
                 Some(c) => c,
                 None => {
                     self.poisoned = true;
-                    return Err(Error::StillRunning);
+                    // None with time still on the clock means the channel closed
+                    // (the shell exited - e.g. the command ran `exit`), which is a
+                    // distinct, immediately-clear failure from a real timeout. A
+                    // disconnect that races the deadline ties to StillRunning; both
+                    // poison the session, so the tie-break is harmless.
+                    return Err(if Instant::now() >= deadline {
+                        Error::StillRunning
+                    } else {
+                        Error::ShellExited
+                    });
                 }
             };
             acc.extend_from_slice(&chunk);

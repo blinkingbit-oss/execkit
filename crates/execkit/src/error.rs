@@ -2,7 +2,12 @@
 use thiserror::Error;
 
 /// Errors returned by execkit.
+///
+/// `#[non_exhaustive]`: new variants may be added in a minor release without it
+/// being a breaking change, so downstream `match` on `Error` must include a
+/// wildcard arm.
 #[derive(Error, Debug)]
+#[non_exhaustive]
 pub enum Error {
     #[error("io error: {0}")]
     Io(#[from] std::io::Error),
@@ -18,6 +23,12 @@ pub enum Error {
     /// pending command would corrupt subsequent reads.
     #[error("command still running (timed out before completion)")]
     StillRunning,
+
+    /// The shell process exited and closed the session's channel (for example the
+    /// command ran `exit`). Distinct from a timeout: it surfaces immediately. The
+    /// session is unusable; create a new one.
+    #[error("shell exited and closed the session; create a new session")]
+    ShellExited,
 
     /// The session is unusable: a prior command timed out while still running,
     /// so its later output would desync framing. Create a new session.
