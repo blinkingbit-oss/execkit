@@ -195,6 +195,59 @@ fn restore_rejects_option_injecting_id_and_no_file_clobber() {
 }
 
 #[test]
+fn secret_excludes_resist_user_negation() {
+    // SEC-4: even when the caller supplies `!.ssh` (a negation), the SECRET_IGNORES
+    // `.ssh` rule written after it in the exclude file overrides the negation.
+    // Proof: after checkpoint + restore, `.ssh/id_rsa` retains the "TAMPERED" value
+    // because git never tracked it (it was excluded).  `keep.txt` IS reverted,
+    // proving the restore ran and the selective non-revert of id_rsa is intentional.
+    let Ok(c) = std::env::var("EXECKIT_TEST_DOCKER") else {
+        eprintln!("skip: set EXECKIT_TEST_DOCKER=<container> (needs git) to run");
+        return;
+    };
+    let ws = "/root/ck_sec4";
+    let mut s = Session::docker(&c)
+        .expect("docker session")
+        .with_workspace(ws)
+        .with_checkpoint_ignores(["!.ssh"])
+        .with_auto_snapshot(false);
+
+    // Set up: fake secret + regular file.
+    s.exec(&format!(
+        "rm -rf {ws} && mkdir -p {ws}/.ssh && \
+         printf 'SECRET' > {ws}/.ssh/id_rsa && \
+         printf 'v1' > {ws}/keep.txt"
+    ))
+    .unwrap();
+
+    let id = s.checkpoint(Some("sec4-base")).expect("checkpoint");
+
+    // Mutate keep.txt so we can verify restore ran.
+    s.exec(&format!("printf 'v2' > {ws}/keep.txt")).unwrap();
+    // Also mutate the fake secret to a sentinel value.
+    s.exec(&format!("printf 'TAMPERED' > {ws}/.ssh/id_rsa"))
+        .unwrap();
+
+    s.restore(&id).expect("restore");
+
+    // keep.txt must be reverted (proves the restore ran).
+    assert_eq!(
+        s.exec(&format!("cat {ws}/keep.txt")).unwrap().stdout,
+        "v1",
+        "keep.txt must be restored to v1"
+    );
+
+    // .ssh/id_rsa must NOT be reverted -- it was never snapshotted.
+    // If the negation `!.ssh` had won, git would have captured the original
+    // "SECRET" value and restore would have written it back, replacing "TAMPERED".
+    assert_eq!(
+        s.exec(&format!("cat {ws}/.ssh/id_rsa")).unwrap().stdout,
+        "TAMPERED",
+        ".ssh/id_rsa must remain TAMPERED (secret was not snapshotted)"
+    );
+}
+
+#[test]
 fn restore_before_any_checkpoint_errors_cleanly() {
     let Ok(c) = std::env::var("EXECKIT_TEST_DOCKER") else {
         eprintln!("skip: set EXECKIT_TEST_DOCKER=<container> (needs git) to run");

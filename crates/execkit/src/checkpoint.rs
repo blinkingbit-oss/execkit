@@ -68,12 +68,9 @@ pub(crate) fn is_read_only(command: &str) -> bool {
     true
 }
 
-/// Patterns never captured: regenerable build trees (kept fast + avoids nuking
-/// them on restore) plus common cache/secret paths (defense in depth - you should
-/// not snapshot or restore these even when the workspace is, say, a home dir).
-/// Users add more via `Session::with_checkpoint_ignores`.
-const DEFAULT_IGNORES: &[&str] = &[
-    // regenerable build output
+/// Regenerable build/cache output: written BEFORE user patterns so users may
+/// legitimately override them (e.g. a project that tracks its `dist/` folder).
+const BUILD_IGNORES: &[&str] = &[
     ".git",
     "node_modules",
     "target",
@@ -82,13 +79,13 @@ const DEFAULT_IGNORES: &[&str] = &[
     ".mypy_cache",
     "dist",
     "build",
-    // caches + secrets (never want these in a snapshot)
-    ".cache",
-    ".ssh",
-    ".gnupg",
-    ".aws",
-    ".netrc",
 ];
+
+/// Secret/credential paths: written AFTER user patterns so they are always the
+/// LAST matching rules. gitignore semantics are "last match wins," so placing
+/// these after any user-supplied negations (e.g. `!.ssh`) ensures a negation
+/// cannot re-include them. Never capture or restore these paths.
+const SECRET_IGNORES: &[&str] = &[".cache", ".ssh", ".gnupg", ".aws", ".netrc"];
 
 /// Single-quote a value for safe use in a `/bin/sh` command.
 pub(crate) fn shq(s: &str) -> String {
@@ -155,9 +152,13 @@ impl Checkpointer {
 
     /// One-time: detect git, ensure the shadow repo exists with excludes set.
     pub fn init_cmd(&self, root: &str) -> String {
-        // Built-in defaults first, then any user-supplied patterns (additive).
-        let mut all: Vec<&str> = DEFAULT_IGNORES.to_vec();
+        // Order matters: gitignore uses "last match wins."
+        // BUILD_IGNORES first (users may override), then user patterns, then
+        // SECRET_IGNORES last (non-negotiable: any user negation in the middle
+        // is overridden by the trailing secret rules).
+        let mut all: Vec<&str> = BUILD_IGNORES.to_vec();
         all.extend(self.ignores.iter().map(String::as_str));
+        all.extend_from_slice(SECRET_IGNORES);
         let excludes = all.join("\n");
         let g = self.git(root);
         format!(
@@ -313,12 +314,48 @@ mod builder_tests {
         let mut cp = Checkpointer::new("tok", true, Some("/srv/app".into()), vec![".".into()]);
         cp.set_ignores(vec!["*.log".into(), "secrets".into()]);
         let cmd = cp.init_cmd("/srv/app");
-        // a built-in default, the new secret default, and both user patterns.
+        // a build default, a secret default, and both user patterns must appear.
         assert!(cmd.contains("node_modules"));
         assert!(cmd.contains(".ssh"));
         assert!(cmd.contains("*.log"));
         assert!(cmd.contains("secrets"));
         assert!(cmd.contains("info/exclude"));
+    }
+
+    #[test]
+    fn init_cmd_secret_excludes_appear_after_user_negation() {
+        // SEC-4: a user-supplied negation like `!.ssh` must be overridden by the
+        // trailing SECRET_IGNORES entry.  gitignore last-match-wins means the rule
+        // written LAST controls; we verify the position invariant here.
+        let mut cp = Checkpointer::new("tok", true, Some("/srv/app".into()), vec![".".into()]);
+        cp.set_ignores(vec!["!.ssh".into()]);
+        let cmd = cp.init_cmd("/srv/app");
+
+        // Both the negation and the secret rule must be present.
+        assert!(
+            cmd.contains("!.ssh"),
+            "user negation must appear in command"
+        );
+        assert!(
+            cmd.contains(".ssh"),
+            "secret exclude must appear in command"
+        );
+
+        // The LAST occurrence of `.ssh` in the exclude blob must not be preceded
+        // by `!` -- i.e. the SECRET_IGNORES `.ssh` wins over the user `!.ssh`.
+        let last_ssh_pos = cmd.rfind(".ssh").expect("`.ssh` not found in command");
+        // Check the byte immediately before the match (if any).
+        let byte_before = if last_ssh_pos > 0 {
+            cmd.as_bytes().get(last_ssh_pos - 1).copied()
+        } else {
+            None
+        };
+        assert_ne!(
+            byte_before,
+            Some(b'!'),
+            "last occurrence of `.ssh` must not be a negation (`!.ssh`); \
+             SECRET_IGNORES must trail user patterns"
+        );
     }
 }
 
