@@ -97,14 +97,3 @@ fn normal_echo_roundtrip_with_real_cwd() {
     assert_eq!(r.cwd, "/");
     assert_eq!(r.exit_code, 0);
 }
-
-#[test]
-fn shell_exit_is_distinguished_from_timeout() {
-    let mut s = Session::local().unwrap();
-    // `exit` closes the shell; this must be a clear ShellExited, not a "timed out"
-    // (the old behavior reported StillRunning, which is misleading).
-    assert!(matches!(
-        s.exec("exit").unwrap_err(),
-        execkit::Error::ShellExited
-    ));
-}

@@ -518,14 +518,7 @@ printf '{end}\\n'\n",
                 Some(c) => c,
                 None => {
                     self.poisoned = true;
-                    // None with time still on the clock means the channel closed
-                    // (the shell exited - e.g. the command ran `exit`), which is a
-                    // distinct, immediately-clear failure from a real timeout.
-                    return Err(if Instant::now() >= deadline {
-                        Error::StillRunning
-                    } else {
-                        Error::ShellExited
-                    });
+                    return Err(Error::StillRunning);
                 }
             };
             acc.extend_from_slice(&chunk);

@@ -19,11 +19,6 @@ pub enum Error {
     #[error("command still running (timed out before completion)")]
     StillRunning,
 
-    /// The shell process exited and closed the session's channel (for example the
-    /// command ran `exit`). The session is unusable; create a new one.
-    #[error("shell exited and closed the session; create a new session")]
-    ShellExited,
-
     /// The session is unusable: a prior command timed out while still running,
     /// so its later output would desync framing. Create a new session.
     /// (v0.x will replace poisoning with interrupt + resync.)
