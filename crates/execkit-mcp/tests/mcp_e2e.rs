@@ -160,6 +160,74 @@ fn enforces_session_cap() {
 }
 
 #[test]
+fn session_cap_atomic_under_concurrency() {
+    // Regression for the TOCTOU in session_create: the cap was checked, the map
+    // lock dropped, and the (blocking) build awaited before re-inserting WITHOUT
+    // a re-check. Pipelined creates all observed len() < max and all proceeded,
+    // spawning far more live PTY children than the operator cap allowed.
+    //
+    // The server processes pipelined tools/call requests concurrently (each build
+    // runs on spawn_blocking), so firing many creates without reading replies in
+    // between reproduces the race.
+    const N: i64 = 30;
+    let mut m = Mcp::start(&[("EXECKIT_MCP_MAX_SESSIONS", "2")]);
+
+    // Fire N creates back-to-back, before reading any reply.
+    for id in 0..N {
+        m.send(json!({"jsonrpc":"2.0","id":100+id,"method":"tools/call",
+            "params":{"name":"session_create","arguments":{"transport":"local"}}}));
+    }
+
+    // Drain N id-bearing replies and count successes (those carrying a session_id).
+    let mut successes = 0;
+    let mut received = 0;
+    while received < N {
+        let v = m.recv();
+        let id = v["id"].as_i64();
+        if !matches!(id, Some(i) if (100..100 + N).contains(&i)) {
+            continue; // not one of ours (e.g. a stray notification id)
+        }
+        received += 1;
+        if !is_error(&v) {
+            let txt = result_text(&v);
+            if txt.contains("session_id") {
+                successes += 1;
+            }
+        }
+    }
+
+    assert!(
+        successes <= 2,
+        "session cap bypassed under concurrency: {successes} creates succeeded, cap was 2"
+    );
+}
+
+#[test]
+fn destroy_releases_a_cap_slot() {
+    // After hitting the cap, destroying a session must free a slot so a new
+    // create succeeds (the atomic admission counter is decremented on destroy).
+    let mut m = Mcp::start(&[("EXECKIT_MCP_MAX_SESSIONS", "2")]);
+    let r1 = m.call(3, "session_create", json!({"transport":"local"}));
+    let r2 = m.call(4, "session_create", json!({"transport":"local"}));
+    assert!(!is_error(&r1) && !is_error(&r2));
+    let sid1 = result_json(&r1)["session_id"].as_str().unwrap().to_string();
+
+    // At the cap: third create is rejected.
+    let r3 = m.call(5, "session_create", json!({"transport":"local"}));
+    assert!(is_error(&r3) && result_text(&r3).contains("limit reached"));
+
+    // Free a slot, then a new create must succeed.
+    let d = m.call(6, "session_destroy", json!({"session_id": sid1}));
+    assert!(result_text(&d).contains("\"destroyed\":true"));
+    let r4 = m.call(7, "session_create", json!({"transport":"local"}));
+    assert!(!is_error(&r4), "slot not released after destroy: {r4}");
+
+    // Still at the cap again: another create is rejected.
+    let r5 = m.call(8, "session_create", json!({"transport":"local"}));
+    assert!(is_error(&r5) && result_text(&r5).contains("limit reached"));
+}
+
+#[test]
 fn rejects_key_path_traversal_generically() {
     // Use a real, existing key_dir so the rejection exercises the bounds check
     // specifically (not the "key_dir missing" branch, which shares the message).

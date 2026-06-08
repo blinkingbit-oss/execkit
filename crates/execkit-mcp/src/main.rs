@@ -21,7 +21,7 @@
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 
 use rmcp::handler::server::router::tool::ToolRouter;
@@ -87,6 +87,12 @@ struct ExeckitServer {
     tool_router: ToolRouter<ExeckitServer>,
     sessions: Sessions,
     config: Arc<Config>,
+    /// Atomic admission counter: the source of truth for the live-session cap.
+    /// Reserved (fetch_add) at the START of session_create BEFORE the blocking
+    /// build, so the check-and-reserve is a single atomic step (no TOCTOU). The
+    /// sessions map stays the lookup table; this is the gate. Released on build
+    /// failure and on destroy.
+    live: Arc<AtomicUsize>,
 }
 
 #[derive(Deserialize, JsonSchema)]
@@ -246,6 +252,7 @@ impl ExeckitServer {
             tool_router: Self::tool_router(),
             sessions: Arc::new(Mutex::new(HashMap::new())),
             config: Arc::new(config),
+            live: Arc::new(AtomicUsize::new(0)),
         }
     }
 
@@ -265,24 +272,40 @@ impl ExeckitServer {
         &self,
         Parameters(p): Parameters<CreateParams>,
     ) -> Result<CallToolResult, ErrorData> {
-        // Soft cap before doing the (potentially expensive) connect.
-        if lock(&self.sessions).len() >= self.config.max_sessions {
+        // Atomically reserve a slot BEFORE the (potentially expensive, awaited)
+        // connect. fetch_add returns the prior value; if it was already at the
+        // cap, undo the reservation and reject. This is the single source of
+        // truth for admission - concurrent creates can never all slip past a
+        // dropped lock the way a check-then-insert on the map could.
+        if self.live.fetch_add(1, Ordering::AcqRel) >= self.config.max_sessions {
+            self.live.fetch_sub(1, Ordering::AcqRel);
             return Ok(tool_error(format!(
                 "session limit reached ({}); destroy unused sessions",
                 self.config.max_sessions
             )));
         }
+        // Past this point the slot is reserved: EVERY path must either insert a
+        // live session (keeping the reservation) or release it (fetch_sub).
         let config = self.config.clone();
-        let built = tokio::task::spawn_blocking(move || build_session(p, &config))
-            .await
-            .map_err(internal)?;
+        let built = match tokio::task::spawn_blocking(move || build_session(p, &config)).await {
+            Ok(built) => built,
+            Err(e) => {
+                // Join error (panic/cancel): release the reserved slot.
+                self.live.fetch_sub(1, Ordering::AcqRel);
+                return Err(internal(e));
+            }
+        };
         match built {
             Ok(session) => {
                 let id = next_id();
                 lock(&self.sessions).insert(id.clone(), Arc::new(Mutex::new(session)));
                 Ok(text(format!("{{\"session_id\":\"{id}\"}}")))
             }
-            Err(e) => Ok(tool_error(format!("session_create failed: {e}"))),
+            Err(e) => {
+                // Build failed: no session was inserted, release the slot.
+                self.live.fetch_sub(1, Ordering::AcqRel);
+                Ok(tool_error(format!("session_create failed: {e}")))
+            }
         }
     }
 
@@ -395,6 +418,12 @@ impl ExeckitServer {
         Parameters(p): Parameters<SessionIdParams>,
     ) -> Result<CallToolResult, ErrorData> {
         let removed = lock(&self.sessions).remove(&p.session_id).is_some();
+        // Release the admission slot only if a session was actually present, so
+        // a double-destroy (or destroy of an unknown id) can't underflow the
+        // counter and free a slot that was never reserved by this session.
+        if removed {
+            self.live.fetch_sub(1, Ordering::AcqRel);
+        }
         Ok(text(format!("{{\"destroyed\":{removed}}}")))
     }
 }
