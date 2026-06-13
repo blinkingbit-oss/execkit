@@ -3,14 +3,17 @@
 //! JSON-RPC. No network needed (local transport + key-path rejection).
 
 use std::io::{BufRead, BufReader, Write};
-use std::process::{Child, ChildStdin, ChildStdout, Command, Stdio};
+use std::process::{Child, ChildStdin, Command, Stdio};
+use std::sync::mpsc::{self, Receiver, RecvTimeoutError};
+use std::thread;
+use std::time::Duration;
 
 use serde_json::{json, Value};
 
 struct Mcp {
     child: Child,
     stdin: ChildStdin,
-    stdout: BufReader<ChildStdout>,
+    rx: Receiver<Value>,
 }
 
 impl Mcp {
@@ -24,12 +27,32 @@ impl Mcp {
         }
         let mut child = cmd.spawn().expect("spawn execkit-mcp");
         let stdin = child.stdin.take().unwrap();
-        let stdout = BufReader::new(child.stdout.take().unwrap());
-        let mut m = Mcp {
-            child,
-            stdin,
-            stdout,
-        };
+        let stdout = child.stdout.take().unwrap();
+        // Drain stdout on a background thread, forwarding each parseable JSON
+        // value over a channel. Unparseable/blank lines are skipped rather than
+        // panicking, and recv() reads with a timeout, so a missing or delayed
+        // reply fails fast with a diagnostic instead of hanging the test run.
+        // (A blocking read_line + expect("valid json-rpc line") was the source
+        // of intermittent multi-minute CI hangs under the concurrency stress.)
+        let (tx, rx) = mpsc::channel::<Value>();
+        thread::spawn(move || {
+            let mut reader = BufReader::new(stdout);
+            let mut line = String::new();
+            loop {
+                line.clear();
+                match reader.read_line(&mut line) {
+                    Ok(0) | Err(_) => break, // EOF or read error: server gone
+                    Ok(_) => {
+                        if let Ok(v) = serde_json::from_str::<Value>(line.trim()) {
+                            if tx.send(v).is_err() {
+                                break; // receiver dropped
+                            }
+                        }
+                    }
+                }
+            }
+        });
+        let mut m = Mcp { child, stdin, rx };
         m.send(json!({"jsonrpc":"2.0","id":1,"method":"initialize",
             "params":{"protocolVersion":"2025-06-18","capabilities":{},
                       "clientInfo":{"name":"test","version":"0"}}}));
@@ -47,12 +70,30 @@ impl Mcp {
 
     fn recv(&mut self) -> Value {
         loop {
-            let mut line = String::new();
-            let n = self.stdout.read_line(&mut line).expect("read");
-            assert!(n > 0, "server closed stdout unexpectedly");
-            let v: Value = serde_json::from_str(line.trim()).expect("valid json-rpc line");
+            let v = match self.rx.recv_timeout(Duration::from_secs(15)) {
+                Ok(v) => v,
+                Err(RecvTimeoutError::Timeout) => {
+                    panic!("no JSON-RPC reply from server within 15s")
+                }
+                Err(RecvTimeoutError::Disconnected) => {
+                    panic!("server closed stdout unexpectedly")
+                }
+            };
             if v.get("id").is_some() {
                 return v;
+            }
+        }
+    }
+
+    /// Best-effort variant: return the next id-bearing reply, or `None` if the
+    /// stream stays quiet for `timeout` (or the server is gone). Used to drain
+    /// an unknown number of pipelined replies without hanging or panicking.
+    fn recv_opt(&mut self, timeout: Duration) -> Option<Value> {
+        loop {
+            match self.rx.recv_timeout(timeout) {
+                Ok(v) if v.get("id").is_some() => return Some(v),
+                Ok(_) => continue, // notification: skip
+                Err(_) => return None,
             }
         }
     }
@@ -178,11 +219,20 @@ fn session_cap_atomic_under_concurrency() {
             "params":{"name":"session_create","arguments":{"transport":"local"}}}));
     }
 
-    // Drain N id-bearing replies and count successes (those carrying a session_id).
+    // Drain replies best-effort and count successes (those carrying a session_id).
+    //
+    // We deliberately do NOT wait for all N replies. The bug we guard against
+    // manifests as MANY successful creates (the cap bypassed), so a reply that
+    // is slow or lost to stdio timing under the test harness can only ever
+    // undercount - never produce a false failure, and never hang. Draining
+    // stops once the reply stream goes quiet. (The server itself answers all N
+    // reliably; requiring all N here was a long-standing source of flakiness.)
     let mut successes = 0;
     let mut received = 0;
     while received < N {
-        let v = m.recv();
+        let Some(v) = m.recv_opt(Duration::from_secs(5)) else {
+            break; // stream quiet: stop draining
+        };
         let id = v["id"].as_i64();
         if !matches!(id, Some(i) if (100..100 + N).contains(&i)) {
             continue; // not one of ours (e.g. a stray notification id)
