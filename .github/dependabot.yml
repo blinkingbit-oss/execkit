@@ -5,6 +5,11 @@ updates:
     directory: /
     schedule:
       interval: weekly
+    ignore:
+      # The MSRV job pins dtolnay/rust-toolchain to our declared rust-version
+      # (1.88) on purpose so it verifies that floor. Do NOT auto-bump it - a
+      # newer Rust would make the job stop catching MSRV regressions.
+      - dependency-name: "dtolnay/rust-toolchain"
   # Keep Rust dependencies current (security + bug fixes).
   - package-ecosystem: cargo
     directory: /
