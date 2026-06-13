@@ -131,6 +131,7 @@ by the **operator at startup** (env vars), not by per-call agent arguments:
 | `EXECKIT_MCP_KNOWN_HOSTS` | SSH host-key verification file (TOFU; rejects changed keys) | `~/.ssh/known_hosts` |
 | `EXECKIT_MCP_INSECURE_ACCEPT_ANY_HOSTKEY` | **DANGEROUS** - disable host-key checks | unset |
 | `EXECKIT_MCP_MAX_SESSIONS` | soft cap on concurrent live sessions | `64` |
+| `EXECKIT_MCP_SESSION_TTL` | reap sessions idle longer than this many seconds (frees the process + cap slot); `0` disables | `1800` (30 min) |
 
 - **Host keys are verified by default** (TOFU against known_hosts; a changed key
   is rejected as a likely MITM). Pass a `fingerprint` to require an exact key, or
