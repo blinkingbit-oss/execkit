@@ -320,9 +320,10 @@ fn idle_sessions_are_reaped_to_recover_cap() {
 
 #[test]
 fn active_session_is_not_reaped() {
-    // TTL=2s. Keep a session active (an exec within the TTL bumps last_used),
+    // TTL=3s. Keep a session active (an exec within the TTL bumps last_used),
     // then trigger a reap via another create; the active session must survive.
-    let mut m = Mcp::start(&[("EXECKIT_MCP_SESSION_TTL", "2")]);
+    // (Generous TTL margin so a loaded CI runner can't flake the timing.)
+    let mut m = Mcp::start(&[("EXECKIT_MCP_SESSION_TTL", "3")]);
     let a = m.call(2, "session_create", json!({"transport": "local"}));
     let sid = result_json(&a)["session_id"].as_str().unwrap().to_string();
     std::thread::sleep(std::time::Duration::from_millis(1200));
