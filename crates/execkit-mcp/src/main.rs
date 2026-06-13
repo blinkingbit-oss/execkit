@@ -289,6 +289,9 @@ impl ExeckitServer {
         &self,
         Parameters(p): Parameters<CreateParams>,
     ) -> Result<CallToolResult, ErrorData> {
+        // Reclaim slots from sessions abandoned past the idle TTL before
+        // reserving, so a full cap of idle sessions cannot reject this create.
+        self.reap_idle();
         // Atomically reserve a slot BEFORE the (potentially expensive, awaited)
         // connect. fetch_add returns the prior value; if it was already at the
         // cap, undo the reservation and reject. This is the single source of
@@ -464,6 +467,45 @@ impl ExeckitServer {
             .ok_or_else(|| ErrorData::invalid_params(format!("unknown session_id: {id}"), None))?;
         *lock(&entry.last_used) = Instant::now(); // touch on every use
         Ok(entry)
+    }
+
+    /// Drop sessions idle longer than the TTL. Selects entries idle past the TTL
+    /// AND not currently locked (a session a handler is mid-exec on fails
+    /// try_lock and is skipped). Removes them under the map lock, decrements the
+    /// cap once each, then drops the (blocking) Session off the async executor.
+    /// No-op when the TTL is disabled. Returns the number reaped.
+    fn reap_idle(&self) -> usize {
+        let Some(ttl) = self.config.session_ttl else {
+            return 0;
+        };
+        let now = Instant::now();
+        let mut reaped: Vec<SessionRef> = Vec::new();
+        {
+            let mut map = lock(&self.sessions);
+            let stale: Vec<String> = map
+                .iter()
+                .filter(|(_, e)| {
+                    now.duration_since(*lock(&e.last_used)) > ttl && e.session.try_lock().is_ok()
+                })
+                .map(|(id, _)| id.clone())
+                .collect();
+            for id in stale {
+                if let Some(e) = map.remove(&id) {
+                    let idle = now.duration_since(*lock(&e.last_used));
+                    eprintln!(
+                        "execkit: reaped idle session {id} (idle {}s)",
+                        idle.as_secs()
+                    );
+                    self.live.fetch_sub(1, Ordering::AcqRel);
+                    reaped.push(e);
+                }
+            }
+        }
+        let n = reaped.len();
+        if n > 0 {
+            tokio::task::spawn_blocking(move || drop(reaped));
+        }
+        n
     }
 }
 

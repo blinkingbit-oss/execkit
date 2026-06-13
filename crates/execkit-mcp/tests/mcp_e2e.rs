@@ -280,3 +280,85 @@ fn output_budget_shapes_and_reports() {
 
     let _ = m.call(6, "session_destroy", json!({"session_id": sid}));
 }
+
+#[test]
+fn idle_sessions_are_reaped_to_recover_cap() {
+    // cap=2, TTL=1s: fill the cap, let them go idle, then a 3rd create must
+    // succeed because the idle two are reaped first.
+    let mut m = Mcp::start(&[
+        ("EXECKIT_MCP_MAX_SESSIONS", "2"),
+        ("EXECKIT_MCP_SESSION_TTL", "1"),
+    ]);
+    let a = m.call(2, "session_create", json!({"transport": "local"}));
+    let b = m.call(3, "session_create", json!({"transport": "local"}));
+    assert!(
+        !is_error(&a) && !is_error(&b),
+        "first two creates fill the cap"
+    );
+    // Without reaping, this 3rd create is rejected (cap reached).
+    let c0 = m.call(4, "session_create", json!({"transport": "local"}));
+    assert!(is_error(&c0), "cap full while sessions are fresh");
+    // Let the first two go idle past the TTL.
+    std::thread::sleep(std::time::Duration::from_millis(1300));
+    let c = m.call(5, "session_create", json!({"transport": "local"}));
+    assert!(
+        !is_error(&c),
+        "idle sessions reaped -> create succeeds: {c:?}"
+    );
+    // The reaped session id is gone.
+    let sid_a = result_json(&a)["session_id"].as_str().unwrap().to_string();
+    let dead = m.call(
+        6,
+        "session_exec",
+        json!({"session_id": sid_a, "command": "echo hi"}),
+    );
+    assert!(
+        dead["error"].is_object() || is_error(&dead),
+        "reaped session is unknown: {dead:?}"
+    );
+}
+
+#[test]
+fn active_session_is_not_reaped() {
+    // TTL=2s. Keep a session active (an exec within the TTL bumps last_used),
+    // then trigger a reap via another create; the active session must survive.
+    let mut m = Mcp::start(&[("EXECKIT_MCP_SESSION_TTL", "2")]);
+    let a = m.call(2, "session_create", json!({"transport": "local"}));
+    let sid = result_json(&a)["session_id"].as_str().unwrap().to_string();
+    std::thread::sleep(std::time::Duration::from_millis(1200));
+    // touch it (bumps last_used)
+    let e = m.call(
+        3,
+        "session_exec",
+        json!({"session_id": sid, "command": "echo alive"}),
+    );
+    assert_eq!(result_json(&e)["stdout"], "alive");
+    // another create triggers reap_idle; sid was just touched, so it stays.
+    let _ = m.call(4, "session_create", json!({"transport": "local"}));
+    let still = m.call(
+        5,
+        "session_exec",
+        json!({"session_id": sid, "command": "echo still"}),
+    );
+    assert_eq!(
+        result_json(&still)["stdout"],
+        "still",
+        "active session must survive reap"
+    );
+}
+
+#[test]
+fn ttl_zero_disables_reaping() {
+    // TTL=0 -> reaping disabled: an idle session is never reaped.
+    let mut m = Mcp::start(&[("EXECKIT_MCP_SESSION_TTL", "0")]);
+    let a = m.call(2, "session_create", json!({"transport": "local"}));
+    let sid = result_json(&a)["session_id"].as_str().unwrap().to_string();
+    std::thread::sleep(std::time::Duration::from_millis(1200));
+    let _ = m.call(3, "session_create", json!({"transport": "local"})); // would-be reap trigger
+    let alive = m.call(
+        4,
+        "session_exec",
+        json!({"session_id": sid, "command": "echo ok"}),
+    );
+    assert_eq!(result_json(&alive)["stdout"], "ok", "TTL=0 must not reap");
+}
