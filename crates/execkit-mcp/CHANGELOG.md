@@ -7,6 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.5.0](https://github.com/blinkingbit-oss/execkit/compare/v0.4.3...v0.5.0) - 2026-06-13
+
+### Added
+
+- *(mcp)* reap idle sessions on create (EXECKIT_MCP_SESSION_TTL, default 30m)
+
+### Other
+
+- *(mcp)* widen active-session TTL margin to 3s (CI flake guard)
+- *(mcp)* document EXECKIT_MCP_SESSION_TTL
+- *(mcp)* SessionEntry with last_used + spawn_blocking destroy drop
+
 ## [0.4.3](https://github.com/blinkingbit-oss/execkit/compare/v0.4.2...v0.4.3) - 2026-06-08
 
 ### Other

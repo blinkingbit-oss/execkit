@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.5.0](https://github.com/blinkingbit-oss/execkit/compare/execkit-v0.4.3...execkit-v0.5.0) - 2026-06-13
+
+### Added
+
+- [**breaking**] ShellExited error + non_exhaustive Error (0.5.0)
+
+### Other
+
+- bump dependency examples 0.4 -> 0.5 for the 0.5.0 release
+
 ## [0.4.3](https://github.com/blinkingbit-oss/execkit/compare/execkit-v0.4.2...execkit-v0.4.3) - 2026-06-08
 
 ### Fixed
