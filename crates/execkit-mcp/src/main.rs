@@ -24,6 +24,7 @@ use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
+use std::time::{Duration, Instant};
 
 use rmcp::handler::server::router::tool::ToolRouter;
 use rmcp::handler::server::wrapper::Parameters;
@@ -36,9 +37,14 @@ use execkit::{
     AuditLog, Budget, Grep, HostKeyVerification, Keep, Policy, Session, SshAuth, SshConfig,
 };
 
-/// A session guarded by its own mutex (execkit::Session is Send but not Sync;
-/// blocking `exec` runs on a blocking thread holding only this lock).
-type SessionRef = Arc<Mutex<Session>>;
+/// A live session plus the last time a handler touched it (for idle reaping).
+/// `last_used` is a separate inner mutex so bumping the timestamp never waits on
+/// a long-running `exec` that holds `session`.
+struct SessionEntry {
+    session: Mutex<Session>,
+    last_used: Mutex<Instant>,
+}
+type SessionRef = Arc<SessionEntry>;
 type Sessions = Arc<Mutex<HashMap<String, SessionRef>>>;
 
 /// Operator-controlled configuration (from env), NOT settable per tool call.
@@ -50,6 +56,8 @@ struct Config {
     /// Soft cap on concurrent live sessions (bounds thread/connection growth
     /// from untrusted create calls).
     max_sessions: usize,
+    /// None disables idle reaping; Some(d) reaps sessions idle longer than d.
+    session_ttl: Option<Duration>,
 }
 
 impl Config {
@@ -70,6 +78,14 @@ impl Config {
                 .ok()
                 .and_then(|v| v.parse().ok())
                 .unwrap_or(64),
+            session_ttl: match std::env::var("EXECKIT_MCP_SESSION_TTL")
+                .ok()
+                .and_then(|v| v.parse::<u64>().ok())
+            {
+                Some(0) => None,                         // explicitly disabled
+                Some(s) => Some(Duration::from_secs(s)), // operator override
+                None => Some(Duration::from_secs(1800)), // default 30 min
+            },
         }
     }
 }
@@ -299,7 +315,13 @@ impl ExeckitServer {
         match built {
             Ok(session) => {
                 let id = next_id();
-                lock(&self.sessions).insert(id.clone(), Arc::new(Mutex::new(session)));
+                lock(&self.sessions).insert(
+                    id.clone(),
+                    Arc::new(SessionEntry {
+                        session: Mutex::new(session),
+                        last_used: Mutex::new(Instant::now()),
+                    }),
+                );
                 Ok(text(format!("{{\"session_id\":\"{id}\"}}")))
             }
             Err(e) => {
@@ -333,8 +355,8 @@ impl ExeckitServer {
         // Concurrent execs on the SAME session serialize on this lock (the
         // outer map lock is already released). `lock` recovers from poisoning.
         let outcome = tokio::task::spawn_blocking(move || match budget {
-            Some(b) => lock(&session).exec_budgeted(&command, &b),
-            None => lock(&session).exec(&command),
+            Some(b) => lock(&session.session).exec_budgeted(&command, &b),
+            None => lock(&session.session).exec(&command),
         })
         .await
         .map_err(internal)?;
@@ -359,10 +381,11 @@ impl ExeckitServer {
     ) -> Result<CallToolResult, ErrorData> {
         let session = self.get(&p.session_id)?;
         let label = p.label;
-        let outcome =
-            tokio::task::spawn_blocking(move || lock(&session).checkpoint(label.as_deref()))
-                .await
-                .map_err(internal)?;
+        let outcome = tokio::task::spawn_blocking(move || {
+            lock(&session.session).checkpoint(label.as_deref())
+        })
+        .await
+        .map_err(internal)?;
         match outcome {
             Ok(id) => Ok(text(format!("{{\"checkpoint_id\":\"{}\"}}", id.0))),
             Err(e) => Ok(tool_error(e.to_string())),
@@ -375,7 +398,7 @@ impl ExeckitServer {
         Parameters(p): Parameters<SessionIdParams>,
     ) -> Result<CallToolResult, ErrorData> {
         let session = self.get(&p.session_id)?;
-        let outcome = tokio::task::spawn_blocking(move || lock(&session).checkpoints())
+        let outcome = tokio::task::spawn_blocking(move || lock(&session.session).checkpoints())
             .await
             .map_err(internal)?;
         match outcome {
@@ -399,7 +422,7 @@ impl ExeckitServer {
         let session = self.get(&p.session_id)?;
         let id = p.checkpoint_id;
         let outcome = tokio::task::spawn_blocking(move || {
-            let mut s = lock(&session);
+            let mut s = lock(&session.session);
             match id {
                 Some(cid) => s.restore(&execkit::CheckpointId(cid)),
                 None => s.restore_last(),
@@ -418,23 +441,29 @@ impl ExeckitServer {
         &self,
         Parameters(p): Parameters<SessionIdParams>,
     ) -> Result<CallToolResult, ErrorData> {
-        let removed = lock(&self.sessions).remove(&p.session_id).is_some();
+        let removed = lock(&self.sessions).remove(&p.session_id);
         // Release the admission slot only if a session was actually present, so
         // a double-destroy (or destroy of an unknown id) can't underflow the
         // counter and free a slot that was never reserved by this session.
-        if removed {
+        let destroyed = removed.is_some();
+        if let Some(entry) = removed {
             self.live.fetch_sub(1, Ordering::AcqRel);
+            // Session::drop is blocking (PTY kill / SSH teardown / docker reap);
+            // do it off the async executor and not under the map lock.
+            tokio::task::spawn_blocking(move || drop(entry));
         }
-        Ok(text(format!("{{\"destroyed\":{removed}}}")))
+        Ok(text(format!("{{\"destroyed\":{destroyed}}}")))
     }
 }
 
 impl ExeckitServer {
     fn get(&self, id: &str) -> Result<SessionRef, ErrorData> {
-        lock(&self.sessions)
+        let entry = lock(&self.sessions)
             .get(id)
             .cloned()
-            .ok_or_else(|| ErrorData::invalid_params(format!("unknown session_id: {id}"), None))
+            .ok_or_else(|| ErrorData::invalid_params(format!("unknown session_id: {id}"), None))?;
+        *lock(&entry.last_used) = Instant::now(); // touch on every use
+        Ok(entry)
     }
 }
 
