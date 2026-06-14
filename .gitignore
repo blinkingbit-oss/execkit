@@ -15,6 +15,7 @@
 # PoC scratch artifacts
 __pycache__/
 *.pyc
+.pytest_cache/
 .playwright-mcp/
 
 # internal planning / scratch - kept locally, not published
