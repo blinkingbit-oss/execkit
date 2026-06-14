@@ -61,8 +61,15 @@ jobs:
     name: Publish to PyPI
     needs: [build, sdist]
     runs-on: ubuntu-latest
-    # Publish only on a real release tag, never on workflow_dispatch.
-    if: startsWith(github.ref, 'refs/tags/')
+    # Publish only on a real release tag, never on workflow_dispatch. (A
+    # workflow_dispatch run's ref is a branch, not refs/tags, so this gate also
+    # blocks manual republish with the token.)
+    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/')
+    # The PyPI token lives in this protected environment (not a repo-wide secret),
+    # so no other workflow can read it; add required reviewers / a tag-only
+    # deployment branch rule here to gate releases. Migrate to Trusted Publishing
+    # (OIDC) when configured on the PyPI project and drop the token entirely.
+    environment: pypi
     steps:
       - uses: actions/download-artifact@v4
         with:
