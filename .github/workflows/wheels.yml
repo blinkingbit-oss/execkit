@@ -1,0 +1,77 @@
+name: Wheels
+
+# Build the execkit Python wheels and (on a release tag) publish to PyPI.
+# Triggers on the SAME tag glob cargo-dist uses (release-plz pushes the tag only
+# when RELEASE_PLZ_TOKEN is set; this shares that dependency). Runs in parallel
+# with the cargo-dist binary release - independent artifacts, different registry.
+on:
+  push:
+    tags: ["**[0-9]+.[0-9]+.[0-9]+*"]
+  workflow_dispatch: # manual full-matrix build to validate before a real release
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: wheel ${{ matrix.platform.runner }} ${{ matrix.platform.target }}
+    runs-on: ${{ matrix.platform.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        platform:
+          - { runner: ubuntu-latest, target: x86_64 }
+          - { runner: ubuntu-latest, target: aarch64 }
+          - { runner: macos-13, target: x86_64 } # Intel
+          - { runner: macos-14, target: aarch64 } # Apple silicon
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.10"
+      # abi3-py38 -> one wheel per platform covers Python 3.8+.
+      - name: Build wheels
+        uses: PyO3/maturin-action@v1
+        with:
+          target: ${{ matrix.platform.target }}
+          manylinux: auto
+          args: --release --out dist --manifest-path crates/execkit-py/Cargo.toml
+          sccache: "true"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: wheels-${{ matrix.platform.runner }}-${{ matrix.platform.target }}
+          path: dist
+
+  sdist:
+    name: sdist
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - name: Build sdist
+        uses: PyO3/maturin-action@v1
+        with:
+          command: sdist
+          args: --out dist --manifest-path crates/execkit-py/Cargo.toml
+      - uses: actions/upload-artifact@v4
+        with:
+          name: wheels-sdist
+          path: dist
+
+  publish:
+    name: Publish to PyPI (Trusted Publishing)
+    needs: [build, sdist]
+    runs-on: ubuntu-latest
+    # Publish only on a real release tag, never on workflow_dispatch.
+    if: startsWith(github.ref, 'refs/tags/')
+    environment: pypi
+    permissions:
+      id-token: write # OIDC: token-free Trusted Publishing
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          pattern: wheels-*
+          merge-multiple: true
+      - uses: pypa/gh-action-pypi-publish@release/v1
+        with:
+          packages-dir: dist

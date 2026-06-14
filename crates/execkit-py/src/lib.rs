@@ -6,6 +6,7 @@
 //! verification, sentinel framing); this layer only marshals values and maps
 //! errors. Blocking calls release the GIL via `Python::detach`.
 
+use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 use std::time::Duration;
 
@@ -13,7 +14,10 @@ use pyo3::create_exception;
 use pyo3::exceptions::{PyException, PyValueError};
 use pyo3::prelude::*;
 
-use execkit_core::{Budget, Grep, Keep, Policy as RsPolicy, Session as RsSession};
+use execkit_core::{
+    Budget, Grep, HostKeyVerification, Keep, Policy as RsPolicy, Session as RsSession, SshAuth,
+    SshConfig,
+};
 
 // --- exception hierarchy (see the design spec) ----------------------------
 create_exception!(execkit, ExeckitError, PyException);
@@ -179,6 +183,70 @@ fn apply_opts(
     Ok(s)
 }
 
+/// Expand a leading `~`/`~/` to `$HOME` (the Rust core takes raw paths and does
+/// no expansion). Anything else is returned unchanged.
+fn expand_tilde(p: &str) -> PathBuf {
+    if p == "~" {
+        if let Some(home) = std::env::var_os("HOME") {
+            return PathBuf::from(home);
+        }
+    } else if let Some(rest) = p.strip_prefix("~/") {
+        if let Some(home) = std::env::var_os("HOME") {
+            return Path::new(&home).join(rest);
+        }
+    }
+    PathBuf::from(p)
+}
+
+/// Assemble an `SshConfig` from the Python kwargs, enforcing exactly-one auth and
+/// host-key verification that is secure by default.
+#[allow(clippy::too_many_arguments)]
+fn build_ssh_config(
+    host: String,
+    user: String,
+    port: u16,
+    password: Option<String>,
+    key_path: Option<String>,
+    key_passphrase: Option<String>,
+    known_hosts: Option<String>,
+    pin: Option<String>,
+    insecure_accept_any_host_key: bool,
+) -> PyResult<SshConfig> {
+    let auth = match (password, key_path) {
+        (Some(_), Some(_)) => {
+            return Err(PyValueError::new_err(
+                "provide either password= or key_path=, not both",
+            ))
+        }
+        (None, None) => {
+            return Err(PyValueError::new_err(
+                "ssh requires an auth method: pass password= or key_path=",
+            ))
+        }
+        (Some(p), None) => SshAuth::Password(p),
+        (None, Some(kp)) => SshAuth::Key {
+            path: expand_tilde(&kp),
+            passphrase: key_passphrase,
+        },
+    };
+    // Precedence: explicit insecure opt-in > pinned fingerprint > known_hosts TOFU.
+    let host_key = if insecure_accept_any_host_key {
+        HostKeyVerification::AcceptAny
+    } else if let Some(fp) = pin {
+        HostKeyVerification::Pinned(fp)
+    } else {
+        let kh = known_hosts.unwrap_or_else(|| "~/.ssh/known_hosts".to_string());
+        HostKeyVerification::KnownHosts(expand_tilde(&kh))
+    };
+    Ok(SshConfig {
+        host,
+        port,
+        user,
+        auth,
+        host_key,
+    })
+}
+
 /// A persistent, stateful shell session (cwd/env stick across commands).
 ///
 /// The session is held behind a `Mutex` so the `#[pyclass]` is `Sync` (the Rust
@@ -247,6 +315,63 @@ impl Session {
         let s = py
             .detach(|| RsSession::docker(&container))
             .map_err(map_err)?;
+        let s = apply_opts(
+            s,
+            policy,
+            timeout,
+            max_output_bytes,
+            tail,
+            head,
+            grep,
+            max_chars,
+        )?;
+        Ok(Session::wrap(s))
+    }
+
+    /// Open an SSH session. Host-key verification is secure by default: TOFU
+    /// against `known_hosts` (a changed key for a known host is rejected) unless
+    /// `pin=` (exact fingerprint) or `insecure_accept_any_host_key=True` is given.
+    /// Exactly one of `password=` / `key_path=` is required.
+    #[staticmethod]
+    #[pyo3(signature = (
+        host, *, user, port=22,
+        password=None, key_path=None, key_passphrase=None,
+        known_hosts=None, pin=None, insecure_accept_any_host_key=false,
+        policy=None, timeout=None, max_output_bytes=None,
+        tail=None, head=None, grep=None, max_chars=None
+    ))]
+    #[allow(clippy::too_many_arguments)]
+    fn ssh(
+        py: Python<'_>,
+        host: String,
+        user: String,
+        port: u16,
+        password: Option<String>,
+        key_path: Option<String>,
+        key_passphrase: Option<String>,
+        known_hosts: Option<String>,
+        pin: Option<String>,
+        insecure_accept_any_host_key: bool,
+        policy: Option<Policy>,
+        timeout: Option<f64>,
+        max_output_bytes: Option<usize>,
+        tail: Option<usize>,
+        head: Option<usize>,
+        grep: Option<String>,
+        max_chars: Option<usize>,
+    ) -> PyResult<Self> {
+        let cfg = build_ssh_config(
+            host,
+            user,
+            port,
+            password,
+            key_path,
+            key_passphrase,
+            known_hosts,
+            pin,
+            insecure_accept_any_host_key,
+        )?;
+        let s = py.detach(|| RsSession::ssh(cfg)).map_err(map_err)?;
         let s = apply_opts(
             s,
             policy,

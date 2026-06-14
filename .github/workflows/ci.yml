@@ -65,12 +65,12 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: "3.10"
-      - name: Install build + test deps
-        run: pip install --upgrade "maturin>=1.7,<2.0" pytest
-      - name: Build the extension (editable)
-        run: maturin develop
+      # `pip install .` drives the maturin build backend (PEP 517) and installs
+      # into the runner's Python - no virtualenv needed in CI.
+      - name: Build & install the SDK
+        run: pip install .
       - name: pytest
-        run: python -m pytest -q
+        run: pip install pytest && python -m pytest -q
 
   msrv:
     name: MSRV (rust-version) builds
@@ -114,6 +114,17 @@ jobs:
         env:
           EXECKIT_TEST_SSH: root:testpw@127.0.0.1:2222
         run: cargo test -p execkit --test ssh_smoke -- --nocapture
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.10"
+      - name: Python SDK SSH e2e (same sshd)
+        working-directory: crates/execkit-py
+        env:
+          EXECKIT_TEST_SSH: root:testpw@127.0.0.1:2222
+        run: |
+          pip install . pytest
+          python -m pytest -q tests/test_ssh.py
 
       - name: Stop sshd
         if: always()
