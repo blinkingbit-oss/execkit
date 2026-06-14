@@ -1,0 +1,32 @@
+[build-system]
+requires = ["maturin>=1.7,<2.0"]
+build-backend = "maturin"
+
+[project]
+name = "execkit"
+description = "Stateful, structured, safe shell sessions for AI agents - over local shells, SSH, and Docker."
+readme = "README.md"
+requires-python = ">=3.8"
+license = "Apache-2.0"
+authors = [{ name = "jayashankarvr" }]
+keywords = ["ai", "agent", "shell", "ssh", "docker", "mcp"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: Apache Software License",
+    "Operating System :: POSIX :: Linux",
+    "Operating System :: MacOS",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Rust",
+    "Topic :: Software Development :: Libraries",
+]
+dynamic = ["version"]
+
+[project.urls]
+Homepage = "https://github.com/blinkingbit-oss/execkit"
+Repository = "https://github.com/blinkingbit-oss/execkit"
+
+[tool.maturin]
+module-name = "execkit"
+# Build the abi3 extension; one wheel per platform covers Python 3.8+.
+features = ["pyo3/extension-module"]
