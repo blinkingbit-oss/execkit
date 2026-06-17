@@ -19,7 +19,8 @@ use execkit_core::{
     SshConfig,
 };
 
-// --- exception hierarchy (see the design spec) ----------------------------
+// Exception hierarchy: base ExeckitError, with SessionUnusable grouping the
+// poisoned-session errors so callers can catch "make a new session" in one arm.
 create_exception!(execkit, ExeckitError, PyException);
 create_exception!(execkit, PolicyViolation, ExeckitError);
 create_exception!(execkit, TransportError, ExeckitError);
