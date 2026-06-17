@@ -7,6 +7,9 @@ rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
 homepage.workspace = true
+# pyproject.toml drives the maturin wheel build from the working tree; it is not
+# part of the crates.io crate, so keep it out of the published tarball.
+exclude = ["pyproject.toml"]
 
 [dependencies]
 execkit = { path = "../execkit", version = "0.6.0" }
