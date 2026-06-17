@@ -1,0 +1,54 @@
+name: Verify PyPI publisher
+
+# Preflight: confirm the PyPI Trusted Publisher is registered for this repo +
+# workflow + environment, by minting a short-lived OIDC token (which PyPI only
+# issues to a registered trusted publisher). Nothing is uploaded; the token is
+# minted and discarded. Run via the Actions "Run workflow" button.
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    environment: pypi
+    permissions:
+      id-token: write
+    steps:
+      - name: Mint a PyPI OIDC token (no upload) and report trusted projects
+        run: |
+          set -euo pipefail
+          aud=$(curl -sS https://pypi.org/_/oidc/audience \
+            | python3 -c "import sys,json;print(json.load(sys.stdin)['audience'])")
+          curl -sS -H "Authorization: bearer $ACTIONS_ID_TOKEN_REQUEST_TOKEN" \
+            "$ACTIONS_ID_TOKEN_REQUEST_URL&audience=$aud" -o oidc.json
+          jwt=$(python3 -c "import json;print(json.load(open('oidc.json'))['value'])")
+          printf '{"token":"%s"}' "$jwt" > mint_req.json
+          # mint-token succeeds only if a trusted publisher matches; it 422s otherwise.
+          code=$(curl -sS -o mint_resp.json -w '%{http_code}' -X POST \
+            https://pypi.org/_/oidc/mint-token \
+            -H 'content-type: application/json' --data @mint_req.json || true)
+          echo "mint-token HTTP $code"
+          python3 - "$code" <<'PY'
+          import json, base64, re, sys
+          code = sys.argv[1]
+          r = json.load(open("mint_resp.json"))
+          tok = r.get("token")
+          if not tok:
+              print("::error::No trusted publisher matches this repo/workflow/environment.")
+              print("PyPI response:", json.dumps(r)[:1000])
+              raise SystemExit(1)
+          body = tok.split("pypi-", 1)[-1]
+          raw = base64.urlsafe_b64decode(body + "=" * (-len(body) % 4))
+          # The macaroon embeds the project scope as readable text; surface it.
+          scope = sorted({m.decode("utf-8", "replace")
+                          for m in re.findall(rb'[ -~]{4,}', raw)
+                          if b'execkit' in m or b'project' in m.lower()})
+          print("Token minted OK -> trusted publisher IS configured.")
+          print("execkit     :", "TRUSTED" if re.search(rb'execkit(?!-mcp)', raw) else "not in scope")
+          print("execkit-mcp :", "TRUSTED" if b'execkit-mcp' in raw else "not in scope")
+          for s in scope:
+              print("  scope-string:", s)
+          PY
