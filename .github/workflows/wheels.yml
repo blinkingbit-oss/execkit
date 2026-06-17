@@ -13,6 +13,11 @@ on:
 permissions:
   contents: read
 
+# Never interrupt an in-flight publish; serialize runs for the same ref.
+concurrency:
+  group: wheels-${{ github.ref }}
+  cancel-in-progress: false
+
 jobs:
   build:
     name: ${{ matrix.package.name }} ${{ matrix.platform.runner }} ${{ matrix.platform.target }}
@@ -108,3 +113,7 @@ jobs:
       - uses: pypa/gh-action-pypi-publish@release/v1
         with:
           packages-dir: dist
+          # Idempotent re-runs: if a leg flaked after some files uploaded, a
+          # re-run skips the already-published files instead of hard-failing
+          # (PyPI versions are immutable, so a failed re-run can't bump+retry).
+          skip-existing: true
