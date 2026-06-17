@@ -68,7 +68,8 @@ changes the exit code or side effects. When applied, the result includes a
 ## Install
 
 ```bash
-cargo install execkit-mcp        # or build from source: cargo build -p execkit-mcp
+pip install execkit-mcp          # the server binary, shipped as a wheel (no Rust toolchain)
+cargo install execkit-mcp        # ...or via cargo (or build from source: cargo build -p execkit-mcp)
 ```
 
 ## Wire it into an agent
