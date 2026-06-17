@@ -2,3 +2,4 @@
 //! Library re-exports for execkit-mcp
 
 pub mod audit;
+pub mod watch;
