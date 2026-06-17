@@ -23,7 +23,12 @@ use crate::watch::tail::Tailer;
 pub fn run_loop(path: PathBuf) -> anyhow::Result<()> {
     enable_raw_mode()?;
     let mut out: Stdout = std::io::stdout();
-    execute!(out, EnterAlternateScreen)?;
+    if let Err(e) = execute!(out, EnterAlternateScreen) {
+        // Entering the alternate screen failed after raw mode was enabled;
+        // undo raw mode so we never leave the user's terminal corrupted.
+        let _ = disable_raw_mode();
+        return Err(e.into());
+    }
     let res = (|| -> anyhow::Result<()> {
         let mut term = Terminal::new(CrosstermBackend::new(std::io::stdout()))?;
         let mut state = AppState::new();

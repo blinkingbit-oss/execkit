@@ -111,7 +111,7 @@ struct ExeckitServer {
     /// sessions map stays the lookup table; this is the gate. Released on build
     /// failure and on destroy.
     live: Arc<AtomicUsize>,
-    audit: Option<std::sync::Arc<AuditWriter>>,
+    audit: Option<Arc<AuditWriter>>,
 }
 
 #[derive(Deserialize, JsonSchema)]
@@ -270,7 +270,7 @@ impl ExeckitServer {
         let audit = config
             .audit_path
             .clone()
-            .map(|p| std::sync::Arc::new(AuditWriter::new(p)));
+            .map(|p| Arc::new(AuditWriter::new(p)));
         Self {
             tool_router: Self::tool_router(),
             sessions: Arc::new(Mutex::new(HashMap::new())),
