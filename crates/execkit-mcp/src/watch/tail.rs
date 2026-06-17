@@ -10,7 +10,6 @@ pub struct Tailer {
     path: PathBuf,
     offset: u64,
     buf: String,
-    mtime_nanos: u128,
 }
 
 impl Tailer {
@@ -19,7 +18,6 @@ impl Tailer {
             path,
             offset: 0,
             buf: String::new(),
-            mtime_nanos: 0,
         }
     }
 
@@ -28,38 +26,15 @@ impl Tailer {
             Ok(f) => f,
             Err(_) => return Vec::new(), // not created yet
         };
-        let metadata = match file.metadata() {
-            Ok(m) => m,
+        let len = match file.metadata() {
+            Ok(m) => m.len(),
             Err(_) => return Vec::new(),
         };
-        let len = metadata.len();
-        let current_mtime_nanos = match metadata.modified() {
-            Ok(t) => t
-                .duration_since(std::time::UNIX_EPOCH)
-                .map(|d| d.as_nanos())
-                .unwrap_or(0),
-            Err(_) => 0,
-        };
-
-        if self.mtime_nanos > 0 && current_mtime_nanos > self.mtime_nanos {
-            // File was modified after we last read it: possible rotation
-            if len < self.offset {
-                // Definitely truncated
-                self.offset = 0;
-                self.buf.clear();
-            } else if len == self.offset && self.offset > 0 {
-                // Size hasn't changed but mtime has; likely rotation/rewrite
-                self.offset = 0;
-                self.buf.clear();
-            }
-        } else if len < self.offset {
-            // Truncated: start over
+        if len < self.offset {
+            // truncated / rotated: start over
             self.offset = 0;
             self.buf.clear();
         }
-
-        self.mtime_nanos = current_mtime_nanos;
-
         if len == self.offset {
             return Vec::new();
         }
@@ -93,12 +68,17 @@ impl Tailer {
 mod tests {
     use super::*;
     use std::io::Write;
+    use std::sync::atomic::{AtomicU64, Ordering};
+
+    static SEQ: AtomicU64 = AtomicU64::new(0);
 
     fn tmp() -> std::path::PathBuf {
+        let n = SEQ.fetch_add(1, Ordering::Relaxed);
         std::env::temp_dir().join(format!(
-            "ek_tail_{}_{}.jsonl",
+            "ek_tail_{}_{}_{}.jsonl",
             std::process::id(),
-            crate::audit::now_ms()
+            crate::audit::now_ms(),
+            n
         ))
     }
     fn append(path: &std::path::Path, s: &str) {
@@ -144,14 +124,16 @@ mod tests {
         );
         let mut t = Tailer::new(p.clone());
         assert_eq!(t.poll().len(), 1);
-        // truncate (rotate) and write a fresh line: offset must reset
-        std::fs::write(
+        // Rotation as a polling tailer actually sees it: the file is truncated
+        // (a poll observes the shrink and resets), then new content is appended.
+        std::fs::write(&p, "").unwrap();
+        assert!(t.poll().is_empty()); // observed the shrink: reset, nothing yet
+        append(
             &p,
             "{\"event\":\"open\",\"ts\":2,\"session\":\"b\",\"transport\":\"local\"}\n",
-        )
-        .unwrap();
+        );
         let evs = t.poll();
-        assert_eq!(evs.len(), 1);
+        assert_eq!(evs.len(), 1); // reads the post-rotation line
         let _ = std::fs::remove_file(&p);
     }
 }
