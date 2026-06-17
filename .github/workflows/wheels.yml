@@ -28,7 +28,10 @@ jobs:
           # with zig as the cross C toolchain instead of the QEMU manylinux
           # container (which failed `cargo metadata`).
           - { runner: ubuntu-latest, target: aarch64, args: "--zig" }
-          - { runner: macos-13, target: x86_64, args: "" } # Intel
+          # Both macOS arches build on the Apple-silicon runner (it cross-compiles
+          # x86_64 via the Xcode SDK). Avoids GitHub's slow/flaky deprecated Intel
+          # (macos-13) runners, which blocked the publish gate.
+          - { runner: macos-14, target: x86_64, args: "" } # Intel (cross)
           - { runner: macos-14, target: aarch64, args: "" } # Apple silicon
     steps:
       - uses: actions/checkout@v6
