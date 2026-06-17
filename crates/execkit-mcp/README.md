@@ -140,6 +140,12 @@ by the **operator at startup** (env vars), not by per-call agent arguments:
   are rejected with a generic error (no path-existence leak).
 - **Audit destination is operator-chosen**, never a tool argument (prevents an
   injected agent from writing to arbitrary files).
+- **Docker** sessions run `docker exec` against any container the daemon can see,
+  so the agent reaches whatever your `docker` context exposes. Grant the server
+  Docker access only when you want that, and scope the daemon/context accordingly.
+- The server speaks MCP on **stdout**; all diagnostics go to **stderr**.
+- Use `allow`/`deny` for a command fence, and run the agent + SSH user with least
+  privilege. The fence is advisory - defense in depth, not a sandbox.
 
 ## Watch live activity (read-only)
 
@@ -155,11 +161,5 @@ exit status) - rendered like a normal shell, not JSON. Switch sessions with `1`-
 or the arrow keys, scroll with PgUp/PgDn, quit with `q`. It only ever reads the
 log and never touches a session. Because the data comes from the server (not the
 client), it works the same under any MCP client (Claude Code, Cursor, Gemini, ...).
-- **Docker** sessions run `docker exec` against any container the daemon can see,
-  so the agent reaches whatever your `docker` context exposes. Grant the server
-  Docker access only when you want that, and scope the daemon/context accordingly.
-- The server speaks MCP on **stdout**; all diagnostics go to **stderr**.
-- Use `allow`/`deny` for a command fence, and run the agent + SSH user with least
-  privilege. The fence is advisory - defense in depth, not a sandbox.
 
 Apache-2.0.
