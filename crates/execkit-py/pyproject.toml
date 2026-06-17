@@ -8,7 +8,7 @@ description = "Stateful, structured, safe shell sessions for AI agents - over lo
 readme = "README.md"
 requires-python = ">=3.8"
 license = "Apache-2.0"
-authors = [{ name = "jayashankarvr", email = "56070307+jayashankarvr@users.noreply.github.com" }]
+authors = [{ name = "Jayashankar R", email = "56070307+jayashankarvr@users.noreply.github.com" }]
 keywords = ["ai", "agent", "shell", "ssh", "docker", "mcp"]
 classifiers = [
     "Development Status :: 3 - Alpha",
