@@ -1,9 +1,10 @@
 name: Wheels
 
-# Build the execkit Python wheels and (on a release tag) publish to PyPI.
-# Triggers on the SAME tag glob cargo-dist uses (release-plz pushes the tag only
-# when RELEASE_PLZ_TOKEN is set; this shares that dependency). Runs in parallel
-# with the cargo-dist binary release - independent artifacts, different registry.
+# Build the execkit (SDK) + execkit-mcp (server) Python wheels and, on a release
+# tag, publish both to PyPI via Trusted Publishing. Triggers on the SAME tag glob
+# cargo-dist uses (release-plz pushes the tag only when RELEASE_PLZ_TOKEN is set;
+# this shares that dependency). Runs in parallel with the cargo-dist binary
+# release - independent artifacts, different registry.
 on:
   push:
     tags: ["**[0-9]+.[0-9]+.[0-9]+*"]
@@ -14,7 +15,7 @@ permissions:
 
 jobs:
   build:
-    name: wheel ${{ matrix.platform.runner }} ${{ matrix.platform.target }}
+    name: ${{ matrix.package.name }} ${{ matrix.platform.runner }} ${{ matrix.platform.target }}
     runs-on: ${{ matrix.platform.runner }}
     # Backstop: never let a stuck runner burn hours (an earlier macOS leg hung
     # to the 24h cap with no timeout). A real build here finishes in ~2-3 min.
@@ -22,6 +23,11 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
+        # execkit = native abi3 extension; execkit-mcp = bundled server binary.
+        # maturin auto-detects each from its own pyproject.toml/Cargo.toml.
+        package:
+          - { dir: crates/execkit-py, name: execkit-py }
+          - { dir: crates/execkit-mcp, name: execkit-mcp }
         platform:
           - { runner: ubuntu-latest, target: x86_64, args: "" }
           # aarch64 is cross-compiled. russh pulls `ring` (C + asm), so build
@@ -38,42 +44,55 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: "3.10"
-      # abi3-py38 -> one wheel per platform covers Python 3.8+.
       - name: Build wheels
         uses: PyO3/maturin-action@v1
         with:
           target: ${{ matrix.platform.target }}
           manylinux: auto
-          args: --release --out dist --manifest-path crates/execkit-py/Cargo.toml ${{ matrix.platform.args }}
+          args: --release --out dist --manifest-path ${{ matrix.package.dir }}/Cargo.toml ${{ matrix.platform.args }}
           sccache: "true"
       - uses: actions/upload-artifact@v4
         with:
-          name: wheels-${{ matrix.platform.runner }}-${{ matrix.platform.target }}
+          # Discriminate by crate dir (execkit-py / execkit-mcp); neither is a
+          # glob prefix of the other, so the publish patterns below stay distinct.
+          name: wheels-${{ matrix.package.name }}-${{ matrix.platform.runner }}-${{ matrix.platform.target }}
           path: dist
 
   sdist:
-    name: sdist
+    name: sdist ${{ matrix.package.name }}
     runs-on: ubuntu-latest
     timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        package:
+          - { dir: crates/execkit-py, name: execkit-py }
+          - { dir: crates/execkit-mcp, name: execkit-mcp }
     steps:
       - uses: actions/checkout@v6
       - name: Build sdist
         uses: PyO3/maturin-action@v1
         with:
           command: sdist
-          args: --out dist --manifest-path crates/execkit-py/Cargo.toml
+          args: --out dist --manifest-path ${{ matrix.package.dir }}/Cargo.toml
       - uses: actions/upload-artifact@v4
         with:
-          name: wheels-sdist
+          name: wheels-${{ matrix.package.name }}-sdist
           path: dist
 
   publish:
-    name: Publish to PyPI
+    name: Publish ${{ matrix.package }} to PyPI
     needs: [build, sdist]
     runs-on: ubuntu-latest
     # Publish only on a real release tag, never on workflow_dispatch (a dispatch
     # run's ref is a branch, not refs/tags).
     if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/')
+    strategy:
+      # Independent uploads: one OIDC mint per project, so a hiccup on one does
+      # not abort the other.
+      fail-fast: false
+      matrix:
+        package: [execkit-py, execkit-mcp]
     environment: pypi
     permissions:
       id-token: write # OIDC: GitHub-native Trusted Publishing, no stored token
@@ -81,10 +100,11 @@ jobs:
       - uses: actions/download-artifact@v4
         with:
           path: dist
-          pattern: wheels-*
+          # `wheels-execkit-py-*` vs `wheels-execkit-mcp-*` do not overlap.
+          pattern: wheels-${{ matrix.package }}-*
           merge-multiple: true
       # Token-free: PyPI verifies the GitHub OIDC identity (repo + workflow +
-      # environment). Configure the trusted publisher once on the PyPI project.
+      # environment) against each project's trusted publisher.
       - uses: pypa/gh-action-pypi-publish@release/v1
         with:
           packages-dir: dist

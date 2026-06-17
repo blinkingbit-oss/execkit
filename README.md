@@ -46,7 +46,10 @@ flowchart LR
 Install the server - **no Rust toolchain needed**:
 
 ```bash
-# Prebuilt binary (Linux/macOS, x86_64 + arm64):
+# pip (the server binary ships as a wheel):
+pip install execkit-mcp
+
+# ...or a prebuilt binary (Linux/macOS, x86_64 + arm64):
 curl --proto '=https' --tlsv1.2 -LsSf https://github.com/blinkingbit-oss/execkit/releases/latest/download/execkit-mcp-installer.sh | sh
 
 # ...or with cargo:
@@ -80,8 +83,8 @@ security settings (host-key verification, key dir, audit, session limits).
 
 ```toml
 [dependencies]
-execkit = "0.5"                                           # local + SSH + Docker
-# execkit = { version = "0.5", default-features = false }  # local + Docker only (no SSH; no russh/tokio)
+execkit = "0.6"                                           # local + SSH + Docker
+# execkit = { version = "0.6", default-features = false }  # local + Docker only (no SSH; no russh/tokio)
 ```
 
 ```rust
@@ -101,6 +104,21 @@ fn main() -> Result<(), execkit::Error> {
 Runnable examples: `cargo run --example local`,
 `EXECKIT_SSH="user:password@host:22" cargo run --example ssh`, and
 `EXECKIT_DOCKER=<container> cargo run --example docker`.
+
+### Python
+
+The same sessions from Python - `pip install execkit` (native bindings, no Rust
+toolchain needed):
+
+```python
+from execkit import Session, Policy
+
+with Session.local(policy=Policy(deny=["rm"]), timeout=30.0) as s:
+    r = s.exec("cd /app && npm ci")
+    print(r.stdout, r.exit_code, r.cwd)
+```
+
+See [`crates/execkit-py/README.md`](./crates/execkit-py/README.md).
 
 ## What you get
 

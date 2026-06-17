@@ -1,0 +1,31 @@
+[build-system]
+requires = ["maturin>=1.7,<2.0"]
+build-backend = "maturin"
+
+[project]
+name = "execkit-mcp"
+description = "execkit MCP server - stateful, structured, safe shell sessions for AI agents over local shells, SSH, and Docker."
+readme = "README.md"
+requires-python = ">=3.8"
+license = "Apache-2.0"
+authors = [{ name = "Jayashankar R", email = "56070307+jayashankarvr@users.noreply.github.com" }]
+keywords = ["ai", "agent", "shell", "ssh", "docker", "mcp"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: Apache Software License",
+    "Operating System :: POSIX :: Linux",
+    "Operating System :: MacOS",
+    "Programming Language :: Rust",
+    "Topic :: Software Development :: Libraries",
+]
+dynamic = ["version"]
+
+[project.urls]
+Homepage = "https://github.com/blinkingbit-oss/execkit"
+Repository = "https://github.com/blinkingbit-oss/execkit"
+
+[tool.maturin]
+# Package the compiled server binary into the wheel (installs `execkit-mcp` on
+# PATH), the way tools like ruff/uv ship. Not a Python extension.
+bindings = "bin"

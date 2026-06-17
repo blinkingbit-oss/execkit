@@ -31,8 +31,8 @@ for the operator security settings (host-key verification, key dir, audit, limit
 
 ```toml
 [dependencies]
-execkit = "0.5"                                   # local + SSH + Docker
-# execkit = { version = "0.5", default-features = false }  # local + Docker only (no SSH; no russh/tokio)
+execkit = "0.6"                                   # local + SSH + Docker
+# execkit = { version = "0.6", default-features = false }  # local + Docker only (no SSH; no russh/tokio)
 ```
 
 ```rust
