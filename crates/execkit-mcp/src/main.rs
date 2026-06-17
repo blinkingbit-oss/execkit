@@ -33,9 +33,8 @@ use rmcp::{tool, tool_handler, tool_router, ErrorData, ServerHandler, ServiceExt
 use schemars::JsonSchema;
 use serde::Deserialize;
 
-use execkit::{
-    AuditLog, Budget, Grep, HostKeyVerification, Keep, Policy, Session, SshAuth, SshConfig,
-};
+use execkit::{Budget, Grep, HostKeyVerification, Keep, Policy, Session, SshAuth, SshConfig};
+use execkit_mcp::audit::AuditWriter;
 
 /// A live session plus the last time a handler touched it (for idle reaping).
 /// `last_used` is a separate inner mutex so bumping the timestamp never waits on
@@ -43,6 +42,7 @@ use execkit::{
 struct SessionEntry {
     session: Mutex<Session>,
     last_used: Mutex<Instant>,
+    transport: String,
 }
 type SessionRef = Arc<SessionEntry>;
 type Sessions = Arc<Mutex<HashMap<String, SessionRef>>>;
@@ -110,6 +110,7 @@ struct ExeckitServer {
     /// sessions map stays the lookup table; this is the gate. Released on build
     /// failure and on destroy.
     live: Arc<AtomicUsize>,
+    audit: Option<std::sync::Arc<AuditWriter>>,
 }
 
 #[derive(Deserialize, JsonSchema)]
@@ -265,11 +266,16 @@ struct RestoreParams {
 #[tool_router]
 impl ExeckitServer {
     fn new(config: Config) -> Self {
+        let audit = config
+            .audit_path
+            .clone()
+            .map(|p| std::sync::Arc::new(AuditWriter::new(p)));
         Self {
             tool_router: Self::tool_router(),
             sessions: Arc::new(Mutex::new(HashMap::new())),
             config: Arc::new(config),
             live: Arc::new(AtomicUsize::new(0)),
+            audit,
         }
     }
 
@@ -306,6 +312,7 @@ impl ExeckitServer {
         }
         // Past this point the slot is reserved: EVERY path must either insert a
         // live session (keeping the reservation) or release it (fetch_sub).
+        let transport = transport_label(&p);
         let config = self.config.clone();
         let built = match tokio::task::spawn_blocking(move || build_session(p, &config)).await {
             Ok(built) => built,
@@ -323,8 +330,12 @@ impl ExeckitServer {
                     Arc::new(SessionEntry {
                         session: Mutex::new(session),
                         last_used: Mutex::new(Instant::now()),
+                        transport: transport.clone(),
                     }),
                 );
+                if let Some(a) = &self.audit {
+                    a.open(&id, &transport);
+                }
                 Ok(text(format!("{{\"session_id\":\"{id}\"}}")))
             }
             Err(e) => {
@@ -349,6 +360,8 @@ impl ExeckitServer {
         Parameters(p): Parameters<ExecParams>,
     ) -> Result<CallToolResult, ErrorData> {
         let session = self.get(&p.session_id)?;
+        let session_id = p.session_id.clone();
+        let transport = session.transport.clone();
         let command = p.command;
         let budget = match p.budget.as_ref().map(|b| b.to_budget()) {
             Some(Ok(b)) => Some(b),
@@ -365,6 +378,9 @@ impl ExeckitServer {
         .map_err(internal)?;
         match outcome {
             Ok(r) => {
+                if let Some(a) = &self.audit {
+                    a.exec(&session_id, &transport, &r);
+                }
                 let json = serde_json::to_string_pretty(&r).map_err(internal)?;
                 Ok(text(json))
             }
@@ -451,6 +467,9 @@ impl ExeckitServer {
         let destroyed = removed.is_some();
         if let Some(entry) = removed {
             self.live.fetch_sub(1, Ordering::AcqRel);
+            if let Some(a) = &self.audit {
+                a.close(&p.session_id, "destroyed");
+            }
             // Session::drop is blocking (PTY kill / SSH teardown / docker reap);
             // do it off the async executor and not under the map lock.
             tokio::task::spawn_blocking(move || drop(entry));
@@ -497,6 +516,9 @@ impl ExeckitServer {
                         idle.as_secs()
                     );
                     self.live.fetch_sub(1, Ordering::AcqRel);
+                    if let Some(a) = &self.audit {
+                        a.close(&id, "reaped");
+                    }
                     reaped.push(e);
                 }
             }
@@ -527,6 +549,20 @@ impl ServerHandler for ExeckitServer {
         info.server_info.name = "execkit-mcp".into();
         info.server_info.version = env!("CARGO_PKG_VERSION").into();
         info
+    }
+}
+
+fn transport_label(p: &CreateParams) -> String {
+    match p.transport.as_str() {
+        "ssh" => match &p.host {
+            Some(h) => format!("ssh:{h}"),
+            None => "ssh".to_string(),
+        },
+        "docker" => match &p.container {
+            Some(c) => format!("docker:{c}"),
+            None => "docker".to_string(),
+        },
+        other => other.to_string(), // "local" and anything else
     }
 }
 
@@ -594,10 +630,6 @@ fn build_session(p: CreateParams, config: &Config) -> Result<Session, execkit::E
             allow: p.allow,
             deny: p.deny,
         });
-    }
-    // Audit destination is operator-controlled (startup), never a tool arg.
-    if let Some(path) = &config.audit_path {
-        session = session.with_audit(AuditLog::new(path));
     }
     Ok(session)
 }
