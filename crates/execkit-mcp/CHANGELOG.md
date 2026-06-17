@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.7.0](https://github.com/blinkingbit-oss/execkit/compare/v0.6.1...v0.7.0) - 2026-06-17
+
+### Added
+
+- *(mcp)* execkit-mcp watch - live read-only session viewer ([#21](https://github.com/blinkingbit-oss/execkit/pull/21))
+
 ## [0.6.1](https://github.com/blinkingbit-oss/execkit/compare/v0.6.0...v0.6.1) - 2026-06-17
 
 ### Fixed
