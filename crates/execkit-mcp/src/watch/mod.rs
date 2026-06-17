@@ -2,3 +2,4 @@
 //! The `execkit-mcp watch` viewer: a live, read-only TUI over the audit log.
 pub mod render;
 pub mod state;
+pub mod tail;
