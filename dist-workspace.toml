@@ -12,6 +12,10 @@ ci = "github"
 create-release = false
 # The installers to generate for each app
 installers = ["shell"]
+# Build each app on its own (`cargo build -p execkit-mcp`), NOT the whole
+# workspace. execkit-py is a cdylib that musl targets can't build; a --workspace
+# build dragged it in and failed the musl legs. Per-package builds skip it.
+precise-builds = true
 # Target platforms to build apps for (Rust target-triple syntax).
 # Unix-only: execkit uses PTYs, /bin/sh, and std::os::unix (no Windows yet).
 targets = [
