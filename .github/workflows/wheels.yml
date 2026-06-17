@@ -63,26 +63,25 @@ jobs:
           name: wheels-${{ matrix.package.name }}-${{ matrix.platform.runner }}-${{ matrix.platform.target }}
           path: dist
 
+  # Only the SDK gets an sdist (source builds of the native extension are useful).
+  # execkit-mcp ships prebuilt bin-wheels for every target platform; a source dist
+  # of a binary package is low-value, and a workspace-member sdist trips PyPI's
+  # PEP 639 License-File check (the crate's LICENSE lands under crates/... not the
+  # dist root). So we skip it.
   sdist:
-    name: sdist ${{ matrix.package.name }}
+    name: sdist execkit-py
     runs-on: ubuntu-latest
     timeout-minutes: 15
-    strategy:
-      fail-fast: false
-      matrix:
-        package:
-          - { dir: crates/execkit-py, name: execkit-py }
-          - { dir: crates/execkit-mcp, name: execkit-mcp }
     steps:
       - uses: actions/checkout@v6
       - name: Build sdist
         uses: PyO3/maturin-action@v1
         with:
           command: sdist
-          args: --out dist --manifest-path ${{ matrix.package.dir }}/Cargo.toml
+          args: --out dist --manifest-path crates/execkit-py/Cargo.toml
       - uses: actions/upload-artifact@v4
         with:
-          name: wheels-${{ matrix.package.name }}-sdist
+          name: wheels-execkit-py-sdist
           path: dist
 
   publish:
