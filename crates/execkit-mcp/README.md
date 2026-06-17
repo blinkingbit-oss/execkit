@@ -140,6 +140,21 @@ by the **operator at startup** (env vars), not by per-call agent arguments:
   are rejected with a generic error (no path-existence leak).
 - **Audit destination is operator-chosen**, never a tool argument (prevents an
   injected agent from writing to arbitrary files).
+
+## Watch live activity (read-only)
+
+Point `EXECKIT_MCP_AUDIT` at a file, then watch it from another terminal:
+
+```bash
+execkit-mcp watch /var/log/execkit.jsonl   # or just: execkit-mcp watch  (uses $EXECKIT_MCP_AUDIT)
+```
+
+`watch` is a live, read-only TUI: the agent's sessions on the left, the selected
+session's shell transcript on the right (prompt, command, stdout, stderr in red,
+exit status) - rendered like a normal shell, not JSON. Switch sessions with `1`-`9`
+or the arrow keys, scroll with PgUp/PgDn, quit with `q`. It only ever reads the
+log and never touches a session. Because the data comes from the server (not the
+client), it works the same under any MCP client (Claude Code, Cursor, Gemini, ...).
 - **Docker** sessions run `docker exec` against any container the daemon can see,
   so the agent reaches whatever your `docker` context exposes. Grant the server
   Docker access only when you want that, and scope the daemon/context accordingly.
