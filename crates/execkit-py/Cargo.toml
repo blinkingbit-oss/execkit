@@ -14,6 +14,13 @@ description = "Native Python bindings for execkit (built into the `execkit` whee
 name = "execkit"                      # -> Python module `import execkit`
 crate-type = ["cdylib"]
 
+# Exclude from cargo-dist (the binary releaser): execkit-py is a PyPI wheel, not a
+# prebuilt binary. It also can't build on musl targets (cdylib unsupported there),
+# so leaving it in dist's workspace build broke the release. dist=false flips dist
+# to precise per-package builds, so it only builds execkit-mcp.
+[package.metadata.dist]
+dist = false
+
 [dependencies]
 # Renamed import: the lib is itself named `execkit` (the Python module), so the
 # core crate is brought in as `execkit_core` to avoid a self-vs-dep name clash.
