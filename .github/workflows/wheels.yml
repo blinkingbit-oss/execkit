@@ -16,14 +16,20 @@ jobs:
   build:
     name: wheel ${{ matrix.platform.runner }} ${{ matrix.platform.target }}
     runs-on: ${{ matrix.platform.runner }}
+    # Backstop: never let a stuck runner burn hours (an earlier macOS leg hung
+    # to the 24h cap with no timeout). A real build here finishes in ~2-3 min.
+    timeout-minutes: 30
     strategy:
       fail-fast: false
       matrix:
         platform:
-          - { runner: ubuntu-latest, target: x86_64 }
-          - { runner: ubuntu-latest, target: aarch64 }
-          - { runner: macos-13, target: x86_64 } # Intel
-          - { runner: macos-14, target: aarch64 } # Apple silicon
+          - { runner: ubuntu-latest, target: x86_64, args: "" }
+          # aarch64 is cross-compiled. russh pulls `ring` (C + asm), so build
+          # with zig as the cross C toolchain instead of the QEMU manylinux
+          # container (which failed `cargo metadata`).
+          - { runner: ubuntu-latest, target: aarch64, args: "--zig" }
+          - { runner: macos-13, target: x86_64, args: "" } # Intel
+          - { runner: macos-14, target: aarch64, args: "" } # Apple silicon
     steps:
       - uses: actions/checkout@v6
       - uses: actions/setup-python@v5
@@ -35,7 +41,7 @@ jobs:
         with:
           target: ${{ matrix.platform.target }}
           manylinux: auto
-          args: --release --out dist --manifest-path crates/execkit-py/Cargo.toml
+          args: --release --out dist --manifest-path crates/execkit-py/Cargo.toml ${{ matrix.platform.args }}
           sccache: "true"
       - uses: actions/upload-artifact@v4
         with:
@@ -45,6 +51,7 @@ jobs:
   sdist:
     name: sdist
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@v6
       - name: Build sdist
