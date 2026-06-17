@@ -4,6 +4,10 @@ Stateful, structured, **safe** shell sessions for AI agents - over local shells,
 SSH, and Docker. Native bindings to the [execkit](https://github.com/blinkingbit-oss/execkit)
 Rust core.
 
+```bash
+pip install execkit
+```
+
 ```python
 import execkit
 from execkit import Session, Policy

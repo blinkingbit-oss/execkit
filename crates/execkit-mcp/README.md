@@ -68,7 +68,8 @@ changes the exit code or side effects. When applied, the result includes a
 ## Install
 
 ```bash
-cargo install execkit-mcp        # or build from source: cargo build -p execkit-mcp
+pip install execkit-mcp          # the server binary, shipped as a wheel (no Rust toolchain)
+cargo install execkit-mcp        # ...or via cargo (or build from source: cargo build -p execkit-mcp)
 ```
 
 ## Wire it into an agent
@@ -146,5 +147,20 @@ by the **operator at startup** (env vars), not by per-call agent arguments:
 - The server speaks MCP on **stdout**; all diagnostics go to **stderr**.
 - Use `allow`/`deny` for a command fence, and run the agent + SSH user with least
   privilege. The fence is advisory - defense in depth, not a sandbox.
+
+## Watch live activity (read-only)
+
+Point `EXECKIT_MCP_AUDIT` at a file, then watch it from another terminal:
+
+```bash
+execkit-mcp watch /var/log/execkit.jsonl   # or just: execkit-mcp watch  (uses $EXECKIT_MCP_AUDIT)
+```
+
+`watch` is a live, read-only TUI: the agent's sessions on the left, the selected
+session's shell transcript on the right (prompt, command, stdout, stderr in red,
+exit status) - rendered like a normal shell, not JSON. Switch sessions with `1`-`9`
+or the arrow keys, scroll with PgUp/PgDn, quit with `q`. It only ever reads the
+log and never touches a session. Because the data comes from the server (not the
+client), it works the same under any MCP client (Claude Code, Cursor, Gemini, ...).
 
 Apache-2.0.
