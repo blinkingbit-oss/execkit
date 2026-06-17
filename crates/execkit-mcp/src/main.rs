@@ -35,6 +35,7 @@ use serde::Deserialize;
 
 use execkit::{Budget, Grep, HostKeyVerification, Keep, Policy, Session, SshAuth, SshConfig};
 use execkit_mcp::audit::AuditWriter;
+use execkit_mcp::watch;
 
 /// A live session plus the last time a handler touched it (for idle reaping).
 /// `last_used` is a separate inner mutex so bumping the timestamp never waits on
@@ -665,8 +666,25 @@ fn internal<E: std::fmt::Display>(e: E) -> ErrorData {
     ErrorData::internal_error(e.to_string(), None)
 }
 
-#[tokio::main]
-async fn main() -> anyhow::Result<()> {
+fn main() -> anyhow::Result<()> {
+    let args: Vec<String> = std::env::args().collect();
+    if args.get(1).map(String::as_str) == Some("watch") {
+        let path = args
+            .get(2)
+            .map(std::path::PathBuf::from)
+            .or_else(|| std::env::var_os("EXECKIT_MCP_AUDIT").map(std::path::PathBuf::from));
+        match path {
+            Some(p) => return watch::run(p),
+            None => {
+                eprintln!("usage: execkit-mcp watch <audit-file>   (or set EXECKIT_MCP_AUDIT)");
+                std::process::exit(2);
+            }
+        }
+    }
+    tokio::runtime::Runtime::new()?.block_on(run_server())
+}
+
+async fn run_server() -> anyhow::Result<()> {
     // stdout is the MCP channel - all diagnostics go to stderr.
     let config = Config::from_env();
     eprintln!("execkit-mcp: starting MCP server on stdio");

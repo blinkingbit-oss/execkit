@@ -1,13 +1,86 @@
 // SPDX-License-Identifier: Apache-2.0
 //! ratatui rendering of the viewer state (two panes), plus the input/tail loop.
+use std::io::Stdout;
+use std::path::PathBuf;
+use std::time::Duration;
+
+use crossterm::event::{self, Event, KeyCode};
+use crossterm::execute;
+use crossterm::terminal::{
+    disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen,
+};
+use ratatui::backend::CrosstermBackend;
 use ratatui::layout::{Constraint, Direction, Layout};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, List, ListItem, Paragraph};
-use ratatui::Frame;
+use ratatui::{Frame, Terminal};
 
 use crate::watch::render::LineKind;
 use crate::watch::state::AppState;
+use crate::watch::tail::Tailer;
+
+pub fn run_loop(path: PathBuf) -> anyhow::Result<()> {
+    enable_raw_mode()?;
+    let mut out: Stdout = std::io::stdout();
+    execute!(out, EnterAlternateScreen)?;
+    let res = (|| -> anyhow::Result<()> {
+        let mut term = Terminal::new(CrosstermBackend::new(std::io::stdout()))?;
+        let mut state = AppState::new();
+        let mut tailer = Tailer::new(path);
+        let mut scroll: u16 = 0;
+        let mut follow = true;
+        loop {
+            for ev in tailer.poll() {
+                state.apply(ev);
+            }
+            term.draw(|f| draw(f, &state, scroll))?;
+            if follow {
+                // pin near the bottom: large scroll is clamped by ratatui to content height
+                scroll = state
+                    .selected_view()
+                    .map(|v| v.transcript.len() as u16)
+                    .unwrap_or(0);
+            }
+            if event::poll(Duration::from_millis(100))? {
+                if let Event::Key(k) = event::read()? {
+                    match k.code {
+                        KeyCode::Char('q') | KeyCode::Esc => break,
+                        KeyCode::Down | KeyCode::Tab => {
+                            state.select_next();
+                            scroll = 0;
+                            follow = true;
+                        }
+                        KeyCode::Up => {
+                            state.select_prev();
+                            scroll = 0;
+                            follow = true;
+                        }
+                        KeyCode::Char(c @ '1'..='9') => {
+                            state.select_index((c as usize) - ('1' as usize));
+                            scroll = 0;
+                            follow = true;
+                        }
+                        KeyCode::PageUp => {
+                            scroll = scroll.saturating_sub(5);
+                            follow = false;
+                        }
+                        KeyCode::PageDown => {
+                            scroll = scroll.saturating_add(5);
+                            follow = true;
+                        }
+                        _ => {}
+                    }
+                }
+            }
+        }
+        Ok(())
+    })();
+    // Always restore the terminal, even on error.
+    let _ = disable_raw_mode();
+    let _ = execute!(std::io::stdout(), LeaveAlternateScreen);
+    res
+}
 
 fn style_for(kind: LineKind) -> Style {
     match kind {
