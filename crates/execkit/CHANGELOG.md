@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.6.0](https://github.com/blinkingbit-oss/execkit/compare/execkit-v0.5.0...execkit-v0.6.0) - 2026-06-17
+
+### Added
+
+- *(python)* ship execkit-mcp as a pip-installable bin-wheel; 0.6 docs
+
 ## [0.5.0](https://github.com/blinkingbit-oss/execkit/compare/execkit-v0.4.3...execkit-v0.5.0) - 2026-06-13
 
 ### Added

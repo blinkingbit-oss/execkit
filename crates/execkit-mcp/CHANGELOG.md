@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.6.0](https://github.com/blinkingbit-oss/execkit/compare/v0.5.0...v0.6.0) - 2026-06-17
+
+### Added
+
+- *(python)* ship execkit-mcp as a pip-installable bin-wheel; 0.6 docs
+
+### Other
+
+- deflake mcp_e2e harness (background reader + best-effort cap drain) ([#17](https://github.com/blinkingbit-oss/execkit/pull/17))
+
 ## [0.5.0](https://github.com/blinkingbit-oss/execkit/compare/v0.4.3...v0.5.0) - 2026-06-13
 
 ### Added
