@@ -58,11 +58,13 @@ jobs:
           command: release
         env:
           # A PAT (RELEASE_PLZ_TOKEN) makes the git tag this job pushes TRIGGER
-          # downstream workflows - specifically cargo-dist's release.yml, which
-          # builds the prebuilt binaries. Tags pushed with the default
-          # GITHUB_TOKEN do NOT trigger other workflows (GitHub anti-recursion).
-          # Falls back to GITHUB_TOKEN if the PAT isn't set: the release still
-          # publishes, but you must re-push the tag manually to build binaries.
+          # the downstream tag workflows - BOTH cargo-dist's release.yml (prebuilt
+          # binaries) AND wheels.yml (the PyPI wheels). Tags pushed with the
+          # default GITHUB_TOKEN do NOT trigger other workflows (GitHub
+          # anti-recursion). Falls back to GITHUB_TOKEN if the PAT isn't set: the
+          # crates.io publish still happens, but the tag triggers neither workflow,
+          # so you must re-run BOTH release.yml and wheels.yml against the tag - or
+          # the release ships crates-only, with no binaries and no PyPI wheels.
           # See RELEASE_SETUP.md.
           GITHUB_TOKEN: ${{ secrets.RELEASE_PLZ_TOKEN || secrets.GITHUB_TOKEN }}
           CARGO_REGISTRY_TOKEN: ${{ steps.auth.outputs.token }}

@@ -228,6 +228,7 @@ jobs:
         with:
           tool: cargo-audit
       # RUSTSEC-2023-0071: Marvin timing side-channel in `rsa`, pulled
-      # transitively via russh -> ssh-key -> rsa. No fixed release exists yet
-      # (revisit when russh updates). Every OTHER advisory still gates CI.
+      # transitively via russh -> ssh-key -> rsa. No fixed release exists yet.
+      # Tracked in issue #23 - drop this ignore when russh ships a fixed rsa.
+      # Every OTHER advisory still gates CI.
       - run: cargo audit --ignore RUSTSEC-2023-0071

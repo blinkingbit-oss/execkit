@@ -100,17 +100,19 @@ items marked (manual) are what a human must confirm.
 - [ ] The generated CHANGELOG entry reads correctly (release-plz builds it from Conventional Commits)
 
 ### Security and hygiene
-- [ ] `cargo audit --ignore RUSTSEC-2023-0071` clean (no NEW advisories; revisit the ignore when russh updates)
+- [ ] `cargo audit --ignore RUSTSEC-2023-0071` clean (no NEW advisories; the one ignore is tracked in issue #23 - drop it when russh ships a fixed rsa)
 - [ ] No secrets/tokens committed; planning and dev docs stay in gitignored `_internal/`
 - [ ] `cargo package -p execkit --list` and `-p execkit-mcp --list` contain only intended files (no internal docs leak)
 
 ### Release mechanics
-- [ ] Commits use Conventional Commits (only `feat:`/`fix:` bump the version; `docs:`/`chore:`/`ci:` do not)
-- [ ] `RELEASE_PLZ_TOKEN` is set so cargo-dist auto-builds binaries (otherwise do the manual tag re-push above)
+- [ ] Commits use Conventional Commits (only `feat:`/`fix:` bump the version; `docs:`/`chore:`/`ci:` do not). In 0.x a `feat:` bumps the PATCH - let release-plz's suggested version stand; do not hand-edit it. Reserve a manual minor bump only for a genuinely large new surface.
+- [ ] Validate the cross-compile legs CI does NOT exercise on PRs: trigger `wheels.yml` via `workflow_dispatch` and confirm it is green. The aarch64 `--zig` and macOS-x86_64 cross builds only run on a tag otherwise, so a cross-compile regression would surface mid-release.
+- [ ] `RELEASE_PLZ_TOKEN` is set so the pushed tag auto-triggers BOTH `release.yml` (binaries) and `wheels.yml` (PyPI wheels). If it has lapsed, the tag triggers neither - re-run BOTH against the tag, or the release ships crates-only.
 - [ ] Merge the Release PR
 
 ### Post-release verification
 - [ ] crates.io shows the new version for BOTH `execkit` and `execkit-mcp`
+- [ ] PyPI shows the new version for BOTH `execkit` (SDK) and `execkit-mcp` (server wheel) - confirms `wheels.yml` fired and published
 - [ ] The GitHub Release is **published (not a draft)** with all 6 binaries + `execkit-mcp-installer.sh`
 - [ ] docs.rs built the new version
 - [ ] (optional) smoke the PUBLISHED `execkit-mcp` against a real container and SSH host
