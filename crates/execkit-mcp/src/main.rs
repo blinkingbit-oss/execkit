@@ -33,8 +33,14 @@ use std::time::{Duration, Instant};
 
 use rmcp::handler::server::router::tool::ToolRouter;
 use rmcp::handler::server::wrapper::Parameters;
-use rmcp::model::{CallToolResult, Content, ServerCapabilities, ServerInfo};
-use rmcp::{tool, tool_handler, tool_router, ErrorData, ServerHandler, ServiceExt};
+use rmcp::model::{
+    CallToolResult, Content, LoggingLevel, LoggingMessageNotificationParam,
+    ProgressNotificationParam, ProgressToken, ServerCapabilities, ServerInfo,
+};
+use rmcp::service::RequestContext;
+use rmcp::{
+    tool, tool_handler, tool_router, ErrorData, Peer, RoleServer, ServerHandler, ServiceExt,
+};
 use schemars::JsonSchema;
 use serde::Deserialize;
 
@@ -408,6 +414,7 @@ impl ExeckitServer {
     async fn session_exec(
         &self,
         Parameters(p): Parameters<ExecParams>,
+        ctx: RequestContext<RoleServer>,
     ) -> Result<CallToolResult, ErrorData> {
         let session = self.get(&p.session_id)?;
         let session_id = p.session_id.clone();
@@ -432,6 +439,16 @@ impl ExeckitServer {
                 if let Some(a) = &audit {
                     a.exec(&session_id, &transport, &r);
                 }
+                // Push the same activity to the client live, so a host agent can
+                // surface its shell activity without a separate `watch` terminal.
+                notify_activity(
+                    &ctx.peer,
+                    ctx.meta.get_progress_token(),
+                    &session_id,
+                    &transport,
+                    &r,
+                )
+                .await;
                 let json = serde_json::to_string_pretty(&r).map_err(internal)?;
                 Ok(text(json))
             }
@@ -594,6 +611,12 @@ impl ServerHandler for ExeckitServer {
              across execs. Remote (ssh/docker) sessions also support workspace checkpoints \
              (session_checkpoint/session_checkpoints/session_restore).",
         );
+        instructions.push_str(
+            " This server streams each command and its result to your client as it \
+             happens (MCP log + progress notifications). If the user wants to watch \
+             this agent's shell activity live, surface these notifications to them - \
+             no separate terminal needed.",
+        );
         if let Some(p) = self
             .config
             .audit_dir
@@ -609,11 +632,77 @@ impl ServerHandler for ExeckitServer {
             ));
         }
         info.instructions = Some(instructions);
-        info.capabilities = ServerCapabilities::builder().enable_tools().build();
+        info.capabilities = ServerCapabilities::builder()
+            .enable_tools()
+            .enable_logging()
+            .build();
         // Default pulls rmcp's own crate identity; advertise ourselves instead.
         info.server_info.name = "execkit-mcp".into();
         info.server_info.version = env!("CARGO_PKG_VERSION").into();
         info
+    }
+}
+
+/// Stream one exec to the client as MCP notifications, mirroring what
+/// `watch --follow` prints to a terminal. A logging message carries the full
+/// shell transcript (prompt, output, exit status); a progress note carries the
+/// one-line summary, but only when the client supplied a progressToken (it has
+/// nowhere to attach otherwise). Best-effort: a send failure never affects the
+/// tool result, and the client already received the same data in that result.
+async fn notify_activity(
+    peer: &Peer<RoleServer>,
+    progress_token: Option<ProgressToken>,
+    session_id: &str,
+    transport: &str,
+    r: &execkit::ExecResult,
+) {
+    let ev = audit::AuditEvent::Exec {
+        ts: audit::now_ms(),
+        session: session_id.to_string(),
+        transport: transport.to_string(),
+        command: r.command.clone(),
+        stdout: r.stdout.clone(),
+        stderr: r.stderr.clone(),
+        exit_code: r.exit_code,
+        duration_ms: r.duration_ms,
+        cwd: r.cwd.clone(),
+        truncated: r.truncated,
+    };
+    let transcript: Vec<String> = watch::render::render_event(&ev)
+        .into_iter()
+        .map(|l| l.text)
+        .collect();
+    let summary = format!(
+        "[{session_id}] {} $ {} -> exit {} ({}ms)",
+        r.cwd, r.command, r.exit_code, r.duration_ms
+    );
+
+    let _ = peer
+        .notify_logging_message(LoggingMessageNotificationParam {
+            level: if r.exit_code == 0 {
+                LoggingLevel::Info
+            } else {
+                LoggingLevel::Warning
+            },
+            logger: Some(format!("execkit/{session_id}")),
+            data: serde_json::json!({
+                "session": session_id,
+                "transport": transport,
+                "summary": summary,
+                "transcript": transcript,
+            }),
+        })
+        .await;
+
+    if let Some(progress_token) = progress_token {
+        let _ = peer
+            .notify_progress(ProgressNotificationParam {
+                progress_token,
+                progress: 1.0,
+                total: None,
+                message: Some(summary),
+            })
+            .await;
     }
 }
 

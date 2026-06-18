@@ -187,4 +187,20 @@ Session ids are self-identifying - `<n>_local`, `<n>_ssh_<user>@<host>[:port]`,
 or `<n>_docker_<container>` - so the audit filenames and the stream read clearly
 at a glance.
 
+### In the agent's client (no terminal, no audit log)
+
+The server also pushes each command to your MCP client as it runs, as standard
+MCP notifications - so a host agent can show its own shell activity live without
+anyone opening a `watch` terminal. Every `session_exec` emits:
+
+- a **log notification** (`notifications/message`) carrying the full shell
+  transcript - `info` on success, `warning` on a non-zero exit; and
+- a **progress notification** (`notifications/progress`) with a one-line summary,
+  when the client supplied a `progressToken` for the call.
+
+This needs no `EXECKIT_MCP_AUDIT*` setup - the server advertises the `logging`
+capability and streams unconditionally. It reveals nothing new: the client
+already receives the same stdout/stderr in the tool result, redacted and bounded.
+How (or whether) the activity is surfaced is up to the client.
+
 Apache-2.0.
