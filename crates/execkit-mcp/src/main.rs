@@ -618,13 +618,15 @@ impl ServerHandler for ExeckitServer {
 }
 
 fn transport_label(p: &CreateParams) -> String {
+    // host/container are agent-provided and land in the audit log content, so
+    // sanitize them (same rule as the session id) to keep the log clean.
     match p.transport.as_str() {
         "ssh" => match &p.host {
-            Some(h) => format!("ssh:{h}"),
+            Some(h) => format!("ssh:{}", sanitize(h)),
             None => "ssh".to_string(),
         },
         "docker" => match &p.container {
-            Some(c) => format!("docker:{c}"),
+            Some(c) => format!("docker:{}", sanitize(c)),
             None => "docker".to_string(),
         },
         other => other.to_string(), // "local" and anything else

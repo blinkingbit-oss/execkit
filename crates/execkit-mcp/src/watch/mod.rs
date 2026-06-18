@@ -33,6 +33,8 @@ pub fn follow(path: PathBuf) -> anyhow::Result<()> {
     );
     let mut src = Source::new(path);
     let mut out = std::io::stdout();
+    // Runs until interrupted: SIGINT (Ctrl+C) terminates via the default
+    // handler; a broken pipe (e.g. piped to `head`) returns Err from writeln!.
     loop {
         for ev in src.poll() {
             let sid = ev.session().to_string();
