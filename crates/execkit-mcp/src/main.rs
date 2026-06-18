@@ -14,9 +14,14 @@
 //! treated as untrusted. Anything that affects the host or filesystem in a
 //! dangerous way is configured by the **operator at startup** (env vars), not by
 //! per-call agent arguments:
-//!   - `EXECKIT_MCP_AUDIT`       - append a JSONL audit log here (all sessions).
-//!   - `EXECKIT_MCP_KEY_DIR`     - dir SSH private keys must live under (default ~/.ssh).
-//!   - `EXECKIT_MCP_KNOWN_HOSTS` - SSH known_hosts file (default ~/.ssh/known_hosts).
+//!   - `EXECKIT_MCP_AUDIT`                - append a JSONL audit log here (all sessions).
+//!   - `EXECKIT_MCP_AUDIT_DIR`            - write one JSONL file per session into this
+//!     directory (`<session_id>-<open_ms>.jsonl`). Takes precedence over
+//!     EXECKIT_MCP_AUDIT when both are set.
+//!   - `EXECKIT_MCP_AUDIT_RETENTION_DAYS` - delete per-session files older than this
+//!     many days at startup (default 14, 0 disables; dir mode only).
+//!   - `EXECKIT_MCP_KEY_DIR`              - dir SSH private keys must live under (default ~/.ssh).
+//!   - `EXECKIT_MCP_KNOWN_HOSTS`          - SSH known_hosts file (default ~/.ssh/known_hosts).
 //!   - `EXECKIT_MCP_INSECURE_ACCEPT_ANY_HOSTKEY=1` - DANGEROUS: disable host-key
 //!     verification. Never in production.
 
@@ -28,14 +33,45 @@ use std::time::{Duration, Instant};
 
 use rmcp::handler::server::router::tool::ToolRouter;
 use rmcp::handler::server::wrapper::Parameters;
-use rmcp::model::{CallToolResult, Content, ServerCapabilities, ServerInfo};
-use rmcp::{tool, tool_handler, tool_router, ErrorData, ServerHandler, ServiceExt};
+use rmcp::model::{
+    CallToolResult, Content, LoggingLevel, LoggingMessageNotificationParam,
+    ProgressNotificationParam, ProgressToken, ServerCapabilities, ServerInfo,
+};
+use rmcp::service::RequestContext;
+use rmcp::{
+    tool, tool_handler, tool_router, ErrorData, Peer, RoleServer, ServerHandler, ServiceExt,
+};
 use schemars::JsonSchema;
 use serde::Deserialize;
 
 use execkit::{Budget, Grep, HostKeyVerification, Keep, Policy, Session, SshAuth, SshConfig};
-use execkit_mcp::audit::AuditWriter;
+use execkit_mcp::audit::{self, AuditWriter};
 use execkit_mcp::watch;
+
+/// How audit events are routed. Off; one shared file for all sessions
+/// (EXECKIT_MCP_AUDIT); or one file per session in a directory
+/// (EXECKIT_MCP_AUDIT_DIR), which is what retention prunes.
+#[derive(Clone)]
+enum AuditSink {
+    Off,
+    Shared(Arc<AuditWriter>),
+    PerSession(PathBuf),
+}
+
+impl AuditSink {
+    /// The writer a newly opened session should use. In PerSession mode each
+    /// call mints a fresh per-session file `<id>-<open_ms>.jsonl`.
+    fn writer_for(&self, session_id: &str) -> Option<Arc<AuditWriter>> {
+        match self {
+            AuditSink::Off => None,
+            AuditSink::Shared(w) => Some(w.clone()),
+            AuditSink::PerSession(dir) => {
+                let file = dir.join(format!("{session_id}-{}.jsonl", audit::now_ms()));
+                Some(Arc::new(AuditWriter::new(file)))
+            }
+        }
+    }
+}
 
 /// A live session plus the last time a handler touched it (for idle reaping).
 /// `last_used` is a separate inner mutex so bumping the timestamp never waits on
@@ -44,6 +80,7 @@ struct SessionEntry {
     session: Mutex<Session>,
     last_used: Mutex<Instant>,
     transport: String,
+    audit: Option<Arc<AuditWriter>>,
 }
 type SessionRef = Arc<SessionEntry>;
 type Sessions = Arc<Mutex<HashMap<String, SessionRef>>>;
@@ -51,6 +88,10 @@ type Sessions = Arc<Mutex<HashMap<String, SessionRef>>>;
 /// Operator-controlled configuration (from env), NOT settable per tool call.
 struct Config {
     audit_path: Option<PathBuf>,
+    audit_dir: Option<PathBuf>,
+    /// Delete per-session audit files older than this many days at startup.
+    /// 0 disables. Only meaningful in dir mode.
+    retention_days: u64,
     key_dir: PathBuf,
     known_hosts: PathBuf,
     insecure_accept_any: bool,
@@ -67,6 +108,11 @@ impl Config {
         let ssh = Path::new(&home).join(".ssh");
         Config {
             audit_path: std::env::var_os("EXECKIT_MCP_AUDIT").map(PathBuf::from),
+            audit_dir: std::env::var_os("EXECKIT_MCP_AUDIT_DIR").map(PathBuf::from),
+            retention_days: std::env::var("EXECKIT_MCP_AUDIT_RETENTION_DAYS")
+                .ok()
+                .and_then(|s| s.trim().parse::<u64>().ok())
+                .unwrap_or(14),
             key_dir: std::env::var_os("EXECKIT_MCP_KEY_DIR")
                 .map(PathBuf::from)
                 .unwrap_or_else(|| ssh.clone()),
@@ -111,7 +157,7 @@ struct ExeckitServer {
     /// sessions map stays the lookup table; this is the gate. Released on build
     /// failure and on destroy.
     live: Arc<AtomicUsize>,
-    audit: Option<Arc<AuditWriter>>,
+    audit_sink: AuditSink,
 }
 
 #[derive(Deserialize, JsonSchema)]
@@ -267,16 +313,22 @@ struct RestoreParams {
 #[tool_router]
 impl ExeckitServer {
     fn new(config: Config) -> Self {
-        let audit = config
-            .audit_path
-            .clone()
-            .map(|p| Arc::new(AuditWriter::new(p)));
+        let audit_sink = if let Some(dir) = config.audit_dir.clone() {
+            if let Err(e) = std::fs::create_dir_all(&dir) {
+                eprintln!("execkit-mcp: audit dir create error: {e}");
+            }
+            AuditSink::PerSession(dir)
+        } else if let Some(path) = config.audit_path.clone() {
+            AuditSink::Shared(Arc::new(AuditWriter::new(path)))
+        } else {
+            AuditSink::Off
+        };
         Self {
             tool_router: Self::tool_router(),
             sessions: Arc::new(Mutex::new(HashMap::new())),
             config: Arc::new(config),
             live: Arc::new(AtomicUsize::new(0)),
-            audit,
+            audit_sink,
         }
     }
 
@@ -314,6 +366,7 @@ impl ExeckitServer {
         // Past this point the slot is reserved: EVERY path must either insert a
         // live session (keeping the reservation) or release it (fetch_sub).
         let transport = transport_label(&p);
+        let label = session_label(&p); // captured before `p` moves into the build
         let config = self.config.clone();
         let built = match tokio::task::spawn_blocking(move || build_session(p, &config)).await {
             Ok(built) => built,
@@ -325,18 +378,20 @@ impl ExeckitServer {
         };
         match built {
             Ok(session) => {
-                let id = next_id();
+                let id = format!("{}_{}", next_num(), label);
+                let audit = self.audit_sink.writer_for(&id);
+                if let Some(a) = &audit {
+                    a.open(&id, &transport);
+                }
                 lock(&self.sessions).insert(
                     id.clone(),
                     Arc::new(SessionEntry {
                         session: Mutex::new(session),
                         last_used: Mutex::new(Instant::now()),
                         transport: transport.clone(),
+                        audit,
                     }),
                 );
-                if let Some(a) = &self.audit {
-                    a.open(&id, &transport);
-                }
                 Ok(text(format!("{{\"session_id\":\"{id}\"}}")))
             }
             Err(e) => {
@@ -359,10 +414,12 @@ impl ExeckitServer {
     async fn session_exec(
         &self,
         Parameters(p): Parameters<ExecParams>,
+        ctx: RequestContext<RoleServer>,
     ) -> Result<CallToolResult, ErrorData> {
         let session = self.get(&p.session_id)?;
         let session_id = p.session_id.clone();
         let transport = session.transport.clone();
+        let audit = session.audit.clone();
         let command = p.command;
         let budget = match p.budget.as_ref().map(|b| b.to_budget()) {
             Some(Ok(b)) => Some(b),
@@ -379,9 +436,19 @@ impl ExeckitServer {
         .map_err(internal)?;
         match outcome {
             Ok(r) => {
-                if let Some(a) = &self.audit {
+                if let Some(a) = &audit {
                     a.exec(&session_id, &transport, &r);
                 }
+                // Push the same activity to the client live, so a host agent can
+                // surface its shell activity without a separate `watch` terminal.
+                notify_activity(
+                    &ctx.peer,
+                    ctx.meta.get_progress_token(),
+                    &session_id,
+                    &transport,
+                    &r,
+                )
+                .await;
                 let json = serde_json::to_string_pretty(&r).map_err(internal)?;
                 Ok(text(json))
             }
@@ -468,7 +535,7 @@ impl ExeckitServer {
         let destroyed = removed.is_some();
         if let Some(entry) = removed {
             self.live.fetch_sub(1, Ordering::AcqRel);
-            if let Some(a) = &self.audit {
+            if let Some(a) = &entry.audit {
                 a.close(&p.session_id, "destroyed");
             }
             // Session::drop is blocking (PTY kill / SSH teardown / docker reap);
@@ -517,7 +584,7 @@ impl ExeckitServer {
                         idle.as_secs()
                     );
                     self.live.fetch_sub(1, Ordering::AcqRel);
-                    if let Some(a) = &self.audit {
+                    if let Some(a) = &e.audit {
                         a.close(&id, "reaped");
                     }
                     reaped.push(e);
@@ -537,15 +604,38 @@ impl ServerHandler for ExeckitServer {
     fn get_info(&self) -> ServerInfo {
         // ServerInfo is #[non_exhaustive] - start from default and assign.
         let mut info = ServerInfo::default();
-        info.instructions = Some(
+        let mut instructions = String::from(
             "Stateful, structured, safe shell sessions for agents. Call session_create \
              (local, ssh, or docker) to get a session_id, session_exec to run commands \
              (structured results), and session_destroy when done. State (cwd, env) persists \
              across execs. Remote (ssh/docker) sessions also support workspace checkpoints \
-             (session_checkpoint/session_checkpoints/session_restore)."
-                .into(),
+             (session_checkpoint/session_checkpoints/session_restore).",
         );
-        info.capabilities = ServerCapabilities::builder().enable_tools().build();
+        instructions.push_str(
+            " This server streams each command and its result to your client as it \
+             happens (MCP log + progress notifications). If the user wants to watch \
+             this agent's shell activity live, surface these notifications to them - \
+             no separate terminal needed.",
+        );
+        if let Some(p) = self
+            .config
+            .audit_dir
+            .as_ref()
+            .or(self.config.audit_path.as_ref())
+        {
+            instructions.push_str(&format!(
+                " A live audit log is enabled at {}. If the user may want to watch this \
+                 agent's shell activity, suggest they run `execkit-mcp watch {}` in a \
+                 separate terminal for a real-time, read-only view of these sessions.",
+                p.display(),
+                p.display()
+            ));
+        }
+        info.instructions = Some(instructions);
+        info.capabilities = ServerCapabilities::builder()
+            .enable_tools()
+            .enable_logging()
+            .build();
         // Default pulls rmcp's own crate identity; advertise ourselves instead.
         info.server_info.name = "execkit-mcp".into();
         info.server_info.version = env!("CARGO_PKG_VERSION").into();
@@ -553,14 +643,79 @@ impl ServerHandler for ExeckitServer {
     }
 }
 
+/// Stream one exec to the client as MCP notifications, mirroring what
+/// `watch --follow` prints to a terminal. A logging message carries the full
+/// shell transcript (prompt, output, exit status); a progress note carries the
+/// one-line summary, but only when the client supplied a progressToken (it has
+/// nowhere to attach otherwise). Best-effort: a send failure never affects the
+/// tool result, and the client already received the same data in that result.
+async fn notify_activity(
+    peer: &Peer<RoleServer>,
+    progress_token: Option<ProgressToken>,
+    session_id: &str,
+    transport: &str,
+    r: &execkit::ExecResult,
+) {
+    let ev = audit::AuditEvent::Exec {
+        ts: audit::now_ms(),
+        session: session_id.to_string(),
+        transport: transport.to_string(),
+        command: r.command.clone(),
+        stdout: r.stdout.clone(),
+        stderr: r.stderr.clone(),
+        exit_code: r.exit_code,
+        duration_ms: r.duration_ms,
+        cwd: r.cwd.clone(),
+        truncated: r.truncated,
+    };
+    let transcript: Vec<String> = watch::render::render_event(&ev)
+        .into_iter()
+        .map(|l| l.text)
+        .collect();
+    let summary = format!(
+        "[{session_id}] {} $ {} -> exit {} ({}ms)",
+        r.cwd, r.command, r.exit_code, r.duration_ms
+    );
+
+    let _ = peer
+        .notify_logging_message(LoggingMessageNotificationParam {
+            level: if r.exit_code == 0 {
+                LoggingLevel::Info
+            } else {
+                LoggingLevel::Warning
+            },
+            logger: Some(format!("execkit/{session_id}")),
+            data: serde_json::json!({
+                "session": session_id,
+                "transport": transport,
+                "summary": summary,
+                "transcript": transcript,
+            }),
+        })
+        .await;
+
+    if let Some(progress_token) = progress_token {
+        let _ = peer
+            .notify_progress(ProgressNotificationParam {
+                progress_token,
+                progress: 1.0,
+                total: None,
+                message: Some(summary),
+            })
+            .await;
+    }
+}
+
 fn transport_label(p: &CreateParams) -> String {
+    // host/container are agent-provided and land in the audit log content, so
+    // sanitize them (same rule as the session id) to keep the log clean.
     match p.transport.as_str() {
         "ssh" => match &p.host {
-            Some(h) => format!("ssh:{h}"),
+            Some(h) => format!("ssh:{}", sanitize(h)),
             None => "ssh".to_string(),
         },
         "docker" => match &p.container {
-            Some(c) => format!("docker:{c}"),
+            Some(c) => format!("docker:{}", sanitize(c)),
             None => "docker".to_string(),
         },
         other => other.to_string(), // "local" and anything else
@@ -657,9 +812,65 @@ fn tool_error(s: String) -> CallToolResult {
     CallToolResult::error(vec![Content::text(s)])
 }
 
-fn next_id() -> String {
+fn next_num() -> u64 {
     static COUNTER: AtomicU64 = AtomicU64::new(1);
-    format!("sess_{}", COUNTER.fetch_add(1, Ordering::Relaxed))
+    COUNTER.fetch_add(1, Ordering::Relaxed)
+}
+
+/// Filename- and log-safe rendering of an agent-provided value: keep
+/// `[A-Za-z0-9._-]`, replace anything else (notably `/`) with `_`, and cap the
+/// length. The session id derived from this becomes an audit FILENAME, so this
+/// prevents path traversal or junk from untrusted host/user/container args.
+fn sanitize(s: &str) -> String {
+    let mut out: String = s
+        .chars()
+        .map(|c| {
+            if c.is_ascii_alphanumeric() || matches!(c, '.' | '_' | '-') {
+                c
+            } else {
+                '_'
+            }
+        })
+        .take(40)
+        .collect();
+    if out.is_empty() {
+        out.push('_');
+    }
+    out
+}
+
+/// Self-identifying session label appended after the session number:
+/// `local`, `ssh_<user>@<host>[:port]`, or `docker_<container>`. Agent-provided
+/// parts are sanitized.
+fn session_label(p: &CreateParams) -> String {
+    label_for(
+        &p.transport,
+        p.user.as_deref(),
+        p.host.as_deref(),
+        p.port,
+        p.container.as_deref(),
+    )
+}
+
+fn label_for(
+    transport: &str,
+    user: Option<&str>,
+    host: Option<&str>,
+    port: Option<u16>,
+    container: Option<&str>,
+) -> String {
+    match transport {
+        "ssh" => {
+            let user = sanitize(user.unwrap_or("user"));
+            let host = sanitize(host.unwrap_or("host"));
+            match port {
+                Some(p) if p != 22 => format!("ssh_{user}@{host}:{p}"),
+                _ => format!("ssh_{user}@{host}"),
+            }
+        }
+        "docker" => format!("docker_{}", sanitize(container.unwrap_or("container"))),
+        _ => "local".to_string(),
+    }
 }
 
 fn internal<E: std::fmt::Display>(e: E) -> ErrorData {
@@ -669,14 +880,25 @@ fn internal<E: std::fmt::Display>(e: E) -> ErrorData {
 fn main() -> anyhow::Result<()> {
     let args: Vec<String> = std::env::args().collect();
     if args.get(1).map(String::as_str) == Some("watch") {
-        let path = args
-            .get(2)
+        // `--follow`/`-f` streams plain lines (no TTY); otherwise the TUI.
+        let rest = &args[2..];
+        let follow = rest.iter().any(|a| a == "--follow" || a == "-f");
+        let path = rest
+            .iter()
+            .find(|a| !a.starts_with('-'))
             .map(std::path::PathBuf::from)
+            .or_else(|| std::env::var_os("EXECKIT_MCP_AUDIT_DIR").map(std::path::PathBuf::from))
             .or_else(|| std::env::var_os("EXECKIT_MCP_AUDIT").map(std::path::PathBuf::from));
         match path {
-            Some(p) => return watch::run(p),
+            Some(p) => {
+                return if follow {
+                    watch::follow(p)
+                } else {
+                    watch::run(p)
+                }
+            }
             None => {
-                eprintln!("usage: execkit-mcp watch <audit-file>   (or set EXECKIT_MCP_AUDIT)");
+                eprintln!("usage: execkit-mcp watch [--follow] <audit-file-or-dir>   (or set EXECKIT_MCP_AUDIT / EXECKIT_MCP_AUDIT_DIR)");
                 std::process::exit(2);
             }
         }
@@ -687,7 +909,20 @@ fn main() -> anyhow::Result<()> {
 async fn run_server() -> anyhow::Result<()> {
     // stdout is the MCP channel - all diagnostics go to stderr.
     let config = Config::from_env();
+    if let Some(dir) = config.audit_dir.clone() {
+        if config.retention_days > 0 {
+            let max_age = Duration::from_secs(config.retention_days * 86_400);
+            execkit_mcp::retention::sweep(&dir, max_age);
+        }
+    }
     eprintln!("execkit-mcp: starting MCP server on stdio");
+    if let Some(p) = config.audit_dir.as_ref().or(config.audit_path.as_ref()) {
+        let pd = p.display();
+        eprintln!(
+            "execkit-mcp: audit log at {pd}. For a live, read-only shell view of these \
+             sessions, run `execkit-mcp watch {pd}` in a SEPARATE terminal."
+        );
+    }
     if std::env::var_os("HOME").is_none() {
         eprintln!(
             "execkit-mcp: NOTE HOME is unset - SSH key dir / known_hosts default under \
@@ -705,4 +940,48 @@ async fn run_server() -> anyhow::Result<()> {
         .await?;
     service.waiting().await?;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{label_for, sanitize};
+
+    #[test]
+    fn sanitize_blocks_path_separators_and_junk() {
+        assert_eq!(sanitize("etlrobot"), "etlrobot");
+        assert_eq!(sanitize("web-01.prod"), "web-01.prod");
+        assert_eq!(sanitize("a/b"), "a_b");
+        assert_eq!(sanitize("../../etc"), ".._.._etc");
+        assert_eq!(sanitize("a b!c"), "a_b_c");
+        assert_eq!(sanitize(""), "_");
+        // the security property: an id (and thus filename) can never contain '/'
+        assert!(!sanitize("x/y/../z").contains('/'));
+    }
+
+    #[test]
+    fn label_for_each_transport() {
+        assert_eq!(label_for("local", None, None, None, None), "local");
+        assert_eq!(
+            label_for("ssh", Some("etlrobot"), Some("web-01"), None, None),
+            "ssh_etlrobot@web-01"
+        );
+        // default port 22 is omitted; non-default is shown
+        assert_eq!(
+            label_for("ssh", Some("u"), Some("h"), Some(22), None),
+            "ssh_u@h"
+        );
+        assert_eq!(
+            label_for("ssh", Some("u"), Some("h"), Some(2222), None),
+            "ssh_u@h:2222"
+        );
+        assert_eq!(
+            label_for("docker", None, None, None, Some("myapp")),
+            "docker_myapp"
+        );
+        // an injected host cannot escape into a path component
+        assert_eq!(
+            label_for("ssh", Some("u"), Some("../x"), None, None),
+            "ssh_u@.._x"
+        );
+    }
 }

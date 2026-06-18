@@ -17,8 +17,8 @@ use ratatui::widgets::{Block, Borders, List, ListItem, Paragraph};
 use ratatui::{Frame, Terminal};
 
 use crate::watch::render::LineKind;
+use crate::watch::source::Source;
 use crate::watch::state::AppState;
-use crate::watch::tail::Tailer;
 
 pub fn run_loop(path: PathBuf) -> anyhow::Result<()> {
     enable_raw_mode()?;
@@ -32,20 +32,20 @@ pub fn run_loop(path: PathBuf) -> anyhow::Result<()> {
     let res = (|| -> anyhow::Result<()> {
         let mut term = Terminal::new(CrosstermBackend::new(std::io::stdout()))?;
         let mut state = AppState::new();
-        let mut tailer = Tailer::new(path);
-        let mut scroll: u16 = 0;
+        let mut source = Source::new(path);
+        // u16::MAX means "pinned to the bottom"; draw() clamps it to the real
+        // last line. Manual scrolling replaces it with a bounded offset.
+        let mut scroll: u16 = u16::MAX;
         let mut follow = true;
         loop {
-            for ev in tailer.poll() {
+            for ev in source.poll() {
                 state.apply(ev);
             }
-            term.draw(|f| draw(f, &state, scroll))?;
+            let mut max_scroll = 0u16;
+            term.draw(|f| max_scroll = draw(f, &state, scroll))?;
             if follow {
-                // pin near the bottom: large scroll is clamped by ratatui to content height
-                scroll = state
-                    .selected_view()
-                    .map(|v| v.transcript.len() as u16)
-                    .unwrap_or(0);
+                // Keep the latest line in view as the transcript grows.
+                scroll = max_scroll;
             }
             if event::poll(Duration::from_millis(100))? {
                 if let Event::Key(k) = event::read()? {
@@ -53,26 +53,27 @@ pub fn run_loop(path: PathBuf) -> anyhow::Result<()> {
                         KeyCode::Char('q') | KeyCode::Esc => break,
                         KeyCode::Down | KeyCode::Tab => {
                             state.select_next();
-                            scroll = 0;
+                            scroll = u16::MAX;
                             follow = true;
                         }
                         KeyCode::Up => {
                             state.select_prev();
-                            scroll = 0;
+                            scroll = u16::MAX;
                             follow = true;
                         }
                         KeyCode::Char(c @ '1'..='9') => {
                             state.select_index((c as usize) - ('1' as usize));
-                            scroll = 0;
+                            scroll = u16::MAX;
                             follow = true;
                         }
                         KeyCode::PageUp => {
-                            scroll = scroll.saturating_sub(5);
+                            // Clamp to the real bottom first, then step up.
+                            scroll = scroll.min(max_scroll).saturating_sub(5);
                             follow = false;
                         }
                         KeyCode::PageDown => {
-                            scroll = scroll.saturating_add(5);
-                            follow = true;
+                            scroll = scroll.min(max_scroll).saturating_add(5);
+                            follow = scroll >= max_scroll; // re-pin once at the bottom
                         }
                         _ => {}
                     }
@@ -100,10 +101,13 @@ fn style_for(kind: LineKind) -> Style {
     }
 }
 
-pub fn draw(frame: &mut Frame, state: &AppState, scroll: u16) {
+/// Renders one frame and returns the maximum useful scroll offset for the
+/// transcript (its line count minus the visible height), so the run loop can
+/// keep "follow" pinned to the bottom and bound manual scrolling.
+pub fn draw(frame: &mut Frame, state: &AppState, scroll: u16) -> u16 {
     let cols = Layout::default()
         .direction(Direction::Horizontal)
-        .constraints([Constraint::Length(32), Constraint::Min(10)])
+        .constraints([Constraint::Length(40), Constraint::Min(10)])
         .split(frame.area());
 
     let items: Vec<ListItem> = state
@@ -112,7 +116,9 @@ pub fn draw(frame: &mut Frame, state: &AppState, scroll: u16) {
         .enumerate()
         .map(|(i, s)| {
             let marker = if i == state.selected { ">" } else { " " };
-            let label = format!("{marker}{} {} {} {}", i + 1, s.id, s.transport, s.cmd_count);
+            // The id is self-identifying (number_transport_target), so the
+            // transport column is redundant here; (N) is the command count.
+            let label = format!("{marker}{} {} ({})", i + 1, s.id, s.cmd_count);
             let mut st = Style::default();
             if s.closed {
                 st = st.fg(Color::DarkGray);
@@ -131,7 +137,7 @@ pub fn draw(frame: &mut Frame, state: &AppState, scroll: u16) {
     let (title, lines): (String, Vec<Line>) = match state.selected_view() {
         Some(v) => {
             let status = if v.closed { "closed" } else { "active" };
-            let title = format!("{}  {}  ({})", v.id, v.transport, status);
+            let title = format!("{}  ({})", v.id, status);
             let lines = v
                 .transcript
                 .iter()
@@ -141,12 +147,18 @@ pub fn draw(frame: &mut Frame, state: &AppState, scroll: u16) {
         }
         None => ("(no sessions yet)".to_string(), Vec::new()),
     };
+    // ratatui's Paragraph does not clamp the scroll offset: a value past the
+    // end blanks the pane. Bound it to keep the last line visible (inner height
+    // is the pane height minus its top+bottom borders; lines are not wrapped).
+    let inner_h = cols[1].height.saturating_sub(2);
+    let max_scroll = (lines.len() as u16).saturating_sub(inner_h);
     frame.render_widget(
         Paragraph::new(lines)
             .block(Block::default().borders(Borders::ALL).title(title))
-            .scroll((scroll, 0)),
+            .scroll((scroll.min(max_scroll), 0)),
         cols[1],
     );
+    max_scroll
 }
 
 #[cfg(test)]
@@ -179,7 +191,10 @@ mod tests {
         });
         let backend = TestBackend::new(80, 12);
         let mut term = Terminal::new(backend).unwrap();
-        term.draw(|f| draw(f, &s, 0)).unwrap();
+        term.draw(|f| {
+            draw(f, &s, 0);
+        })
+        .unwrap();
         let buf = term.backend().buffer().clone();
         let dump: String = buf.content().iter().map(|c| c.symbol()).collect();
         assert!(dump.contains("sess_1"), "session id in list");

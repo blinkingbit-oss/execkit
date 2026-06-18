@@ -38,6 +38,17 @@ pub enum AuditEvent {
     },
 }
 
+impl AuditEvent {
+    /// The session id this event belongs to (present on every variant).
+    pub fn session(&self) -> &str {
+        match self {
+            AuditEvent::Open { session, .. }
+            | AuditEvent::Exec { session, .. }
+            | AuditEvent::Close { session, .. } => session,
+        }
+    }
+}
+
 /// Unix epoch milliseconds. Monotonic enough for ordering/display; no time dep.
 pub fn now_ms() -> u64 {
     SystemTime::now()

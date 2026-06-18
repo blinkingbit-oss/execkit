@@ -113,8 +113,8 @@ Then the agent can call `session_create` -> `session_exec` -> `session_destroy`.
 ## Example session (what the agent sees)
 
 ```jsonc
-// session_create {"transport":"local"}              -> {"session_id":"sess_1"}
-// session_exec   {"session_id":"sess_1","command":"npm run build"}
+// session_create {"transport":"local"}              -> {"session_id":"1_local"}
+// session_exec   {"session_id":"1_local","command":"npm run build"}
 //   -> {"stdout":"...","stderr":"Error: Cannot find module 'webpack'",
 //       "exit_code":1,"duration_ms":3420,"cwd":"/home/u/app","truncated":false}
 ```
@@ -128,6 +128,8 @@ by the **operator at startup** (env vars), not by per-call agent arguments:
 | Env var | Purpose | Default |
 |---|---|---|
 | `EXECKIT_MCP_AUDIT` | append a JSONL audit log of every command here | off |
+| `EXECKIT_MCP_AUDIT_DIR` | write one JSONL file per session into this directory (`<session_id>-<open_ms>.jsonl`); takes precedence over `EXECKIT_MCP_AUDIT` when both are set | off |
+| `EXECKIT_MCP_AUDIT_RETENTION_DAYS` | delete per-session log files older than this many days at startup (dir mode only); `0` disables | `14` |
 | `EXECKIT_MCP_KEY_DIR` | SSH `key_path` must canonicalize to inside this dir | `~/.ssh` |
 | `EXECKIT_MCP_KNOWN_HOSTS` | SSH host-key verification file (TOFU; rejects changed keys) | `~/.ssh/known_hosts` |
 | `EXECKIT_MCP_INSECURE_ACCEPT_ANY_HOSTKEY` | **DANGEROUS** - disable host-key checks | unset |
@@ -156,11 +158,49 @@ Point `EXECKIT_MCP_AUDIT` at a file, then watch it from another terminal:
 execkit-mcp watch /var/log/execkit.jsonl   # or just: execkit-mcp watch  (uses $EXECKIT_MCP_AUDIT)
 ```
 
+`watch` also accepts a directory - it tails every `*.jsonl` file in it and picks
+up new session files as they appear:
+
+```bash
+execkit-mcp watch /var/log/execkit/        # or: execkit-mcp watch  (uses $EXECKIT_MCP_AUDIT_DIR)
+```
+
 `watch` is a live, read-only TUI: the agent's sessions on the left, the selected
 session's shell transcript on the right (prompt, command, stdout, stderr in red,
 exit status) - rendered like a normal shell, not JSON. Switch sessions with `1`-`9`
 or the arrow keys, scroll with PgUp/PgDn, quit with `q`. It only ever reads the
 log and never touches a session. Because the data comes from the server (not the
 client), it works the same under any MCP client (Claude Code, Cursor, Gemini, ...).
+
+For a headless or background view - no terminal required, pipeable - use
+`--follow` instead of the TUI. It prints each command and its output as a line,
+prefixed with the session id, as it happens:
+
+```bash
+execkit-mcp watch --follow /var/log/execkit/
+# [1_local]              /home/u $ npm run build
+# [1_local]              x exit 1  (3420ms)
+# [2_ssh_deploy@web-01]  /srv $ systemctl restart app
+```
+
+Session ids are self-identifying - `<n>_local`, `<n>_ssh_<user>@<host>[:port]`,
+or `<n>_docker_<container>` - so the audit filenames and the stream read clearly
+at a glance.
+
+### In the agent's client (no terminal, no audit log)
+
+The server also pushes each command to your MCP client as it runs, as standard
+MCP notifications - so a host agent can show its own shell activity live without
+anyone opening a `watch` terminal. Every `session_exec` emits:
+
+- a **log notification** (`notifications/message`) carrying the full shell
+  transcript - `info` on success, `warning` on a non-zero exit; and
+- a **progress notification** (`notifications/progress`) with a one-line summary,
+  when the client supplied a `progressToken` for the call.
+
+This needs no `EXECKIT_MCP_AUDIT*` setup - the server advertises the `logging`
+capability and streams unconditionally. It reveals nothing new: the client
+already receives the same stdout/stderr in the tool result, redacted and bounded.
+How (or whether) the activity is surfaced is up to the client.
 
 Apache-2.0.
