@@ -130,23 +130,18 @@ fn audit_dir_one_file_per_session() {
     let file_path = entries[0].path();
     let file_name = file_path.file_name().unwrap().to_string_lossy().to_string();
 
-    // Filename matches `^sess_\d+-\d+\.jsonl$`.
-    // e.g. "sess_1-1718123456789.jsonl"
+    // Filename is "<session_id>-<open_ms>.jsonl", e.g. "1_local-1718123456789.jsonl".
+    let ms = file_name
+        .strip_prefix(&format!("{sid}-"))
+        .and_then(|s| s.strip_suffix(".jsonl"));
     assert!(
-        file_name.starts_with("sess_")
-            && file_name.ends_with(".jsonl")
-            && file_name
-                .trim_start_matches("sess_")
-                .trim_end_matches(".jsonl")
-                .split('-')
-                .count()
-                == 2
-            && file_name
-                .trim_start_matches("sess_")
-                .trim_end_matches(".jsonl")
-                .split('-')
-                .all(|p| p.chars().all(|c| c.is_ascii_digit()) && !p.is_empty()),
-        "filename {file_name:?} does not match expected pattern sess_<digits>-<digits>.jsonl"
+        matches!(ms, Some(m) if !m.is_empty() && m.chars().all(|c| c.is_ascii_digit())),
+        "filename {file_name:?} should be {sid}-<digits>.jsonl"
+    );
+    // The id itself follows the self-identifying scheme: "<number>_local" here.
+    assert!(
+        sid.starts_with(|c: char| c.is_ascii_digit()) && sid.ends_with("_local"),
+        "session id {sid:?} should be <number>_local"
     );
 
     // Lines are ordered open/exec/close with correct session id and transport.

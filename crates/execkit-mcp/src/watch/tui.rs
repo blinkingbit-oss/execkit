@@ -107,7 +107,7 @@ fn style_for(kind: LineKind) -> Style {
 pub fn draw(frame: &mut Frame, state: &AppState, scroll: u16) -> u16 {
     let cols = Layout::default()
         .direction(Direction::Horizontal)
-        .constraints([Constraint::Length(32), Constraint::Min(10)])
+        .constraints([Constraint::Length(40), Constraint::Min(10)])
         .split(frame.area());
 
     let items: Vec<ListItem> = state
@@ -116,7 +116,9 @@ pub fn draw(frame: &mut Frame, state: &AppState, scroll: u16) -> u16 {
         .enumerate()
         .map(|(i, s)| {
             let marker = if i == state.selected { ">" } else { " " };
-            let label = format!("{marker}{} {} {} {}", i + 1, s.id, s.transport, s.cmd_count);
+            // The id is self-identifying (number_transport_target), so the
+            // transport column is redundant here; (N) is the command count.
+            let label = format!("{marker}{} {} ({})", i + 1, s.id, s.cmd_count);
             let mut st = Style::default();
             if s.closed {
                 st = st.fg(Color::DarkGray);
@@ -135,7 +137,7 @@ pub fn draw(frame: &mut Frame, state: &AppState, scroll: u16) -> u16 {
     let (title, lines): (String, Vec<Line>) = match state.selected_view() {
         Some(v) => {
             let status = if v.closed { "closed" } else { "active" };
-            let title = format!("{}  {}  ({})", v.id, v.transport, status);
+            let title = format!("{}  ({})", v.id, status);
             let lines = v
                 .transcript
                 .iter()

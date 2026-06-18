@@ -360,6 +360,7 @@ impl ExeckitServer {
         // Past this point the slot is reserved: EVERY path must either insert a
         // live session (keeping the reservation) or release it (fetch_sub).
         let transport = transport_label(&p);
+        let label = session_label(&p); // captured before `p` moves into the build
         let config = self.config.clone();
         let built = match tokio::task::spawn_blocking(move || build_session(p, &config)).await {
             Ok(built) => built,
@@ -371,7 +372,7 @@ impl ExeckitServer {
         };
         match built {
             Ok(session) => {
-                let id = next_id();
+                let id = format!("{}_{}", next_num(), label);
                 let audit = self.audit_sink.writer_for(&id);
                 if let Some(a) = &audit {
                     a.open(&id, &transport);
@@ -720,9 +721,65 @@ fn tool_error(s: String) -> CallToolResult {
     CallToolResult::error(vec![Content::text(s)])
 }
 
-fn next_id() -> String {
+fn next_num() -> u64 {
     static COUNTER: AtomicU64 = AtomicU64::new(1);
-    format!("sess_{}", COUNTER.fetch_add(1, Ordering::Relaxed))
+    COUNTER.fetch_add(1, Ordering::Relaxed)
+}
+
+/// Filename- and log-safe rendering of an agent-provided value: keep
+/// `[A-Za-z0-9._-]`, replace anything else (notably `/`) with `_`, and cap the
+/// length. The session id derived from this becomes an audit FILENAME, so this
+/// prevents path traversal or junk from untrusted host/user/container args.
+fn sanitize(s: &str) -> String {
+    let mut out: String = s
+        .chars()
+        .map(|c| {
+            if c.is_ascii_alphanumeric() || matches!(c, '.' | '_' | '-') {
+                c
+            } else {
+                '_'
+            }
+        })
+        .take(40)
+        .collect();
+    if out.is_empty() {
+        out.push('_');
+    }
+    out
+}
+
+/// Self-identifying session label appended after the session number:
+/// `local`, `ssh_<user>@<host>[:port]`, or `docker_<container>`. Agent-provided
+/// parts are sanitized.
+fn session_label(p: &CreateParams) -> String {
+    label_for(
+        &p.transport,
+        p.user.as_deref(),
+        p.host.as_deref(),
+        p.port,
+        p.container.as_deref(),
+    )
+}
+
+fn label_for(
+    transport: &str,
+    user: Option<&str>,
+    host: Option<&str>,
+    port: Option<u16>,
+    container: Option<&str>,
+) -> String {
+    match transport {
+        "ssh" => {
+            let user = sanitize(user.unwrap_or("user"));
+            let host = sanitize(host.unwrap_or("host"));
+            match port {
+                Some(p) if p != 22 => format!("ssh_{user}@{host}:{p}"),
+                _ => format!("ssh_{user}@{host}"),
+            }
+        }
+        "docker" => format!("docker_{}", sanitize(container.unwrap_or("container"))),
+        _ => "local".to_string(),
+    }
 }
 
 fn internal<E: std::fmt::Display>(e: E) -> ErrorData {
@@ -792,4 +849,48 @@ async fn run_server() -> anyhow::Result<()> {
         .await?;
     service.waiting().await?;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{label_for, sanitize};
+
+    #[test]
+    fn sanitize_blocks_path_separators_and_junk() {
+        assert_eq!(sanitize("etlrobot"), "etlrobot");
+        assert_eq!(sanitize("web-01.prod"), "web-01.prod");
+        assert_eq!(sanitize("a/b"), "a_b");
+        assert_eq!(sanitize("../../etc"), ".._.._etc");
+        assert_eq!(sanitize("a b!c"), "a_b_c");
+        assert_eq!(sanitize(""), "_");
+        // the security property: an id (and thus filename) can never contain '/'
+        assert!(!sanitize("x/y/../z").contains('/'));
+    }
+
+    #[test]
+    fn label_for_each_transport() {
+        assert_eq!(label_for("local", None, None, None, None), "local");
+        assert_eq!(
+            label_for("ssh", Some("etlrobot"), Some("web-01"), None, None),
+            "ssh_etlrobot@web-01"
+        );
+        // default port 22 is omitted; non-default is shown
+        assert_eq!(
+            label_for("ssh", Some("u"), Some("h"), Some(22), None),
+            "ssh_u@h"
+        );
+        assert_eq!(
+            label_for("ssh", Some("u"), Some("h"), Some(2222), None),
+            "ssh_u@h:2222"
+        );
+        assert_eq!(
+            label_for("docker", None, None, None, Some("myapp")),
+            "docker_myapp"
+        );
+        // an injected host cannot escape into a path component
+        assert_eq!(
+            label_for("ssh", Some("u"), Some("../x"), None, None),
+            "ssh_u@.._x"
+        );
+    }
 }
