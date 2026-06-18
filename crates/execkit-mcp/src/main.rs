@@ -732,15 +732,25 @@ fn internal<E: std::fmt::Display>(e: E) -> ErrorData {
 fn main() -> anyhow::Result<()> {
     let args: Vec<String> = std::env::args().collect();
     if args.get(1).map(String::as_str) == Some("watch") {
-        let path = args
-            .get(2)
+        // `--follow`/`-f` streams plain lines (no TTY); otherwise the TUI.
+        let rest = &args[2..];
+        let follow = rest.iter().any(|a| a == "--follow" || a == "-f");
+        let path = rest
+            .iter()
+            .find(|a| !a.starts_with('-'))
             .map(std::path::PathBuf::from)
             .or_else(|| std::env::var_os("EXECKIT_MCP_AUDIT_DIR").map(std::path::PathBuf::from))
             .or_else(|| std::env::var_os("EXECKIT_MCP_AUDIT").map(std::path::PathBuf::from));
         match path {
-            Some(p) => return watch::run(p),
+            Some(p) => {
+                return if follow {
+                    watch::follow(p)
+                } else {
+                    watch::run(p)
+                }
+            }
             None => {
-                eprintln!("usage: execkit-mcp watch <audit-file-or-dir>   (or set EXECKIT_MCP_AUDIT / EXECKIT_MCP_AUDIT_DIR)");
+                eprintln!("usage: execkit-mcp watch [--follow] <audit-file-or-dir>   (or set EXECKIT_MCP_AUDIT / EXECKIT_MCP_AUDIT_DIR)");
                 std::process::exit(2);
             }
         }

@@ -16,24 +16,9 @@ use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, List, ListItem, Paragraph};
 use ratatui::{Frame, Terminal};
 
-use crate::audit::AuditEvent;
-use crate::watch::dirtail::DirTailer;
 use crate::watch::render::LineKind;
+use crate::watch::source::Source;
 use crate::watch::state::AppState;
-use crate::watch::tail::Tailer;
-
-enum Source {
-    File(Tailer),
-    Dir(DirTailer),
-}
-impl Source {
-    fn poll(&mut self) -> Vec<AuditEvent> {
-        match self {
-            Source::File(t) => t.poll(),
-            Source::Dir(d) => d.poll(),
-        }
-    }
-}
 
 pub fn run_loop(path: PathBuf) -> anyhow::Result<()> {
     enable_raw_mode()?;
@@ -47,11 +32,7 @@ pub fn run_loop(path: PathBuf) -> anyhow::Result<()> {
     let res = (|| -> anyhow::Result<()> {
         let mut term = Terminal::new(CrosstermBackend::new(std::io::stdout()))?;
         let mut state = AppState::new();
-        let mut source = if path.is_dir() {
-            Source::Dir(DirTailer::new(path))
-        } else {
-            Source::File(Tailer::new(path))
-        };
+        let mut source = Source::new(path);
         // u16::MAX means "pinned to the bottom"; draw() clamps it to the real
         // last line. Manual scrolling replaces it with a bounded offset.
         let mut scroll: u16 = u16::MAX;
