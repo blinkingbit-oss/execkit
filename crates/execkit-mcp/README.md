@@ -113,8 +113,8 @@ Then the agent can call `session_create` -> `session_exec` -> `session_destroy`.
 ## Example session (what the agent sees)
 
 ```jsonc
-// session_create {"transport":"local"}              -> {"session_id":"sess_1"}
-// session_exec   {"session_id":"sess_1","command":"npm run build"}
+// session_create {"transport":"local"}              -> {"session_id":"1_local"}
+// session_exec   {"session_id":"1_local","command":"npm run build"}
 //   -> {"stdout":"...","stderr":"Error: Cannot find module 'webpack'",
 //       "exit_code":1,"duration_ms":3420,"cwd":"/home/u/app","truncated":false}
 ```
@@ -171,5 +171,20 @@ exit status) - rendered like a normal shell, not JSON. Switch sessions with `1`-
 or the arrow keys, scroll with PgUp/PgDn, quit with `q`. It only ever reads the
 log and never touches a session. Because the data comes from the server (not the
 client), it works the same under any MCP client (Claude Code, Cursor, Gemini, ...).
+
+For a headless or background view - no terminal required, pipeable - use
+`--follow` instead of the TUI. It prints each command and its output as a line,
+prefixed with the session id, as it happens:
+
+```bash
+execkit-mcp watch --follow /var/log/execkit/
+# [1_local]              /home/u $ npm run build
+# [1_local]              x exit 1  (3420ms)
+# [2_ssh_deploy@web-01]  /srv $ systemctl restart app
+```
+
+Session ids are self-identifying - `<n>_local`, `<n>_ssh_<user>@<host>[:port]`,
+or `<n>_docker_<container>` - so the audit filenames and the stream read clearly
+at a glance.
 
 Apache-2.0.
