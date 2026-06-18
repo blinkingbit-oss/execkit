@@ -721,11 +721,12 @@ fn main() -> anyhow::Result<()> {
         let path = args
             .get(2)
             .map(std::path::PathBuf::from)
+            .or_else(|| std::env::var_os("EXECKIT_MCP_AUDIT_DIR").map(std::path::PathBuf::from))
             .or_else(|| std::env::var_os("EXECKIT_MCP_AUDIT").map(std::path::PathBuf::from));
         match path {
             Some(p) => return watch::run(p),
             None => {
-                eprintln!("usage: execkit-mcp watch <audit-file>   (or set EXECKIT_MCP_AUDIT)");
+                eprintln!("usage: execkit-mcp watch <audit-file-or-dir>   (or set EXECKIT_MCP_AUDIT / EXECKIT_MCP_AUDIT_DIR)");
                 std::process::exit(2);
             }
         }
