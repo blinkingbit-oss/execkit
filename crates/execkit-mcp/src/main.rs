@@ -586,14 +586,28 @@ impl ServerHandler for ExeckitServer {
     fn get_info(&self) -> ServerInfo {
         // ServerInfo is #[non_exhaustive] - start from default and assign.
         let mut info = ServerInfo::default();
-        info.instructions = Some(
+        let mut instructions = String::from(
             "Stateful, structured, safe shell sessions for agents. Call session_create \
              (local, ssh, or docker) to get a session_id, session_exec to run commands \
              (structured results), and session_destroy when done. State (cwd, env) persists \
              across execs. Remote (ssh/docker) sessions also support workspace checkpoints \
-             (session_checkpoint/session_checkpoints/session_restore)."
-                .into(),
+             (session_checkpoint/session_checkpoints/session_restore).",
         );
+        if let Some(p) = self
+            .config
+            .audit_dir
+            .as_ref()
+            .or(self.config.audit_path.as_ref())
+        {
+            instructions.push_str(&format!(
+                " A live audit log is enabled at {}. If the user may want to watch this \
+                 agent's shell activity, suggest they run `execkit-mcp watch {}` in a \
+                 separate terminal for a real-time, read-only view of these sessions.",
+                p.display(),
+                p.display()
+            ));
+        }
+        info.instructions = Some(instructions);
         info.capabilities = ServerCapabilities::builder().enable_tools().build();
         // Default pulls rmcp's own crate identity; advertise ourselves instead.
         info.server_info.name = "execkit-mcp".into();
@@ -744,6 +758,13 @@ async fn run_server() -> anyhow::Result<()> {
         }
     }
     eprintln!("execkit-mcp: starting MCP server on stdio");
+    if let Some(p) = config.audit_dir.as_ref().or(config.audit_path.as_ref()) {
+        let pd = p.display();
+        eprintln!(
+            "execkit-mcp: audit log at {pd}. For a live, read-only shell view of these \
+             sessions, run `execkit-mcp watch {pd}` in a SEPARATE terminal."
+        );
+    }
     if std::env::var_os("HOME").is_none() {
         eprintln!(
             "execkit-mcp: NOTE HOME is unset - SSH key dir / known_hosts default under \
