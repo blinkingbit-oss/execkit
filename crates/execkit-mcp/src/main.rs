@@ -14,9 +14,14 @@
 //! treated as untrusted. Anything that affects the host or filesystem in a
 //! dangerous way is configured by the **operator at startup** (env vars), not by
 //! per-call agent arguments:
-//!   - `EXECKIT_MCP_AUDIT`       - append a JSONL audit log here (all sessions).
-//!   - `EXECKIT_MCP_KEY_DIR`     - dir SSH private keys must live under (default ~/.ssh).
-//!   - `EXECKIT_MCP_KNOWN_HOSTS` - SSH known_hosts file (default ~/.ssh/known_hosts).
+//!   - `EXECKIT_MCP_AUDIT`                - append a JSONL audit log here (all sessions).
+//!   - `EXECKIT_MCP_AUDIT_DIR`            - write one JSONL file per session into this
+//!     directory (`<session_id>-<open_ms>.jsonl`). Takes precedence over
+//!     EXECKIT_MCP_AUDIT when both are set.
+//!   - `EXECKIT_MCP_AUDIT_RETENTION_DAYS` - delete per-session files older than this
+//!     many days at startup (default 14, 0 disables; dir mode only).
+//!   - `EXECKIT_MCP_KEY_DIR`              - dir SSH private keys must live under (default ~/.ssh).
+//!   - `EXECKIT_MCP_KNOWN_HOSTS`          - SSH known_hosts file (default ~/.ssh/known_hosts).
 //!   - `EXECKIT_MCP_INSECURE_ACCEPT_ANY_HOSTKEY=1` - DANGEROUS: disable host-key
 //!     verification. Never in production.
 
@@ -34,8 +39,33 @@ use schemars::JsonSchema;
 use serde::Deserialize;
 
 use execkit::{Budget, Grep, HostKeyVerification, Keep, Policy, Session, SshAuth, SshConfig};
-use execkit_mcp::audit::AuditWriter;
+use execkit_mcp::audit::{self, AuditWriter};
 use execkit_mcp::watch;
+
+/// How audit events are routed. Off; one shared file for all sessions
+/// (EXECKIT_MCP_AUDIT); or one file per session in a directory
+/// (EXECKIT_MCP_AUDIT_DIR), which is what retention prunes.
+#[derive(Clone)]
+enum AuditSink {
+    Off,
+    Shared(Arc<AuditWriter>),
+    PerSession(PathBuf),
+}
+
+impl AuditSink {
+    /// The writer a newly opened session should use. In PerSession mode each
+    /// call mints a fresh per-session file `<id>-<open_ms>.jsonl`.
+    fn writer_for(&self, session_id: &str) -> Option<Arc<AuditWriter>> {
+        match self {
+            AuditSink::Off => None,
+            AuditSink::Shared(w) => Some(w.clone()),
+            AuditSink::PerSession(dir) => {
+                let file = dir.join(format!("{session_id}-{}.jsonl", audit::now_ms()));
+                Some(Arc::new(AuditWriter::new(file)))
+            }
+        }
+    }
+}
 
 /// A live session plus the last time a handler touched it (for idle reaping).
 /// `last_used` is a separate inner mutex so bumping the timestamp never waits on
@@ -44,6 +74,7 @@ struct SessionEntry {
     session: Mutex<Session>,
     last_used: Mutex<Instant>,
     transport: String,
+    audit: Option<Arc<AuditWriter>>,
 }
 type SessionRef = Arc<SessionEntry>;
 type Sessions = Arc<Mutex<HashMap<String, SessionRef>>>;
@@ -51,6 +82,11 @@ type Sessions = Arc<Mutex<HashMap<String, SessionRef>>>;
 /// Operator-controlled configuration (from env), NOT settable per tool call.
 struct Config {
     audit_path: Option<PathBuf>,
+    audit_dir: Option<PathBuf>,
+    /// Delete per-session audit files older than this many days at startup.
+    /// 0 disables. Only meaningful in dir mode. Reserved for a later task.
+    #[allow(dead_code)]
+    retention_days: u64,
     key_dir: PathBuf,
     known_hosts: PathBuf,
     insecure_accept_any: bool,
@@ -67,6 +103,11 @@ impl Config {
         let ssh = Path::new(&home).join(".ssh");
         Config {
             audit_path: std::env::var_os("EXECKIT_MCP_AUDIT").map(PathBuf::from),
+            audit_dir: std::env::var_os("EXECKIT_MCP_AUDIT_DIR").map(PathBuf::from),
+            retention_days: std::env::var("EXECKIT_MCP_AUDIT_RETENTION_DAYS")
+                .ok()
+                .and_then(|s| s.trim().parse::<u64>().ok())
+                .unwrap_or(14),
             key_dir: std::env::var_os("EXECKIT_MCP_KEY_DIR")
                 .map(PathBuf::from)
                 .unwrap_or_else(|| ssh.clone()),
@@ -111,7 +152,7 @@ struct ExeckitServer {
     /// sessions map stays the lookup table; this is the gate. Released on build
     /// failure and on destroy.
     live: Arc<AtomicUsize>,
-    audit: Option<Arc<AuditWriter>>,
+    audit_sink: AuditSink,
 }
 
 #[derive(Deserialize, JsonSchema)]
@@ -267,16 +308,22 @@ struct RestoreParams {
 #[tool_router]
 impl ExeckitServer {
     fn new(config: Config) -> Self {
-        let audit = config
-            .audit_path
-            .clone()
-            .map(|p| Arc::new(AuditWriter::new(p)));
+        let audit_sink = if let Some(dir) = config.audit_dir.clone() {
+            if let Err(e) = std::fs::create_dir_all(&dir) {
+                eprintln!("execkit-mcp: audit dir create error: {e}");
+            }
+            AuditSink::PerSession(dir)
+        } else if let Some(path) = config.audit_path.clone() {
+            AuditSink::Shared(Arc::new(AuditWriter::new(path)))
+        } else {
+            AuditSink::Off
+        };
         Self {
             tool_router: Self::tool_router(),
             sessions: Arc::new(Mutex::new(HashMap::new())),
             config: Arc::new(config),
             live: Arc::new(AtomicUsize::new(0)),
-            audit,
+            audit_sink,
         }
     }
 
@@ -326,17 +373,19 @@ impl ExeckitServer {
         match built {
             Ok(session) => {
                 let id = next_id();
+                let audit = self.audit_sink.writer_for(&id);
+                if let Some(a) = &audit {
+                    a.open(&id, &transport);
+                }
                 lock(&self.sessions).insert(
                     id.clone(),
                     Arc::new(SessionEntry {
                         session: Mutex::new(session),
                         last_used: Mutex::new(Instant::now()),
                         transport: transport.clone(),
+                        audit,
                     }),
                 );
-                if let Some(a) = &self.audit {
-                    a.open(&id, &transport);
-                }
                 Ok(text(format!("{{\"session_id\":\"{id}\"}}")))
             }
             Err(e) => {
@@ -363,6 +412,7 @@ impl ExeckitServer {
         let session = self.get(&p.session_id)?;
         let session_id = p.session_id.clone();
         let transport = session.transport.clone();
+        let audit = session.audit.clone();
         let command = p.command;
         let budget = match p.budget.as_ref().map(|b| b.to_budget()) {
             Some(Ok(b)) => Some(b),
@@ -379,7 +429,7 @@ impl ExeckitServer {
         .map_err(internal)?;
         match outcome {
             Ok(r) => {
-                if let Some(a) = &self.audit {
+                if let Some(a) = &audit {
                     a.exec(&session_id, &transport, &r);
                 }
                 let json = serde_json::to_string_pretty(&r).map_err(internal)?;
@@ -468,7 +518,7 @@ impl ExeckitServer {
         let destroyed = removed.is_some();
         if let Some(entry) = removed {
             self.live.fetch_sub(1, Ordering::AcqRel);
-            if let Some(a) = &self.audit {
+            if let Some(a) = &entry.audit {
                 a.close(&p.session_id, "destroyed");
             }
             // Session::drop is blocking (PTY kill / SSH teardown / docker reap);
@@ -517,7 +567,7 @@ impl ExeckitServer {
                         idle.as_secs()
                     );
                     self.live.fetch_sub(1, Ordering::AcqRel);
-                    if let Some(a) = &self.audit {
+                    if let Some(a) = &e.audit {
                         a.close(&id, "reaped");
                     }
                     reaped.push(e);
