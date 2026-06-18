@@ -84,8 +84,7 @@ struct Config {
     audit_path: Option<PathBuf>,
     audit_dir: Option<PathBuf>,
     /// Delete per-session audit files older than this many days at startup.
-    /// 0 disables. Only meaningful in dir mode. Reserved for a later task.
-    #[allow(dead_code)]
+    /// 0 disables. Only meaningful in dir mode.
     retention_days: u64,
     key_dir: PathBuf,
     known_hosts: PathBuf,
@@ -737,6 +736,12 @@ fn main() -> anyhow::Result<()> {
 async fn run_server() -> anyhow::Result<()> {
     // stdout is the MCP channel - all diagnostics go to stderr.
     let config = Config::from_env();
+    if let Some(dir) = config.audit_dir.clone() {
+        if config.retention_days > 0 {
+            let max_age = Duration::from_secs(config.retention_days * 86_400);
+            execkit_mcp::retention::sweep(&dir, max_age);
+        }
+    }
     eprintln!("execkit-mcp: starting MCP server on stdio");
     if std::env::var_os("HOME").is_none() {
         eprintln!(
