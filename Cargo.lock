@@ -653,7 +653,7 @@ dependencies = [
 
 [[package]]
 name = "execkit"
-version = "0.7.0"
+version = "0.7.1"
 dependencies = [
  "portable-pty",
  "regex",
@@ -666,7 +666,7 @@ dependencies = [
 
 [[package]]
 name = "execkit-mcp"
-version = "0.7.0"
+version = "0.7.1"
 dependencies = [
  "anyhow",
  "crossterm",
@@ -681,7 +681,7 @@ dependencies = [
 
 [[package]]
 name = "execkit-py"
-version = "0.7.0"
+version = "0.7.1"
 dependencies = [
  "execkit",
  "pyo3",
