@@ -134,7 +134,7 @@ fn operator_policy_blocks_audits_and_notifies() {
     let pf = dir.join("policy.json");
     std::fs::write(
         &pf,
-        r#"{"allow":[],"deny":["shutdown"],"deny_patterns":["\\brm\\b"]}"#,
+        r#"{"allow":[],"deny":["shutdown"],"deny_patterns":["\\brm\\b","\\btouch\\b"]}"#,
     )
     .unwrap();
     let audit = dir.join("audit.jsonl");
@@ -180,6 +180,7 @@ fn operator_policy_blocks_audits_and_notifies() {
         .as_str()
         .unwrap()
         .contains("deny pattern"));
+    assert_eq!(warn["params"]["data"]["blocked"], json!("rm -rf /tmp/x"));
 
     // denied by name
     let blk = m.call(
@@ -203,7 +204,23 @@ fn operator_policy_blocks_audits_and_notifies() {
         "deny_pattern returns a tool error"
     );
 
-    m.call(8, "session_destroy", json!({"session_id": sid}));
+    // blocked command must not produce a side effect
+    let sentinel = dir.join("sentinel");
+    let touched = m.call(
+        9,
+        "session_exec",
+        json!({"session_id": sid, "command": format!("touch {}", sentinel.display())}),
+    );
+    assert!(
+        result_text(&touched).contains("blocked by operator policy"),
+        "touch blocked"
+    );
+    assert!(
+        !sentinel.exists(),
+        "a blocked command must not run (no side effect)"
+    );
+
+    m.call(10, "session_destroy", json!({"session_id": sid}));
     drop(m);
 
     // the audit log recorded the blocks

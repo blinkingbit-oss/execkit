@@ -249,7 +249,7 @@ pub fn doctor() -> anyhow::Result<()> {
                 Err(e) => line(
                     Status::Warn,
                     "policy",
-                    &format!("{} (invalid: {e})", path.display()),
+                    &format!("{} (invalid: {e:#})", path.display()),
                 ),
             }
         }
