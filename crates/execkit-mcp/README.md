@@ -72,10 +72,24 @@ pip install execkit-mcp          # the server binary, shipped as a wheel (no Rus
 cargo install execkit-mcp        # ...or via cargo (or build from source: cargo build -p execkit-mcp)
 ```
 
+Then check the install and your environment:
+
+```bash
+execkit-mcp --version
+execkit-mcp doctor               # reports audit, SSH, and Docker readiness
+```
+
 ## Wire it into an agent
 
 `execkit-mcp` is a stdio MCP server - register the installed binary with your
-client. (`cargo install` puts it at `~/.cargo/bin/execkit-mcp`; use the full path
+client. The fastest way is to let it print the config with the right binary path
+already filled in:
+
+```bash
+execkit-mcp setup claude         # or: cursor | gemini
+```
+
+(`cargo install` puts the binary at `~/.cargo/bin/execkit-mcp`; use the full path
 if it isn't on the client's PATH.)
 
 **Claude Code** - one command:
