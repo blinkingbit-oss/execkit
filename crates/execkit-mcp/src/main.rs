@@ -159,6 +159,7 @@ struct ExeckitServer {
     /// failure and on destroy.
     live: Arc<AtomicUsize>,
     audit_sink: AuditSink,
+    operator_policy: Arc<execkit_mcp::policy::OperatorPolicy>,
 }
 
 #[derive(Deserialize, JsonSchema)]
@@ -313,7 +314,7 @@ struct RestoreParams {
 
 #[tool_router]
 impl ExeckitServer {
-    fn new(config: Config) -> Self {
+    fn new(config: Config, operator_policy: Arc<execkit_mcp::policy::OperatorPolicy>) -> Self {
         let audit_sink = if let Some(dir) = config.audit_dir.clone() {
             if let Err(e) = std::fs::create_dir_all(&dir) {
                 eprintln!("execkit-mcp: audit dir create error: {e}");
@@ -330,6 +331,7 @@ impl ExeckitServer {
             config: Arc::new(config),
             live: Arc::new(AtomicUsize::new(0)),
             audit_sink,
+            operator_policy,
         }
     }
 
@@ -422,6 +424,23 @@ impl ExeckitServer {
         let transport = session.transport.clone();
         let audit = session.audit.clone();
         let command = p.command;
+        // Operator policy is the floor the agent cannot edit. A block never runs
+        // the command; it is audited and pushed to the client, then returned as a
+        // tool error so the agent can adapt.
+        if let Err(reason) = self.operator_policy.check(&command) {
+            if let Some(a) = &audit {
+                a.blocked(&session_id, &transport, &command, &reason);
+            }
+            notify_blocked(
+                &ctx.peer,
+                ctx.meta.get_progress_token(),
+                &session_id,
+                &command,
+                &reason,
+            )
+            .await;
+            return Ok(tool_error(format!("blocked by operator policy: {reason}")));
+        }
         let budget = match p.budget.as_ref().map(|b| b.to_budget()) {
             Some(Ok(b)) => Some(b),
             Some(Err(e)) => return Ok(tool_error(e)),
@@ -707,6 +726,39 @@ async fn notify_activity(
     }
 }
 
+/// Push a blocked-command event to the client: a warning log notification, plus
+/// a progress summary when the call supplied a token. Mirrors `notify_activity`.
+async fn notify_blocked(
+    peer: &Peer<RoleServer>,
+    progress_token: Option<ProgressToken>,
+    session_id: &str,
+    command: &str,
+    reason: &str,
+) {
+    let summary = format!("[{session_id}] blocked: {command}  ({reason})");
+    let _ = peer
+        .notify_logging_message(LoggingMessageNotificationParam {
+            level: LoggingLevel::Warning,
+            logger: Some(format!("execkit/{session_id}")),
+            data: serde_json::json!({
+                "session": session_id,
+                "blocked": command,
+                "reason": reason,
+            }),
+        })
+        .await;
+    if let Some(progress_token) = progress_token {
+        let _ = peer
+            .notify_progress(ProgressNotificationParam {
+                progress_token,
+                progress: 1.0,
+                total: None,
+                message: Some(summary),
+            })
+            .await;
+    }
+}
+
 fn transport_label(p: &CreateParams) -> String {
     // host/container are agent-provided and land in the audit log content, so
     // sanitize them (same rule as the session id) to keep the log clean.
@@ -931,6 +983,8 @@ fn main() -> anyhow::Result<()> {
 async fn run_server() -> anyhow::Result<()> {
     // stdout is the MCP channel - all diagnostics go to stderr.
     let config = Config::from_env();
+    // Operator command policy (fail fast on a broken security config).
+    let operator_policy = Arc::new(execkit_mcp::policy::load_from_env()?);
     if let Some(dir) = config.audit_dir.clone() {
         if config.retention_days > 0 {
             let max_age = Duration::from_secs(config.retention_days * 86_400);
@@ -957,7 +1011,7 @@ async fn run_server() -> anyhow::Result<()> {
              SSH host-key verification is DISABLED (MITM possible). Do not use in production."
         );
     }
-    let service = ExeckitServer::new(config)
+    let service = ExeckitServer::new(config, operator_policy)
         .serve(rmcp::transport::stdio())
         .await?;
     service.waiting().await?;
