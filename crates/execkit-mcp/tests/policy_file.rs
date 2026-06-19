@@ -192,7 +192,18 @@ fn operator_policy_blocks_audits_and_notifies() {
         "name deny blocks"
     );
 
-    m.call(6, "session_destroy", json!({"session_id": sid}));
+    // denied by pattern -> tool response is also a tool_error
+    let pat = m.call(
+        7,
+        "session_exec",
+        json!({"session_id": sid, "command": "rm /tmp/zzz"}),
+    );
+    assert!(
+        result_text(&pat).contains("blocked by operator policy"),
+        "deny_pattern returns a tool error"
+    );
+
+    m.call(8, "session_destroy", json!({"session_id": sid}));
     drop(m);
 
     // the audit log recorded the blocks
