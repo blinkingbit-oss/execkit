@@ -43,9 +43,9 @@ command and its output as a line prefixed with the session id, as it happens:
 
 ```bash
 execkit-mcp watch --follow /var/log/execkit/
-# [1_local]              /home/u $ npm run build
-# [1_local]              x exit 1  (3420ms)
-# [2_ssh_deploy@web-01]  /srv $ systemctl restart app
+# [1_local] /home/u $ npm run build
+# [1_local] x exit 1  (3420ms)
+# [2_ssh_deploy@web-01] /srv $ systemctl restart app
 ```
 
 ## Live notifications in the client

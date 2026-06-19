@@ -26,7 +26,7 @@ directory and `known_hosts` resolve to, and whether the Docker daemon is
 reachable. A typical run:
 
 ```text
-execkit-mcp 0.7.2
+execkit-mcp 0.7.1
 [ -- ] binary: /home/you/.cargo/bin/execkit-mcp
 
 [ -- ] audit: off (set EXECKIT_MCP_AUDIT or EXECKIT_MCP_AUDIT_DIR to record + watch activity)

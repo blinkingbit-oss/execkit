@@ -41,11 +41,10 @@ let mut s = Session::ssh(cfg)?;
 The API surface stays small; the richness lives in the result, not the verbs:
 
 ```text
-Session::local() / ::ssh(cfg) / ::docker(cfg)  -> Session
-session.exec(command)                          -> ExecResult
-session.exec_budgeted(command, &budget)        -> ExecResult
-session.checkpoint(label?) / .restore(id?)     -> CheckpointId / restore report
-session.state()                                -> ShellState
+Session::local() / ::ssh(cfg) / ::docker(container)        -> Session
+session.exec(command)                                      -> ExecResult
+session.exec_budgeted(command, &budget)                    -> ExecResult
+session.checkpoint(label?) / restore(id) / restore_last()  -> CheckpointId / restore report
 ```
 
 Runnable examples live in the repository:

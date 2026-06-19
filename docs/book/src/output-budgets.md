@@ -17,7 +17,7 @@ session default:
   "budget": { "grep": { "pattern": "error|fail", "context": 2 } } }
 ```
 
-Modes include `tail`, `head`, `head_tail`, and `grep`, plus a `max_chars` cap.
+Keep modes are `tail`, `head`, and `head_tail`; `grep` is a separate filter; both honor a `max_chars` cap.
 
 Shaping is line-based, applied client-side, and runs **after** secret redaction.
 It never changes the exit code or any side effect of the command, only what text
@@ -25,7 +25,10 @@ comes back. When a budget is applied, the result carries a `budget` report so th
 agent knows the output was shaped:
 
 ```jsonc
-"budget": { "stdout": { "mode": "tail", "lines_total": 4123, "lines_kept": 200 } }
+"budget": {
+  "stdout": { "mode": "tail", "lines_total": 4123, "lines_kept": 200 },
+  "stderr": { "mode": "tail", "lines_total": 12, "lines_kept": 12 }
+}
 ```
 
 Use budgets liberally on commands you expect to be loud (builds, installs, big
