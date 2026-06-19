@@ -726,6 +726,11 @@ async fn notify_activity(
     }
 }
 
+/// doctor's non-fatal view of the policy file: counts or the load error.
+fn policy_for_doctor(path: &std::path::Path) -> anyhow::Result<(usize, usize, usize)> {
+    Ok(execkit_mcp::policy::OperatorPolicy::from_file(path)?.counts())
+}
+
 /// Push a blocked-command event to the client: a warning log notification, plus
 /// a progress summary when the call supplied a token. Mirrors `notify_activity`.
 async fn notify_blocked(
