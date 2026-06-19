@@ -115,3 +115,36 @@ fn unknown_command_exits_2_with_hint() {
     assert!(err.contains("unknown command"), "got {err:?}");
     assert!(err.contains("--help"));
 }
+
+#[test]
+fn doctor_reports_policy_state() {
+    // off when unset
+    let out = std::process::Command::new(env!("CARGO_BIN_EXE_execkit-mcp"))
+        .arg("doctor")
+        .env_remove("EXECKIT_MCP_POLICY_FILE")
+        .output()
+        .expect("spawn");
+    let s = String::from_utf8_lossy(&out.stdout);
+    assert!(s.contains("policy") && s.contains("off"), "got {s:?}");
+
+    // counts when a valid file is set
+    let dir = std::env::temp_dir().join(format!("ek_doc_pol_{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let pf = dir.join("p.json");
+    std::fs::write(
+        &pf,
+        r#"{"allow":["git","ls"],"deny":["rm"],"deny_patterns":["\\brm\\b"]}"#,
+    )
+    .unwrap();
+    let out2 = std::process::Command::new(env!("CARGO_BIN_EXE_execkit-mcp"))
+        .arg("doctor")
+        .env("EXECKIT_MCP_POLICY_FILE", &pf)
+        .output()
+        .expect("spawn");
+    let s2 = String::from_utf8_lossy(&out2.stdout);
+    assert!(
+        s2.contains("[ ok ] policy") && s2.contains("2 allow, 1 deny, 1 patterns"),
+        "got {s2:?}"
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}

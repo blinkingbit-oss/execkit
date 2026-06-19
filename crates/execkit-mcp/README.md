@@ -149,6 +149,7 @@ by the **operator at startup** (env vars), not by per-call agent arguments:
 | `EXECKIT_MCP_INSECURE_ACCEPT_ANY_HOSTKEY` | **DANGEROUS** - disable host-key checks | unset |
 | `EXECKIT_MCP_MAX_SESSIONS` | soft cap on concurrent live sessions | `64` |
 | `EXECKIT_MCP_SESSION_TTL` | reap sessions idle longer than this many seconds (frees the process + cap slot); `0` disables | `1800` (30 min) |
+| `EXECKIT_MCP_POLICY_FILE` | JSON `allow`/`deny` (program names) + `deny_patterns` (regex) the agent cannot edit; advisory | off |
 
 - **Host keys are verified by default** (TOFU against known_hosts; a changed key
   is rejected as a likely MITM). Pass a `fingerprint` to require an exact key, or
@@ -216,5 +217,32 @@ This needs no `EXECKIT_MCP_AUDIT*` setup - the server advertises the `logging`
 capability and streams unconditionally. It reveals nothing new: the client
 already receives the same stdout/stderr in the tool result, redacted and bounded.
 How (or whether) the activity is surfaced is up to the client.
+
+## Operator command policy (advisory)
+
+Point `EXECKIT_MCP_POLICY_FILE` at a JSON file to set an allow/deny fence the
+agent cannot edit (unlike the per-call `allow`/`deny`, which the agent supplies):
+
+```json
+{
+  "allow": ["git", "ls", "npm"],
+  "deny": ["rm", "dd", "shutdown"],
+  "deny_patterns": ["\\brm\\b", "kubectl\\s+delete", "git\\s+push\\s+.*--force"]
+}
+```
+
+- `allow` (program names): if non-empty, only these may run. Empty/absent = all.
+- `deny` (program names): always blocked; deny wins over allow.
+- `deny_patterns` (regex over the whole command): for what names cannot express.
+
+Prefer a `deny_pattern` over a name `deny` for anything that matters: name
+matching only sees the program name per pipeline segment, so `deny: ["rm"]` misses
+`sudo rm` and `xargs rm`, while `deny_patterns: ["\\brm\\b"]` catches them. In JSON
+the regex backslashes double up (`\\b`); use `(?i)` for case-insensitive matching.
+
+A blocked command never runs; it is recorded in the audit log, shown in `watch`,
+and pushed to the client as a warning. This is an ADVISORY guardrail, not a
+sandbox: string matching is trivially bypassable (`/bin/rm`, base64, `bash -c`).
+The real boundary is a least-privilege user, a container, or a scoped SSH account.
 
 Apache-2.0.

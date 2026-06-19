@@ -34,6 +34,7 @@ ENVIRONMENT (operator-controlled; see the README):
   EXECKIT_MCP_KNOWN_HOSTS           SSH known_hosts file (default ~/.ssh/known_hosts)
   EXECKIT_MCP_MAX_SESSIONS          Soft cap on concurrent live sessions (default 64)
   EXECKIT_MCP_SESSION_TTL           Reap sessions idle longer than N seconds (default 1800)
+  EXECKIT_MCP_POLICY_FILE           JSON allow/deny + deny_patterns the agent cannot edit (advisory)
 
 Docs: {REPO}
 "
@@ -227,6 +228,31 @@ pub fn doctor() -> anyhow::Result<()> {
             "docker",
             "not on PATH (needed only for docker sessions)",
         ),
+    }
+
+    // Operator command policy (advisory). Non-fatal here: the server fails fast
+    // on an invalid file, but doctor reports it so an operator can diagnose.
+    match std::env::var_os("EXECKIT_MCP_POLICY_FILE") {
+        None => line(
+            Status::Info,
+            "policy",
+            "off (set EXECKIT_MCP_POLICY_FILE to enable)",
+        ),
+        Some(p) => {
+            let path = PathBuf::from(&p);
+            match crate::policy_for_doctor(&path) {
+                Ok((a, d, k)) => line(
+                    Status::Ok,
+                    "policy",
+                    &format!("{} ({a} allow, {d} deny, {k} patterns)", path.display()),
+                ),
+                Err(e) => line(
+                    Status::Warn,
+                    "policy",
+                    &format!("{} (invalid: {e:#})", path.display()),
+                ),
+            }
+        }
     }
 
     Ok(())

@@ -3,5 +3,6 @@
 
 pub mod audit;
 pub mod paths;
+pub mod policy;
 pub mod retention;
 pub mod watch;
