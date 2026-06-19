@@ -38,8 +38,8 @@ pub fn render_event(ev: &AuditEvent) -> Vec<StyledLine> {
         AuditEvent::Blocked {
             command, reason, ..
         } => vec![StyledLine {
-            text: format!("-- blocked: {command} ({reason}) --"),
-            kind: LineKind::Marker,
+            text: format!("! blocked: {command}  ({reason})"),
+            kind: LineKind::ExitErr,
         }],
         AuditEvent::Exec {
             command,
@@ -155,6 +155,21 @@ mod tests {
         let last = lines.last().unwrap();
         assert_eq!(last.kind, LineKind::ExitErr);
         assert_eq!(last.text, "x exit 1  (42ms)");
+    }
+
+    #[test]
+    fn blocked_renders_a_red_marker_line() {
+        let lines = render_event(&AuditEvent::Blocked {
+            ts: 1,
+            session: "1_local".into(),
+            transport: "local".into(),
+            command: "rm -rf /tmp/x".into(),
+            reason: "matched deny pattern /\\brm\\b/".into(),
+        });
+        assert_eq!(lines.len(), 1);
+        assert_eq!(lines[0].kind, LineKind::ExitErr);
+        assert!(lines[0].text.starts_with("! blocked: rm -rf /tmp/x"));
+        assert!(lines[0].text.contains("deny pattern"));
     }
 
     #[test]
