@@ -24,3 +24,6 @@ _internal/
 # packaging build artifacts
 packaging/**/dist/
 packaging/**/*.egg-info/
+
+# mdBook build output
+docs/book/book/
