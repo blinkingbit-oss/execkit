@@ -110,12 +110,6 @@ fn line(status: Status, label: &str, detail: &str) {
     println!("{tag} {label}: {detail}");
 }
 
-fn home_dir() -> PathBuf {
-    std::env::var_os("HOME")
-        .map(PathBuf::from)
-        .unwrap_or_else(|| PathBuf::from("/root"))
-}
-
 /// True if we can create + remove a temp file inside `dir` (creating `dir` if
 /// needed). Best-effort: any error means "not writable".
 fn dir_writable(dir: &Path) -> bool {
@@ -179,25 +173,30 @@ pub fn doctor() -> anyhow::Result<()> {
         );
     }
 
-    // SSH key directory and known_hosts.
+    // SSH key directory and known_hosts. Defaults resolve ~ like the server
+    // does (paths::ssh_dir); both are overridable via the named env vars.
     let key_dir = std::env::var_os("EXECKIT_MCP_KEY_DIR")
         .map(PathBuf::from)
-        .unwrap_or_else(|| home_dir().join(".ssh"));
+        .unwrap_or_else(execkit_mcp::paths::ssh_dir);
     if key_dir.is_dir() {
-        line(Status::Ok, "ssh key dir", &format!("{}", key_dir.display()));
+        line(
+            Status::Ok,
+            "ssh key dir",
+            &format!("{} (override: EXECKIT_MCP_KEY_DIR)", key_dir.display()),
+        );
     } else {
         line(
             Status::Info,
             "ssh key dir",
             &format!(
-                "{} (absent; needed only for SSH sessions)",
+                "{} (absent; needed only for SSH sessions; override: EXECKIT_MCP_KEY_DIR)",
                 key_dir.display()
             ),
         );
     }
     let known_hosts = std::env::var_os("EXECKIT_MCP_KNOWN_HOSTS")
         .map(PathBuf::from)
-        .unwrap_or_else(|| home_dir().join(".ssh").join("known_hosts"));
+        .unwrap_or_else(|| execkit_mcp::paths::ssh_dir().join("known_hosts"));
     if known_hosts.is_file() {
         line(
             Status::Ok,

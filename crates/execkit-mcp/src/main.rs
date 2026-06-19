@@ -106,8 +106,7 @@ struct Config {
 
 impl Config {
     fn from_env() -> Self {
-        let home = std::env::var("HOME").unwrap_or_else(|_| "/root".into());
-        let ssh = Path::new(&home).join(".ssh");
+        let ssh = execkit_mcp::paths::ssh_dir();
         Config {
             audit_path: std::env::var_os("EXECKIT_MCP_AUDIT").map(PathBuf::from),
             audit_dir: std::env::var_os("EXECKIT_MCP_AUDIT_DIR").map(PathBuf::from),
