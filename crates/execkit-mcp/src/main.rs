@@ -48,6 +48,8 @@ use execkit::{Budget, Grep, HostKeyVerification, Keep, Policy, Session, SshAuth,
 use execkit_mcp::audit::{self, AuditWriter};
 use execkit_mcp::watch;
 
+mod cli;
+
 /// How audit events are routed. Off; one shared file for all sessions
 /// (EXECKIT_MCP_AUDIT); or one file per session in a directory
 /// (EXECKIT_MCP_AUDIT_DIR), which is what retention prunes.
@@ -104,8 +106,7 @@ struct Config {
 
 impl Config {
     fn from_env() -> Self {
-        let home = std::env::var("HOME").unwrap_or_else(|_| "/root".into());
-        let ssh = Path::new(&home).join(".ssh");
+        let ssh = execkit_mcp::paths::ssh_dir();
         Config {
             audit_path: std::env::var_os("EXECKIT_MCP_AUDIT").map(PathBuf::from),
             audit_dir: std::env::var_os("EXECKIT_MCP_AUDIT_DIR").map(PathBuf::from),
@@ -879,30 +880,51 @@ fn internal<E: std::fmt::Display>(e: E) -> ErrorData {
 
 fn main() -> anyhow::Result<()> {
     let args: Vec<String> = std::env::args().collect();
-    if args.get(1).map(String::as_str) == Some("watch") {
-        // `--follow`/`-f` streams plain lines (no TTY); otherwise the TUI.
-        let rest = &args[2..];
-        let follow = rest.iter().any(|a| a == "--follow" || a == "-f");
-        let path = rest
-            .iter()
-            .find(|a| !a.starts_with('-'))
-            .map(std::path::PathBuf::from)
-            .or_else(|| std::env::var_os("EXECKIT_MCP_AUDIT_DIR").map(std::path::PathBuf::from))
-            .or_else(|| std::env::var_os("EXECKIT_MCP_AUDIT").map(std::path::PathBuf::from));
-        match path {
-            Some(p) => {
-                return if follow {
-                    watch::follow(p)
-                } else {
-                    watch::run(p)
+    // An agent launches the server with NO args; only a human passes a
+    // subcommand. Dispatch known subcommands here, then fall through to the
+    // stdio server. An unknown first arg is a human typo, so help + exit.
+    match args.get(1).map(String::as_str) {
+        None => {}
+        Some("--version") | Some("-V") => {
+            cli::version();
+            return Ok(());
+        }
+        Some("--help") | Some("-h") | Some("help") => {
+            cli::help();
+            return Ok(());
+        }
+        Some("setup") => return cli::setup(args.get(2).map(String::as_str)),
+        Some("doctor") => return cli::doctor(),
+        Some("watch") => {
+            // `--follow`/`-f` streams plain lines (no TTY); otherwise the TUI.
+            let rest = &args[2..];
+            let follow = rest.iter().any(|a| a == "--follow" || a == "-f");
+            let path = rest
+                .iter()
+                .find(|a| !a.starts_with('-'))
+                .map(std::path::PathBuf::from)
+                .or_else(|| std::env::var_os("EXECKIT_MCP_AUDIT_DIR").map(std::path::PathBuf::from))
+                .or_else(|| std::env::var_os("EXECKIT_MCP_AUDIT").map(std::path::PathBuf::from));
+            match path {
+                Some(p) => {
+                    return if follow {
+                        watch::follow(p)
+                    } else {
+                        watch::run(p)
+                    }
+                }
+                None => {
+                    eprintln!("usage: execkit-mcp watch [--follow] <audit-file-or-dir>   (or set EXECKIT_MCP_AUDIT / EXECKIT_MCP_AUDIT_DIR)");
+                    std::process::exit(2);
                 }
             }
-            None => {
-                eprintln!("usage: execkit-mcp watch [--follow] <audit-file-or-dir>   (or set EXECKIT_MCP_AUDIT / EXECKIT_MCP_AUDIT_DIR)");
-                std::process::exit(2);
-            }
+        }
+        Some(other) => {
+            eprintln!("execkit-mcp: unknown command {other:?}. Try `execkit-mcp --help`.");
+            std::process::exit(2);
         }
     }
+    // No subcommand: this is the stdio MCP server an agent launched.
     tokio::runtime::Runtime::new()?.block_on(run_server())
 }
 
