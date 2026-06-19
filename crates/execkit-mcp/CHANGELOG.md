@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.7.2](https://github.com/blinkingbit-oss/execkit/compare/v0.7.1...v0.7.2) - 2026-06-19
+
+### Added
+
+- *(mcp)* operator onboarding CLI (--version, --help, setup, doctor) + robust ~ resolution ([#27](https://github.com/blinkingbit-oss/execkit/pull/27))
+
 ## [0.7.1](https://github.com/blinkingbit-oss/execkit/compare/v0.7.0...v0.7.1) - 2026-06-18
 
 ### Added
