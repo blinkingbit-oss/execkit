@@ -36,6 +36,13 @@ pub enum AuditEvent {
         session: String,
         reason: String,
     },
+    Blocked {
+        ts: u64,
+        session: String,
+        transport: String,
+        command: String,
+        reason: String,
+    },
 }
 
 impl AuditEvent {
@@ -44,7 +51,8 @@ impl AuditEvent {
         match self {
             AuditEvent::Open { session, .. }
             | AuditEvent::Exec { session, .. }
-            | AuditEvent::Close { session, .. } => session,
+            | AuditEvent::Close { session, .. }
+            | AuditEvent::Blocked { session, .. } => session,
         }
     }
 }
@@ -127,6 +135,16 @@ impl AuditWriter {
             reason: reason.to_string(),
         });
     }
+
+    pub fn blocked(&self, session: &str, transport: &str, command: &str, reason: &str) {
+        self.append(&AuditEvent::Blocked {
+            ts: now_ms(),
+            session: session.to_string(),
+            transport: transport.to_string(),
+            command: command.to_string(),
+            reason: reason.to_string(),
+        });
+    }
 }
 
 #[cfg(test)]
@@ -176,6 +194,28 @@ mod tests {
         let first = body.lines().next().unwrap();
         assert!(first.contains("\"event\":\"open\""));
         assert!(first.contains("\"ts\":"));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn blocked_event_writes_a_blocked_line() {
+        let dir = std::env::temp_dir().join(format!("ek_audit_blk_{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("a.jsonl");
+        let w = AuditWriter::new(path.clone());
+        w.blocked(
+            "1_local",
+            "local",
+            "rm -rf /tmp/x",
+            "matched deny pattern /\\brm\\b/",
+        );
+        let body = std::fs::read_to_string(&path).unwrap();
+        let v: serde_json::Value = serde_json::from_str(body.lines().next().unwrap()).unwrap();
+        assert_eq!(v["event"], "blocked");
+        assert_eq!(v["session"], "1_local");
+        assert_eq!(v["command"], "rm -rf /tmp/x");
+        assert!(v["reason"].as_str().unwrap().contains("deny pattern"));
+        assert!(v["ts"].as_u64().unwrap() > 0);
         let _ = std::fs::remove_dir_all(&dir);
     }
 }

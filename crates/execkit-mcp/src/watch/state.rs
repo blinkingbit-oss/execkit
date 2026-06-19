@@ -51,12 +51,16 @@ impl AppState {
                 session, transport, ..
             } => (session.clone(), transport.clone()),
             AuditEvent::Close { session, .. } => (session.clone(), String::new()),
+            AuditEvent::Blocked {
+                session, transport, ..
+            } => (session.clone(), transport.clone()),
         };
         let i = self.ensure(&id, &transport);
         match &ev {
             AuditEvent::Open { .. } => {}
             AuditEvent::Exec { .. } => self.sessions[i].cmd_count += 1,
             AuditEvent::Close { .. } => self.sessions[i].closed = true,
+            AuditEvent::Blocked { .. } => {}
         }
         let mut lines = render_event(&ev);
         self.sessions[i].transcript.append(&mut lines);

@@ -35,6 +35,12 @@ pub fn render_event(ev: &AuditEvent) -> Vec<StyledLine> {
             text: format!("-- closed ({reason}) --"),
             kind: LineKind::Marker,
         }],
+        AuditEvent::Blocked {
+            command, reason, ..
+        } => vec![StyledLine {
+            text: format!("-- blocked: {command} ({reason}) --"),
+            kind: LineKind::Marker,
+        }],
         AuditEvent::Exec {
             command,
             stdout,
