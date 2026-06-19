@@ -29,4 +29,4 @@ agent knows the output was shaped:
 ```
 
 Use budgets liberally on commands you expect to be loud (builds, installs, big
-log reads). The signal survives; the firehose does not.
+log reads); the agent keeps the signal without the noise.
