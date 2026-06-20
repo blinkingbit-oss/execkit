@@ -244,7 +244,11 @@ pub fn doctor() -> anyhow::Result<()> {
                 Ok((a, d, k)) => line(
                     Status::Ok,
                     "policy",
-                    &format!("{} ({a} allow, {d} deny, {k} patterns)", path.display()),
+                    &format!(
+                        "{} ({a} allow, {d} deny, {k} {})",
+                        path.display(),
+                        if k == 1 { "pattern" } else { "patterns" },
+                    ),
                 ),
                 Err(e) => line(
                     Status::Warn,

@@ -143,7 +143,7 @@ fn doctor_reports_policy_state() {
         .expect("spawn");
     let s2 = String::from_utf8_lossy(&out2.stdout);
     assert!(
-        s2.contains("[ ok ] policy") && s2.contains("2 allow, 1 deny, 1 patterns"),
+        s2.contains("[ ok ] policy") && s2.contains("2 allow, 1 deny, 1 pattern"),
         "got {s2:?}"
     );
     let _ = std::fs::remove_dir_all(&dir);
