@@ -23,6 +23,7 @@ dynamic = ["version"]
 
 [project.urls]
 Homepage = "https://github.com/blinkingbit-oss/execkit"
+Documentation = "https://blinkingbit-oss.github.io/execkit/"
 Repository = "https://github.com/blinkingbit-oss/execkit"
 
 [tool.maturin]

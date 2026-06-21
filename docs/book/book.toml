@@ -1,0 +1,17 @@
+[book]
+title = "execkit"
+description = "Stateful, structured, safe shell sessions for AI agents."
+authors = ["execkit contributors"]
+language = "en"
+src = "src"
+
+[output.html]
+default-theme = "rust"
+preferred-dark-theme = "ayu"
+git-repository-url = "https://github.com/blinkingbit-oss/execkit"
+edit-url-template = "https://github.com/blinkingbit-oss/execkit/edit/main/docs/book/{path}"
+no-section-label = true
+
+[output.html.fold]
+enable = true
+level = 1

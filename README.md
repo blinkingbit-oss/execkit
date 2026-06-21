@@ -7,6 +7,7 @@
 [![CI](https://github.com/blinkingbit-oss/execkit/actions/workflows/ci.yml/badge.svg)](https://github.com/blinkingbit-oss/execkit/actions/workflows/ci.yml)
 [![crates.io](https://img.shields.io/crates/v/execkit.svg)](https://crates.io/crates/execkit)
 [![docs.rs](https://img.shields.io/docsrs/execkit)](https://docs.rs/execkit)
+[![guide](https://img.shields.io/badge/guide-online-blue.svg)](https://blinkingbit-oss.github.io/execkit/)
 [![license](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](LICENSE)
 
 </div>
