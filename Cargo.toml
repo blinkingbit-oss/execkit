@@ -15,6 +15,7 @@ rust-version = "1.88"
 license = "Apache-2.0"
 repository = "https://github.com/blinkingbit-oss/execkit"
 homepage = "https://github.com/blinkingbit-oss/execkit"
+documentation = "https://blinkingbit-oss.github.io/execkit/"
 
 [workspace.dependencies]
 portable-pty = "0.9"
