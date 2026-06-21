@@ -168,9 +168,8 @@ fn operator_policy_blocks_audits_and_notifies() {
         json!({"session_id": sid, "command": "rm -rf /tmp/x"}),
         Some("tok"),
     );
-    // the tool result is an error text
-    // (call_collecting returns notifications; fetch the response separately is not needed:
-    //  assert the warning notification carried the block)
+    // this call only checks the live notification; the tool-error text on the
+    // deny path is asserted separately below.
     let warn = notes
         .iter()
         .find(|v| v["method"] == json!("notifications/message"))
