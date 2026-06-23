@@ -191,6 +191,40 @@ async fn stream_events(
     }
 }
 
+/// Program + argv that opens `url` in the default browser on this OS. Separated
+/// from spawning so it is unit-testable without launching anything.
+fn open_command(url: &str) -> (&'static str, Vec<String>) {
+    #[cfg(target_os = "linux")]
+    {
+        ("xdg-open", vec![url.to_string()])
+    }
+    #[cfg(target_os = "macos")]
+    {
+        ("open", vec![url.to_string()])
+    }
+    #[cfg(target_os = "windows")]
+    {
+        // `start` is a cmd builtin; its first quoted arg is the window title.
+        ("cmd", vec!["/C".into(), "start".into(), String::new(), url.to_string()])
+    }
+    #[cfg(not(any(target_os = "linux", target_os = "macos", target_os = "windows")))]
+    {
+        ("xdg-open", vec![url.to_string()])
+    }
+}
+
+/// Best-effort: open `url` in the default browser. A failure is non-fatal - the
+/// URL is also surfaced via an MCP log notification.
+pub fn open_browser(url: &str) {
+    let (prog, args) = open_command(url);
+    let _ = std::process::Command::new(prog)
+        .args(args)
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .spawn();
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -273,5 +307,25 @@ mod tests {
         assert_eq!(v["session"], "1_local");
         assert_eq!(v["kind"], "prompt");
         assert_eq!(v["text"], "/tmp $ ls");
+    }
+
+    #[test]
+    fn open_command_per_os() {
+        let (prog, args) = open_command("http://127.0.0.1:9/?t=x");
+        #[cfg(target_os = "linux")]
+        {
+            assert_eq!(prog, "xdg-open");
+            assert_eq!(args, vec!["http://127.0.0.1:9/?t=x".to_string()]);
+        }
+        #[cfg(target_os = "macos")]
+        {
+            assert_eq!(prog, "open");
+            assert_eq!(args, vec!["http://127.0.0.1:9/?t=x".to_string()]);
+        }
+        #[cfg(target_os = "windows")]
+        {
+            assert_eq!(prog, "cmd");
+            assert_eq!(args, vec!["/C".to_string(), "start".to_string(), "".to_string(), "http://127.0.0.1:9/?t=x".to_string()]);
+        }
     }
 }
