@@ -202,6 +202,13 @@ Session ids are self-identifying - `<n>_local`, `<n>_ssh_<user>@<host>[:port]`,
 or `<n>_docker_<container>` - so the audit filenames and the stream read clearly
 at a glance.
 
+### Live viewer in your browser
+
+`execkit-mcp watch --serve [--open] <audit-file>` serves the same read-only
+transcript as a local web page (127.0.0.1 only, single-use URL token). Add
+`--open` to launch your browser at it. This is the same view as the terminal
+`watch`, in a browser tab instead of a TTY.
+
 ### In the agent's client (no terminal, no audit log)
 
 The server also pushes each command to your MCP client as it runs, as standard

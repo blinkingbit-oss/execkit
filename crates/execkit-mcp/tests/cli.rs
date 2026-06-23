@@ -148,3 +148,16 @@ fn doctor_reports_policy_state() {
     );
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+#[test]
+fn watch_serve_without_path_shows_usage() {
+    let out = std::process::Command::new(env!("CARGO_BIN_EXE_execkit-mcp"))
+        .args(["watch", "--serve"])
+        .env_remove("EXECKIT_MCP_AUDIT")
+        .env_remove("EXECKIT_MCP_AUDIT_DIR")
+        .output()
+        .expect("spawn");
+    assert!(!out.status.success(), "missing path should exit non-zero");
+    let err = String::from_utf8_lossy(&out.stderr);
+    assert!(err.contains("--serve"), "usage should mention --serve, got {err:?}");
+}

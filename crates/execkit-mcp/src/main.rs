@@ -956,6 +956,8 @@ fn main() -> anyhow::Result<()> {
             // `--follow`/`-f` streams plain lines (no TTY); otherwise the TUI.
             let rest = &args[2..];
             let follow = rest.iter().any(|a| a == "--follow" || a == "-f");
+            let do_serve = rest.iter().any(|a| a == "--serve");
+            let do_open = rest.iter().any(|a| a == "--open");
             let path = rest
                 .iter()
                 .find(|a| !a.starts_with('-'))
@@ -964,14 +966,27 @@ fn main() -> anyhow::Result<()> {
                 .or_else(|| std::env::var_os("EXECKIT_MCP_AUDIT").map(std::path::PathBuf::from));
             match path {
                 Some(p) => {
+                    if do_serve {
+                        return tokio::runtime::Runtime::new()?.block_on(async move {
+                            let token = watch::web::gen_token()?;
+                            let (addr, handle) = watch::web::serve(p, token.clone()).await?;
+                            let url = format!("http://{addr}/?t={token}");
+                            eprintln!("execkit-mcp: live viewer at {url} (read-only; Ctrl+C to stop)");
+                            if do_open {
+                                watch::web::open_browser(&url);
+                            }
+                            handle.await.ok();
+                            Ok(())
+                        });
+                    }
                     return if follow {
                         watch::follow(p)
                     } else {
                         watch::run(p)
-                    }
+                    };
                 }
                 None => {
-                    eprintln!("usage: execkit-mcp watch [--follow] <audit-file-or-dir>   (or set EXECKIT_MCP_AUDIT / EXECKIT_MCP_AUDIT_DIR)");
+                    eprintln!("usage: execkit-mcp watch [--follow|--serve] [--open] <audit-file-or-dir>   (or set EXECKIT_MCP_AUDIT / EXECKIT_MCP_AUDIT_DIR)");
                     std::process::exit(2);
                 }
             }
