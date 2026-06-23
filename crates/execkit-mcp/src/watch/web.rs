@@ -3,9 +3,11 @@
 //! server (loopback only, token-gated) tails the same Source the TUI uses,
 //! renders events with render_event, and streams the rendered lines as JSON to
 //! a self-contained page. Read-only: no endpoint mutates anything.
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
+
+use anyhow::Context;
 
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream};
@@ -28,6 +30,42 @@ pub fn gen_token() -> anyhow::Result<String> {
     let mut b = [0u8; 16];
     getrandom::fill(&mut b).map_err(|e| anyhow::anyhow!("system RNG: {e}"))?;
     Ok(b.iter().map(|x| format!("{x:02x}")).collect())
+}
+
+/// Read the persistent token, or generate + persist one (mode 0600 on unix) if
+/// absent/empty. A stable token keeps the auto-start URL constant across
+/// restarts so an open browser tab reconnects on its own.
+pub fn load_or_create_token(path: &Path) -> anyhow::Result<String> {
+    if let Ok(s) = std::fs::read_to_string(path) {
+        let t = s.trim();
+        if !t.is_empty() {
+            return Ok(t.to_string());
+        }
+    }
+    let token = gen_token()?;
+    if let Some(parent) = path.parent() {
+        let _ = std::fs::create_dir_all(parent);
+    }
+    #[cfg(unix)]
+    {
+        use std::io::Write;
+        use std::os::unix::fs::OpenOptionsExt;
+        let mut f = std::fs::OpenOptions::new()
+            .write(true)
+            .create(true)
+            .truncate(true)
+            .mode(0o600)
+            .open(path)
+            .with_context(|| format!("writing token file {}", path.display()))?;
+        f.write_all(token.as_bytes())
+            .with_context(|| format!("writing token file {}", path.display()))?;
+    }
+    #[cfg(not(unix))]
+    {
+        std::fs::write(path, &token)
+            .with_context(|| format!("writing token file {}", path.display()))?;
+    }
+    Ok(token)
 }
 
 /// Stable wire name for a line kind, so the browser colors without re-deriving.
@@ -58,8 +96,9 @@ fn wire_json(session: &str, line: &StyledLine) -> String {
 pub async fn serve(
     path: PathBuf,
     token: String,
+    port: u16,
 ) -> anyhow::Result<(std::net::SocketAddr, tokio::task::JoinHandle<()>)> {
-    let listener = TcpListener::bind(("127.0.0.1", 0)).await?;
+    let listener = TcpListener::bind(("127.0.0.1", port)).await?;
     let addr = listener.local_addr()?;
 
     let backlog: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(Vec::new()));
@@ -280,7 +319,7 @@ mod tests {
     async fn serves_page_streams_sse_and_gates_on_token() {
         let path = seed_audit();
         let token = "secrettoken".to_string();
-        let (addr, _h) = serve(path.clone(), token.clone()).await.unwrap();
+        let (addr, _h) = serve(path.clone(), token.clone(), 0).await.unwrap();
 
         // No token -> 403 on both routes.
         assert!(http_get(addr, "/", 300).await.starts_with("HTTP/1.1 403"));
@@ -314,6 +353,17 @@ mod tests {
         );
 
         let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn load_or_create_token_persists_and_reuses() {
+        let p = std::env::temp_dir().join(format!("ek_tok_{}", std::process::id()));
+        let _ = std::fs::remove_file(&p);
+        let a = load_or_create_token(&p).unwrap();
+        assert_eq!(a.len(), 32, "32 hex chars");
+        let b = load_or_create_token(&p).unwrap();
+        assert_eq!(a, b, "second call reuses the persisted token");
+        let _ = std::fs::remove_file(&p);
     }
 
     #[test]

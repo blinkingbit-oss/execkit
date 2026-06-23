@@ -29,6 +29,12 @@ pub fn default_web_audit_path() -> PathBuf {
     home_dir().join(".execkit").join("watch.jsonl")
 }
 
+/// Persistent URL token for the auto-start web viewer, so the link stays stable
+/// across MCP-server restarts (the open tab reconnects instead of flapping).
+pub fn default_web_token_path() -> PathBuf {
+    home_dir().join(".execkit").join("watch-token")
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -47,5 +53,13 @@ mod tests {
         assert!(p.is_absolute());
         assert!(p.ends_with("watch.jsonl"));
         assert!(p.starts_with(home_dir()));
+    }
+
+    #[test]
+    fn default_web_token_path_is_under_home() {
+        let p = default_web_token_path();
+        assert!(p.is_absolute());
+        assert!(p.ends_with("watch-token"));
+        assert_eq!(p, home_dir().join(".execkit").join("watch-token"));
     }
 }

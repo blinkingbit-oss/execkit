@@ -969,7 +969,7 @@ fn main() -> anyhow::Result<()> {
                     if do_serve {
                         return tokio::runtime::Runtime::new()?.block_on(async move {
                             let token = watch::web::gen_token()?;
-                            let (addr, handle) = watch::web::serve(p, token.clone()).await?;
+                            let (addr, handle) = watch::web::serve(p, token.clone(), 0).await?;
                             let url = format!("http://{addr}/?t={token}");
                             eprintln!(
                                 "execkit-mcp: live viewer at {url} (read-only; Ctrl+C to stop)"
@@ -1059,11 +1059,31 @@ async fn run_server() -> anyhow::Result<()> {
         .await?;
 
     if let Some(path) = web_audit_path {
-        match watch::web::gen_token() {
-            Ok(token) => match watch::web::serve(path, token.clone()).await {
-                Ok((addr, _handle)) => {
+        let tokfile = execkit_mcp::paths::default_web_token_path();
+        match watch::web::load_or_create_token(&tokfile) {
+            Ok(token) => {
+                // Default 7878 (stable across restarts so the open tab reconnects);
+                // EXECKIT_MCP_WATCH_PORT overrides; fall back to an ephemeral port
+                // if the chosen one is taken.
+                let port: u16 = std::env::var("EXECKIT_MCP_WATCH_PORT")
+                    .ok()
+                    .and_then(|s| s.parse().ok())
+                    .unwrap_or(7878);
+                let served = match watch::web::serve(path.clone(), token.clone(), port).await {
+                    Ok(v) => Some(v),
+                    Err(e) => {
+                        eprintln!(
+                            "execkit-mcp: web viewer port {port} unavailable ({e}); using a random port"
+                        );
+                        watch::web::serve(path, token.clone(), 0).await.ok()
+                    }
+                };
+                if let Some((addr, _handle)) = served {
                     let url = format!("http://{addr}/?t={token}");
-                    watch::web::open_browser(&url);
+                    // Link by default; auto-open only when the operator opts in.
+                    if std::env::var_os("EXECKIT_MCP_WATCH_OPEN").is_some() {
+                        watch::web::open_browser(&url);
+                    }
                     let _ = service
                         .peer()
                         .notify_logging_message(LoggingMessageNotificationParam {
@@ -1077,8 +1097,7 @@ async fn run_server() -> anyhow::Result<()> {
                         .await;
                     eprintln!("execkit-mcp: live viewer at {url} (read-only)");
                 }
-                Err(e) => eprintln!("execkit-mcp: web viewer failed to start: {e:#}"),
-            },
+            }
             Err(e) => eprintln!("execkit-mcp: web viewer token error: {e:#}"),
         }
     }

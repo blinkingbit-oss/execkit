@@ -18,9 +18,13 @@ struct Server {
 
 impl Server {
     fn start(audit: &std::path::Path) -> Self {
+        let tmp_home = std::env::temp_dir().join(format!("ek_home_{}", std::process::id()));
+        let _ = std::fs::create_dir_all(&tmp_home);
         let mut child = Command::new(env!("CARGO_BIN_EXE_execkit-mcp"))
             .env("EXECKIT_MCP_WATCH_WEB", "1")
             .env("EXECKIT_MCP_AUDIT", audit)
+            .env("EXECKIT_MCP_WATCH_PORT", "0")
+            .env("HOME", &tmp_home)
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::null())
