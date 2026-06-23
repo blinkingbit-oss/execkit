@@ -671,6 +671,7 @@ dependencies = [
  "anyhow",
  "crossterm",
  "execkit",
+ "getrandom 0.4.2",
  "home",
  "ratatui",
  "regex",
