@@ -106,7 +106,7 @@
 
   const es = new EventSource("/events?t=" + encodeURIComponent(token));
   es.onmessage = (e) => { try { ingest(JSON.parse(e.data)); } catch (_) {} };
-  es.onopen = () => { setTitle(); };
+  es.onopen = () => { sessions.clear(); selected = null; transcriptEl.textContent = ""; sessionsEl.textContent = ""; setTitle(); };
   es.onerror = () => { if (!titleEl.textContent.includes("[disconnected]")) titleEl.textContent += "  [disconnected]"; };
 </script>
 </body>
