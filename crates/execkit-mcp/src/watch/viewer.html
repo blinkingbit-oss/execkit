@@ -65,9 +65,13 @@
     return transcriptEl.scrollHeight - transcriptEl.scrollTop - transcriptEl.clientHeight < 24;
   }
 
-  function renderTranscript() {
+  function setTitle() {
     const s = selected && sessions.get(selected);
     titleEl.textContent = selected ? (selected + (s.closed ? "  (closed)" : "  (active)")) : "(no sessions yet)";
+  }
+
+  function renderTranscript() {
+    setTitle();
     transcriptEl.textContent = "";
     if (!s) return;
     for (const l of s.lines) {
@@ -89,6 +93,7 @@
 
     const stick = (m.session === selected) && atBottom();
     if (m.session === selected) {
+      setTitle();
       const span = document.createElement("span");
       span.className = "ln " + m.kind;
       span.textContent = m.text;
