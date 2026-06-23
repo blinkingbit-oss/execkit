@@ -159,5 +159,8 @@ fn watch_serve_without_path_shows_usage() {
         .expect("spawn");
     assert!(!out.status.success(), "missing path should exit non-zero");
     let err = String::from_utf8_lossy(&out.stderr);
-    assert!(err.contains("--serve"), "usage should mention --serve, got {err:?}");
+    assert!(
+        err.contains("--serve"),
+        "usage should mention --serve, got {err:?}"
+    );
 }

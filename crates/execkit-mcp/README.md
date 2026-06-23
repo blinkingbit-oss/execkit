@@ -150,6 +150,7 @@ by the **operator at startup** (env vars), not by per-call agent arguments:
 | `EXECKIT_MCP_MAX_SESSIONS` | soft cap on concurrent live sessions | `64` |
 | `EXECKIT_MCP_SESSION_TTL` | reap sessions idle longer than this many seconds (frees the process + cap slot); `0` disables | `1800` (30 min) |
 | `EXECKIT_MCP_POLICY_FILE` | JSON `allow`/`deny` (program names) + `deny_patterns` (regex) the agent cannot edit; advisory | off |
+| `EXECKIT_MCP_WATCH_WEB` | Auto-start the read-only browser viewer and open it (loopback + URL token); auto-enables an audit file if none is set | off |
 
 - **Host keys are verified by default** (TOFU against known_hosts; a changed key
   is rejected as a likely MITM). Pass a `fingerprint` to require an exact key, or

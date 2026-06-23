@@ -23,6 +23,12 @@ pub fn ssh_dir() -> PathBuf {
     home_dir().join(".ssh")
 }
 
+/// Default audit file used when the web viewer is enabled but no audit path is
+/// configured. Lives under the user's home so it survives across runs.
+pub fn default_web_audit_path() -> PathBuf {
+    home_dir().join(".execkit").join("watch.jsonl")
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -33,5 +39,13 @@ mod tests {
         assert!(home.is_absolute(), "home should be absolute: {home:?}");
         assert_eq!(ssh_dir(), home.join(".ssh"));
         assert!(ssh_dir().ends_with(".ssh"));
+    }
+
+    #[test]
+    fn default_web_audit_path_is_under_home() {
+        let p = default_web_audit_path();
+        assert!(p.is_absolute());
+        assert!(p.ends_with("watch.jsonl"));
+        assert!(p.starts_with(home_dir()));
     }
 }

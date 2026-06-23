@@ -144,13 +144,24 @@ async fn handle_conn(
     let first = req.lines().next().unwrap_or("");
     let target = first.split_whitespace().nth(1).unwrap_or("");
     let (path, query) = target.split_once('?').unwrap_or((target, ""));
-    let supplied = query.split('&').find_map(|kv| kv.strip_prefix("t=")).unwrap_or("");
+    let supplied = query
+        .split('&')
+        .find_map(|kv| kv.strip_prefix("t="))
+        .unwrap_or("");
 
     if supplied != token.as_str() {
         return write_simple(&mut sock, "403 Forbidden", "text/plain", b"403 forbidden\n").await;
     }
     match path {
-        "/" => write_simple(&mut sock, "200 OK", "text/html; charset=utf-8", PAGE.as_bytes()).await,
+        "/" => {
+            write_simple(
+                &mut sock,
+                "200 OK",
+                "text/html; charset=utf-8",
+                PAGE.as_bytes(),
+            )
+            .await
+        }
         "/events" => stream_events(sock, backlog, tx).await,
         _ => write_simple(&mut sock, "404 Not Found", "text/plain", b"404 not found\n").await,
     }
@@ -174,14 +185,16 @@ async fn stream_events(
         (g.clone(), tx.subscribe())
     };
     for msg in snapshot {
-        sock.write_all(format!("data: {msg}\n\n").as_bytes()).await?;
+        sock.write_all(format!("data: {msg}\n\n").as_bytes())
+            .await?;
     }
     sock.flush().await?;
 
     loop {
         match rx.recv().await {
             Ok(msg) => {
-                sock.write_all(format!("data: {msg}\n\n").as_bytes()).await?;
+                sock.write_all(format!("data: {msg}\n\n").as_bytes())
+                    .await?;
                 sock.flush().await?;
             }
             // Lagged: drop missed messages, keep streaming.
@@ -205,7 +218,10 @@ fn open_command(url: &str) -> (&'static str, Vec<String>) {
     #[cfg(target_os = "windows")]
     {
         // `start` is a cmd builtin; its first quoted arg is the window title.
-        ("cmd", vec!["/C".into(), "start".into(), String::new(), url.to_string()])
+        (
+            "cmd",
+            vec!["/C".into(), "start".into(), String::new(), url.to_string()],
+        )
     }
     #[cfg(not(any(target_os = "linux", target_os = "macos", target_os = "windows")))]
     {
@@ -236,7 +252,11 @@ mod tests {
         let p = std::env::temp_dir().join(format!("ek_web_{}.jsonl", std::process::id()));
         let mut f = std::fs::File::create(&p).unwrap();
         // one Open + one Exec for session 1_local
-        writeln!(f, r#"{{"event":"open","ts":1,"session":"1_local","transport":"local"}}"#).unwrap();
+        writeln!(
+            f,
+            r#"{{"event":"open","ts":1,"session":"1_local","transport":"local"}}"#
+        )
+        .unwrap();
         writeln!(f, r#"{{"event":"exec","ts":2,"session":"1_local","transport":"local","command":"echo hi","stdout":"hi","stderr":"","exit_code":0,"duration_ms":3,"cwd":"/tmp","truncated":false}}"#).unwrap();
         p
     }
@@ -264,19 +284,34 @@ mod tests {
 
         // No token -> 403 on both routes.
         assert!(http_get(addr, "/", 300).await.starts_with("HTTP/1.1 403"));
-        assert!(http_get(addr, "/events", 300).await.starts_with("HTTP/1.1 403"));
+        assert!(http_get(addr, "/events", 300)
+            .await
+            .starts_with("HTTP/1.1 403"));
 
         // Page with token -> 200 html containing our script anchor.
         let page = http_get(addr, &format!("/?t={token}"), 300).await;
-        assert!(page.starts_with("HTTP/1.1 200"), "page status: {}", &page[..page.len().min(40)]);
+        assert!(
+            page.starts_with("HTTP/1.1 200"),
+            "page status: {}",
+            &page[..page.len().min(40)]
+        );
         assert!(page.contains("text/html"));
         assert!(page.contains("/events?t="));
 
         // Events with token -> text/event-stream, replays the seeded exec.
         let ev = http_get(addr, &format!("/events?t={token}"), 800).await;
-        assert!(ev.contains("text/event-stream"), "sse content-type missing: {ev}");
-        assert!(ev.contains("/tmp $ echo hi"), "replayed prompt missing: {ev}");
-        assert!(ev.contains("\"session\":\"1_local\""), "session tag missing: {ev}");
+        assert!(
+            ev.contains("text/event-stream"),
+            "sse content-type missing: {ev}"
+        );
+        assert!(
+            ev.contains("/tmp $ echo hi"),
+            "replayed prompt missing: {ev}"
+        );
+        assert!(
+            ev.contains("\"session\":\"1_local\""),
+            "session tag missing: {ev}"
+        );
 
         let _ = std::fs::remove_file(&path);
     }
@@ -302,7 +337,10 @@ mod tests {
 
     #[test]
     fn wire_json_shape() {
-        let line = StyledLine { text: "/tmp $ ls".into(), kind: LineKind::Prompt };
+        let line = StyledLine {
+            text: "/tmp $ ls".into(),
+            kind: LineKind::Prompt,
+        };
         let v: serde_json::Value = serde_json::from_str(&wire_json("1_local", &line)).unwrap();
         assert_eq!(v["session"], "1_local");
         assert_eq!(v["kind"], "prompt");
@@ -325,7 +363,15 @@ mod tests {
         #[cfg(target_os = "windows")]
         {
             assert_eq!(prog, "cmd");
-            assert_eq!(args, vec!["/C".to_string(), "start".to_string(), "".to_string(), "http://127.0.0.1:9/?t=x".to_string()]);
+            assert_eq!(
+                args,
+                vec![
+                    "/C".to_string(),
+                    "start".to_string(),
+                    "".to_string(),
+                    "http://127.0.0.1:9/?t=x".to_string()
+                ]
+            );
         }
     }
 }

@@ -971,7 +971,9 @@ fn main() -> anyhow::Result<()> {
                             let token = watch::web::gen_token()?;
                             let (addr, handle) = watch::web::serve(p, token.clone()).await?;
                             let url = format!("http://{addr}/?t={token}");
-                            eprintln!("execkit-mcp: live viewer at {url} (read-only; Ctrl+C to stop)");
+                            eprintln!(
+                                "execkit-mcp: live viewer at {url} (read-only; Ctrl+C to stop)"
+                            );
                             if do_open {
                                 watch::web::open_browser(&url);
                             }
@@ -1002,7 +1004,7 @@ fn main() -> anyhow::Result<()> {
 
 async fn run_server() -> anyhow::Result<()> {
     // stdout is the MCP channel - all diagnostics go to stderr.
-    let config = Config::from_env();
+    let mut config = Config::from_env();
     // Operator command policy (fail fast on a broken security config).
     let operator_policy = Arc::new(execkit_mcp::policy::load_from_env()?);
     if let Some(dir) = config.audit_dir.clone() {
@@ -1031,9 +1033,56 @@ async fn run_server() -> anyhow::Result<()> {
              SSH host-key verification is DISABLED (MITM possible). Do not use in production."
         );
     }
+    // Live web viewer (opt-in). It tails the audit file, so if auditing is off
+    // we default an audit path and turn it on so there is something to tail.
+    let web_enabled = std::env::var_os("EXECKIT_MCP_WATCH_WEB").is_some();
+    let web_audit_path = if web_enabled {
+        let p = config
+            .audit_dir
+            .clone()
+            .or_else(|| config.audit_path.clone())
+            .unwrap_or_else(|| {
+                let def = execkit_mcp::paths::default_web_audit_path();
+                if let Some(parent) = def.parent() {
+                    let _ = std::fs::create_dir_all(parent);
+                }
+                config.audit_path = Some(def.clone());
+                def
+            });
+        Some(p)
+    } else {
+        None
+    };
+
     let service = ExeckitServer::new(config, operator_policy)
         .serve(rmcp::transport::stdio())
         .await?;
+
+    if let Some(path) = web_audit_path {
+        match watch::web::gen_token() {
+            Ok(token) => match watch::web::serve(path, token.clone()).await {
+                Ok((addr, _handle)) => {
+                    let url = format!("http://{addr}/?t={token}");
+                    watch::web::open_browser(&url);
+                    let _ = service
+                        .peer()
+                        .notify_logging_message(LoggingMessageNotificationParam {
+                            level: LoggingLevel::Info,
+                            logger: Some("execkit/web".into()),
+                            data: serde_json::json!({
+                                "summary": format!("live viewer at {url}"),
+                                "url": url,
+                            }),
+                        })
+                        .await;
+                    eprintln!("execkit-mcp: live viewer at {url} (read-only)");
+                }
+                Err(e) => eprintln!("execkit-mcp: web viewer failed to start: {e:#}"),
+            },
+            Err(e) => eprintln!("execkit-mcp: web viewer token error: {e:#}"),
+        }
+    }
+
     service.waiting().await?;
     Ok(())
 }
