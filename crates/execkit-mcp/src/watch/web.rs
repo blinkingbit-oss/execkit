@@ -213,7 +213,7 @@ mod tests {
         s.write_all(format!("GET {target} HTTP/1.1\r\nHost: x\r\n\r\n").as_bytes())
             .await
             .unwrap();
-        let mut buf = vec![0u8; 4096];
+        let mut buf = vec![0u8; 8192];
         // Read briefly; SSE never closes, so bound the read by time.
         let n = tokio::time::timeout(std::time::Duration::from_millis(read_ms), s.read(&mut buf))
             .await

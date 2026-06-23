@@ -1,17 +1,106 @@
 <!doctype html>
 <html lang="en">
-<head><meta charset="utf-8"><title>execkit - live</title></head>
+<head>
+<meta charset="utf-8">
+<title>execkit - live (read-only)</title>
+<style>
+  :root { color-scheme: dark; }
+  * { box-sizing: border-box; }
+  body { margin: 0; height: 100vh; display: flex; flex-direction: column;
+         font: 13px ui-monospace, Menlo, Consolas, monospace; background: #11141a; color: #c8ccd4; }
+  header { padding: 6px 10px; background: #0b0d11; border-bottom: 1px solid #222; color: #8a93a3; }
+  header b { color: #c8ccd4; }
+  .main { flex: 1; display: flex; min-height: 0; }
+  #sessions { width: 220px; border-right: 1px solid #222; overflow-y: auto; }
+  #sessions .s { padding: 4px 10px; cursor: pointer; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  #sessions .s:hover { background: #1a1f29; }
+  #sessions .s.sel { background: #243044; color: #fff; }
+  #sessions .s.closed { color: #6b7280; }
+  #transcript { flex: 1; overflow-y: auto; padding: 8px 12px; white-space: pre-wrap; word-break: break-word; }
+  #title { padding: 6px 12px; border-bottom: 1px solid #222; color: #8a93a3; }
+  .pane { flex: 1; display: flex; flex-direction: column; min-width: 0; }
+  .ln { display: block; }
+  .prompt { color: #56b6c2; font-weight: 600; }
+  .stdout { color: #c8ccd4; }
+  .stderr { color: #e06c75; }
+  .exit_ok { color: #98c379; }
+  .exit_err { color: #e06c75; }
+  .marker { color: #6b7280; }
+</style>
+</head>
 <body>
-<pre id="log" aria-live="polite"></pre>
+<header>execkit <b>live</b> - read-only shell transcript</header>
+<div class="main">
+  <div id="sessions" role="listbox" aria-label="sessions"></div>
+  <div class="pane">
+    <div id="title">(no sessions yet)</div>
+    <div id="transcript" aria-live="polite"></div>
+  </div>
+</div>
 <script>
-  const t = new URLSearchParams(location.search).get("t") || "";
-  const log = document.getElementById("log");
-  const es = new EventSource("/events?t=" + encodeURIComponent(t));
-  es.onmessage = (e) => {
-    const m = JSON.parse(e.data);
-    log.textContent += "[" + m.session + "] " + m.text + "\n";
-    window.scrollTo(0, document.body.scrollHeight);
-  };
+  const token = new URLSearchParams(location.search).get("t") || "";
+  const sessionsEl = document.getElementById("sessions");
+  const titleEl = document.getElementById("title");
+  const transcriptEl = document.getElementById("transcript");
+
+  // session id -> { lines: [{kind,text}], closed: bool }
+  const sessions = new Map();
+  let selected = null;
+
+  function order() { return [...sessions.keys()]; }
+
+  function renderSidebar() {
+    sessionsEl.textContent = "";
+    for (const id of order()) {
+      const s = sessions.get(id);
+      const div = document.createElement("div");
+      div.className = "s" + (id === selected ? " sel" : "") + (s.closed ? " closed" : "");
+      div.textContent = (id === selected ? "> " : "  ") + id + " (" + s.lines.length + ")";
+      div.onclick = () => { selected = id; renderAll(); };
+      sessionsEl.appendChild(div);
+    }
+  }
+
+  function atBottom() {
+    return transcriptEl.scrollHeight - transcriptEl.scrollTop - transcriptEl.clientHeight < 24;
+  }
+
+  function renderTranscript() {
+    const s = selected && sessions.get(selected);
+    titleEl.textContent = selected ? (selected + (s.closed ? "  (closed)" : "  (active)")) : "(no sessions yet)";
+    transcriptEl.textContent = "";
+    if (!s) return;
+    for (const l of s.lines) {
+      const span = document.createElement("span");
+      span.className = "ln " + l.kind;
+      span.textContent = l.text;
+      transcriptEl.appendChild(span);
+    }
+  }
+
+  function renderAll() { renderSidebar(); renderTranscript(); }
+
+  function ingest(m) {
+    let s = sessions.get(m.session);
+    if (!s) { s = { lines: [], closed: false }; sessions.set(m.session, s); if (!selected) selected = m.session; }
+    if (m.kind === "marker" && m.text.startsWith("-- closed")) s.closed = true;
+    if (m.kind === "marker" && m.text.startsWith("-- opened")) s.closed = false;
+    s.lines.push({ kind: m.kind, text: m.text });
+
+    const stick = (m.session === selected) && atBottom();
+    if (m.session === selected) {
+      const span = document.createElement("span");
+      span.className = "ln " + m.kind;
+      span.textContent = m.text;
+      transcriptEl.appendChild(span);
+      if (stick) transcriptEl.scrollTop = transcriptEl.scrollHeight;
+    }
+    renderSidebar();
+  }
+
+  const es = new EventSource("/events?t=" + encodeURIComponent(token));
+  es.onmessage = (e) => { try { ingest(JSON.parse(e.data)); } catch (_) {} };
+  es.onerror = () => { titleEl.textContent += "  [disconnected]"; };
 </script>
 </body>
 </html>
