@@ -1,0 +1,17 @@
+<!doctype html>
+<html lang="en">
+<head><meta charset="utf-8"><title>execkit - live</title></head>
+<body>
+<pre id="log" aria-live="polite"></pre>
+<script>
+  const t = new URLSearchParams(location.search).get("t") || "";
+  const log = document.getElementById("log");
+  const es = new EventSource("/events?t=" + encodeURIComponent(t));
+  es.onmessage = (e) => {
+    const m = JSON.parse(e.data);
+    log.textContent += "[" + m.session + "] " + m.text + "\n";
+    window.scrollTo(0, document.body.scrollHeight);
+  };
+</script>
+</body>
+</html>
