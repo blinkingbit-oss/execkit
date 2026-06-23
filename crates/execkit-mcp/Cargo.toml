@@ -26,3 +26,4 @@ crossterm = "0.28"
 # paths are correct even when $HOME is unset.
 home = "0.5"
 regex = "1"
+getrandom = "0.4"
