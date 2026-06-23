@@ -1060,7 +1060,13 @@ async fn run_server() -> anyhow::Result<()> {
 
     if let Some(path) = web_audit_path {
         let tokfile = execkit_mcp::paths::default_web_token_path();
-        match watch::web::load_or_create_token(&tokfile) {
+        // Token read/create touches the filesystem; keep it off the async
+        // executor so it cannot stall the MCP message loop.
+        let token_res =
+            tokio::task::spawn_blocking(move || watch::web::load_or_create_token(&tokfile))
+                .await
+                .unwrap_or_else(|e| Err(anyhow::anyhow!("token thread failed: {e}")));
+        match token_res {
             Ok(token) => {
                 // Default 7878 (stable across restarts so the open tab reconnects);
                 // EXECKIT_MCP_WATCH_PORT overrides; fall back to an ephemeral port

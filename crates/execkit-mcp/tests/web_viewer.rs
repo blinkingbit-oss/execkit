@@ -6,7 +6,7 @@ use std::io::{BufRead, BufReader, Write};
 use std::process::{Child, ChildStdin, Command, Stdio};
 use std::sync::mpsc::{self, Receiver, RecvTimeoutError};
 use std::thread;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use serde_json::{json, Value};
 
@@ -14,6 +14,7 @@ struct Server {
     child: Child,
     stdin: ChildStdin,
     rx: Receiver<Value>,
+    buf: Vec<Value>,
 }
 
 impl Server {
@@ -50,7 +51,12 @@ impl Server {
                 }
             }
         });
-        Self { child, stdin, rx }
+        Self {
+            child,
+            stdin,
+            rx,
+            buf: Vec::new(),
+        }
     }
 
     fn send(&mut self, v: Value) {
@@ -58,24 +64,34 @@ impl Server {
         self.stdin.flush().unwrap();
     }
 
-    fn recv_timeout(&mut self, dur: Duration) -> Option<Value> {
-        match self.rx.recv_timeout(dur) {
-            Ok(v) => Some(v),
-            Err(RecvTimeoutError::Timeout) => None,
-            Err(RecvTimeoutError::Disconnected) => panic!("server closed stdout"),
+    /// Wait until a received message satisfies `pred`, retaining ALL messages
+    /// (never discards), so a message a later step needs can't be lost to
+    /// ordering jitter. Returns the first match, or None on timeout.
+    fn wait_for<F: Fn(&Value) -> bool>(&mut self, pred: F, timeout: Duration) -> Option<Value> {
+        if let Some(v) = self.buf.iter().find(|v| pred(v)) {
+            return Some(v.clone());
+        }
+        let deadline = Instant::now() + timeout;
+        loop {
+            let remaining = deadline.checked_duration_since(Instant::now())?;
+            match self.rx.recv_timeout(remaining) {
+                Ok(v) => {
+                    let matched = pred(&v);
+                    self.buf.push(v.clone());
+                    if matched {
+                        return Some(v);
+                    }
+                }
+                Err(RecvTimeoutError::Timeout) => return None,
+                Err(RecvTimeoutError::Disconnected) => return None,
+            }
         }
     }
 
-    /// Wait for a response carrying the given id (skipping notifications).
+    /// Wait for a response carrying the given id (retaining other messages).
     fn recv_id(&mut self, id: i64) -> Value {
-        loop {
-            match self.rx.recv_timeout(Duration::from_secs(15)) {
-                Ok(v) if v["id"] == json!(id) => return v,
-                Ok(_) => continue,
-                Err(RecvTimeoutError::Timeout) => panic!("no reply to id {id} within 15s"),
-                Err(RecvTimeoutError::Disconnected) => panic!("server closed stdout"),
-            }
-        }
+        self.wait_for(|v| v["id"] == json!(id), Duration::from_secs(15))
+            .unwrap_or_else(|| panic!("no reply to id {id} within 15s"))
     }
 }
 
@@ -98,23 +114,32 @@ fn web_viewer_emits_url_and_streams_sse() {
     m.recv_id(1); // consume init response
     m.send(json!({"jsonrpc":"2.0","method":"notifications/initialized"}));
 
-    // Collect messages until we see the web URL notification.
-    let mut url = String::new();
-    for _ in 0..50 {
-        if let Some(v) = m.recv_timeout(Duration::from_secs(5)) {
-            if v["method"] == json!("notifications/message") {
-                if let Some(u) = v["params"]["data"]["url"].as_str() {
-                    url = u.to_string();
-                    break;
-                }
-            }
-        }
-    }
+    // Wait for the web URL notification (retaining other messages).
+    let url = m
+        .wait_for(
+            |v| {
+                v["method"] == json!("notifications/message")
+                    && v["params"]["data"]["url"].is_string()
+            },
+            Duration::from_secs(15),
+        )
+        .map(|v| {
+            v["params"]["data"]["url"]
+                .as_str()
+                .unwrap_or("")
+                .to_string()
+        })
+        .unwrap_or_default();
     assert!(
         url.starts_with("http://127.0.0.1:"),
         "expected loopback url, got {url:?}"
     );
     assert!(url.contains("/?t="), "url should carry a token: {url}");
+
+    // Let the auto-start handshake fully settle before issuing tool calls. The
+    // server is reliable once running, but driving session_create immediately
+    // after the URL notification is timing-sensitive over raw stdio.
+    std::thread::sleep(Duration::from_millis(300));
 
     // Create a session and run a command; it lands in the audit file the viewer tails.
     m.send(json!({"jsonrpc":"2.0","id":3,"method":"tools/call",
