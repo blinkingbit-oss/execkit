@@ -222,7 +222,7 @@ Expected: PASS (the page is still served as `text/html` and contains `/events?t=
 - [ ] **Step 3: Typography check**
 
 Run: `grep -nP '[^\x00-\x7F]' crates/execkit-mcp/src/watch/viewer.html`
-Expected: NO output. (If the `rз`/`rез` artifact remains, fix it.)
+Expected: NO output (the whole page source must be ASCII).
 
 - [ ] **Step 4: Real-browser verification (Playwright)**
 
@@ -934,4 +934,4 @@ git commit -m "feat(mcp): viewer session screenshot - canvas to PNG"
 - **State JSON shape:** `{ "sessions": { "<id>": {alias?,pinned?,keep?} }, "ui": { "sidebar_width"? } }` - consistent between `meta.rs`, the `/state` tests, and the page (Task 4 fetch payloads). `flatten` is NOT used (incompatible with `deny_unknown_fields`).
 - **Security invariants in code:** loopback bind unchanged; token checked before routing for every method/path; `/state` POST validated + size-capped + 0600 + fixed path; `/session/<id>` resolves by scanning the dir (never joins the id into a path) and rejects non-allowlisted ids; all responses carry `Cache-Control: no-store` via `write_simple` and the SSE header.
 - **No-panic:** request/method/body parsing uses `unwrap_or`/`find_map`/`position`; mutex via the existing `lock()` helper; meta load tolerates missing/corrupt files.
-- **ASCII:** one deliberate trap is called out in Task 1 (the `rез` artifact) - the implementer must fix it; every task ends with the ASCII grep.
+- **ASCII:** every task ends with the `grep -nP '[^\x00-\x7F]'` check over its changed files; the page source must contain no emoji/box-drawing glyphs (affordances are CSS-drawn or plain ASCII).
