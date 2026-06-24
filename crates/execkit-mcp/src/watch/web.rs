@@ -313,7 +313,7 @@ fn list_sessions(audit: &Path) -> Vec<SessionInfo> {
             size,
         });
     }
-    out.sort_by(|a, b| b.started_ms.cmp(&a.started_ms)); // newest first
+    out.sort_by_key(|s| std::cmp::Reverse(s.started_ms)); // newest first
     out
 }
 
