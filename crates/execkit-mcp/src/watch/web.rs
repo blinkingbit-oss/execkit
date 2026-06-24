@@ -217,26 +217,39 @@ async fn handle_conn(mut sock: TcpStream, ctx: Arc<Ctx>) -> std::io::Result<()> 
 
     match (method, path) {
         ("GET", "/") => {
-            write_simple(&mut sock, "200 OK", "text/html; charset=utf-8", PAGE.as_bytes()).await
+            write_simple(
+                &mut sock,
+                "200 OK",
+                "text/html; charset=utf-8",
+                PAGE.as_bytes(),
+            )
+            .await
         }
         ("GET", "/events") => stream_events(sock, ctx.backlog.clone(), ctx.tx.clone()).await,
         ("GET", "/state") => {
-            let body = serde_json::to_vec(&meta::load(&ctx.state_path))
-                .unwrap_or_else(|_| b"{}".to_vec());
+            let body =
+                serde_json::to_vec(&meta::load(&ctx.state_path)).unwrap_or_else(|_| b"{}".to_vec());
             write_simple(&mut sock, "200 OK", "application/json", &body).await
         }
-        ("POST", "/state") => {
-            handle_post_state(&mut sock, &ctx, &head, &buf[..n], head_end).await
-        }
+        ("POST", "/state") => handle_post_state(&mut sock, &ctx, &head, &buf[..n], head_end).await,
         ("GET", "/sessions") => {
-            let body = serde_json::to_vec(&list_sessions(&ctx.audit)).unwrap_or_else(|_| b"[]".to_vec());
+            let body =
+                serde_json::to_vec(&list_sessions(&ctx.audit)).unwrap_or_else(|_| b"[]".to_vec());
             write_simple(&mut sock, "200 OK", "application/json", &body).await
         }
         ("GET", p) if p.starts_with("/session/") => {
             let id = &p["/session/".len()..];
             match session_transcript(&ctx.audit, id) {
                 Some(body) => write_simple(&mut sock, "200 OK", "application/json", &body).await,
-                None => write_simple(&mut sock, "404 Not Found", "text/plain", b"no such session\n").await,
+                None => {
+                    write_simple(
+                        &mut sock,
+                        "404 Not Found",
+                        "text/plain",
+                        b"no such session\n",
+                    )
+                    .await
+                }
             }
         }
         _ => write_simple(&mut sock, "404 Not Found", "text/plain", b"404 not found\n").await,
@@ -247,31 +260,58 @@ fn id_ok(id: &str) -> bool {
     !id.is_empty()
         && id.len() <= 128
         && id.bytes().enumerate().all(|(i, b)| {
-            b.is_ascii_alphanumeric() || matches!(b, b'@' | b'.' | b':' | b'_' | b'-')
-                || (b == b'_') || (i > 0 && b.is_ascii_digit())
+            b.is_ascii_alphanumeric()
+                || matches!(b, b'@' | b'.' | b':' | b'_' | b'-')
+                || (b == b'_')
+                || (i > 0 && b.is_ascii_digit())
         })
         && id.as_bytes()[0].is_ascii_digit()
 }
 
 #[derive(serde::Serialize)]
-struct SessionInfo { id: String, label: String, transport: String, started_ms: u64, size: u64 }
+struct SessionInfo {
+    id: String,
+    label: String,
+    transport: String,
+    started_ms: u64,
+    size: u64,
+}
 
 /// List past session files in the audit dir (dir mode). Empty if `audit` is not
 /// a directory (single-file mode has no per-session history).
 fn list_sessions(audit: &Path) -> Vec<SessionInfo> {
     let mut out = Vec::new();
-    if !audit.is_dir() { return out; }
-    let rd = match std::fs::read_dir(audit) { Ok(r) => r, Err(_) => return out };
+    if !audit.is_dir() {
+        return out;
+    }
+    let rd = match std::fs::read_dir(audit) {
+        Ok(r) => r,
+        Err(_) => return out,
+    };
     for ent in rd.flatten() {
         let name = ent.file_name().to_string_lossy().to_string();
         // <id>-<open_ms>.jsonl
-        let stem = match name.strip_suffix(".jsonl") { Some(s) => s, None => continue };
-        let (id, ts) = match stem.rsplit_once('-') { Some(x) => x, None => continue };
-        if !id_ok(id) { continue; }
+        let stem = match name.strip_suffix(".jsonl") {
+            Some(s) => s,
+            None => continue,
+        };
+        let (id, ts) = match stem.rsplit_once('-') {
+            Some(x) => x,
+            None => continue,
+        };
+        if !id_ok(id) {
+            continue;
+        }
         let started_ms = ts.parse().unwrap_or(0);
         let size = ent.metadata().map(|m| m.len()).unwrap_or(0);
         let (transport, label) = split_label(id);
-        out.push(SessionInfo { id: id.to_string(), label, transport, started_ms, size });
+        out.push(SessionInfo {
+            id: id.to_string(),
+            label,
+            transport,
+            started_ms,
+            size,
+        });
     }
     out.sort_by(|a, b| b.started_ms.cmp(&a.started_ms)); // newest first
     out
@@ -281,20 +321,31 @@ fn list_sessions(audit: &Path) -> Vec<SessionInfo> {
 fn split_label(id: &str) -> (String, String) {
     let rest = id.split_once('_').map(|x| x.1).unwrap_or(""); // after the number
     let (transport, tail) = rest.split_once('_').unwrap_or((rest, ""));
-    let label = if transport == "local" || tail.is_empty() { transport.to_string() } else { tail.to_string() };
+    let label = if transport == "local" || tail.is_empty() {
+        transport.to_string()
+    } else {
+        tail.to_string()
+    };
     (transport.to_string(), label)
 }
 
 /// Render one past session's transcript. Id is validated and resolved ONLY
 /// within `audit`; no traversal. None if missing/invalid.
 fn session_transcript(audit: &Path, id: &str) -> Option<Vec<u8>> {
-    if !audit.is_dir() || !id_ok(id) { return None; }
+    if !audit.is_dir() || !id_ok(id) {
+        return None;
+    }
     // find the file `<id>-<ts>.jsonl` in the dir (do not build a path from the id)
     let rd = std::fs::read_dir(audit).ok()?;
     let mut found: Option<std::path::PathBuf> = None;
     for ent in rd.flatten() {
         let name = ent.file_name().to_string_lossy().to_string();
-        if name.strip_suffix(".jsonl").and_then(|s| s.rsplit_once('-')).map(|(i, _)| i) == Some(id) {
+        if name
+            .strip_suffix(".jsonl")
+            .and_then(|s| s.rsplit_once('-'))
+            .map(|(i, _)| i)
+            == Some(id)
+        {
             found = Some(ent.path());
             break;
         }
@@ -360,8 +411,13 @@ async fn handle_post_state(
         Ok(st) => match meta::save(&ctx.state_path, &st) {
             Ok(()) => write_simple(sock, "200 OK", "application/json", b"{\"ok\":true}").await,
             Err(_) => {
-                write_simple(sock, "500 Internal Server Error", "text/plain", b"save failed\n")
-                    .await
+                write_simple(
+                    sock,
+                    "500 Internal Server Error",
+                    "text/plain",
+                    b"save failed\n",
+                )
+                .await
             }
         },
         Err(e) => {
@@ -479,13 +535,10 @@ mod tests {
         );
         s.write_all(req.as_bytes()).await.unwrap();
         let mut b = vec![0u8; 4096];
-        let n = tokio::time::timeout(
-            std::time::Duration::from_millis(500),
-            s.read(&mut b),
-        )
-        .await
-        .map(|r| r.unwrap_or(0))
-        .unwrap_or(0);
+        let n = tokio::time::timeout(std::time::Duration::from_millis(500), s.read(&mut b))
+            .await
+            .map(|r| r.unwrap_or(0))
+            .unwrap_or(0);
         String::from_utf8_lossy(&b[..n]).to_string()
     }
 
@@ -598,8 +651,12 @@ mod tests {
         let (addr, _h) = serve(path.clone(), token.clone(), 0).await.unwrap();
 
         // no token -> 403 on both methods
-        assert!(http_get(addr, "/state", 300).await.starts_with("HTTP/1.1 403"));
-        assert!(http_post(addr, "/state", "{}").await.starts_with("HTTP/1.1 403"));
+        assert!(http_get(addr, "/state", 300)
+            .await
+            .starts_with("HTTP/1.1 403"));
+        assert!(http_post(addr, "/state", "{}")
+            .await
+            .starts_with("HTTP/1.1 403"));
 
         // valid POST persists; GET returns it
         let ok = http_post(
@@ -659,13 +716,19 @@ mod tests {
         let _ = std::fs::create_dir_all(&dir);
         std::fs::write(dir.join("1_local-100.jsonl"),
             "{\"event\":\"open\",\"ts\":100,\"session\":\"1_local\",\"transport\":\"local\"}\n{\"event\":\"exec\",\"ts\":101,\"session\":\"1_local\",\"transport\":\"local\",\"command\":\"echo hi\",\"stdout\":\"hi\",\"stderr\":\"\",\"exit_code\":0,\"duration_ms\":3,\"cwd\":\"/tmp\",\"truncated\":false}\n").unwrap();
-        std::fs::write(dir.join("2_ssh_u@h-200.jsonl"),
-            "{\"event\":\"open\",\"ts\":200,\"session\":\"2_ssh_u@h\",\"transport\":\"ssh\"}\n").unwrap();
+        std::fs::write(
+            dir.join("2_ssh_u@h-200.jsonl"),
+            "{\"event\":\"open\",\"ts\":200,\"session\":\"2_ssh_u@h\",\"transport\":\"ssh\"}\n",
+        )
+        .unwrap();
         let token = "tok".to_string();
         let (addr, _h) = serve(dir.clone(), token.clone(), 0).await.unwrap();
 
         let list = http_get(addr, &format!("/sessions?t={token}"), 400).await;
-        assert!(list.contains("\"id\":\"2_ssh_u@h\"") && list.contains("\"transport\":\"ssh\""), "list: {list}");
+        assert!(
+            list.contains("\"id\":\"2_ssh_u@h\"") && list.contains("\"transport\":\"ssh\""),
+            "list: {list}"
+        );
         assert!(list.contains("\"label\":\"u@h\""), "label: {list}");
 
         let tr = http_get(addr, &format!("/session/1_local?t={token}"), 400).await;

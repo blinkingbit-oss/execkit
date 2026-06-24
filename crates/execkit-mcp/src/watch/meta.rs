@@ -47,7 +47,11 @@ fn is_default_ui(u: &UiPrefs) -> bool {
 /// and per-field caps. Returns the validated state or a short error string.
 pub fn parse_validated(body: &[u8]) -> Result<ViewerState, String> {
     if body.len() > MAX_STATE_BYTES {
-        return Err(format!("state too large ({} > {})", body.len(), MAX_STATE_BYTES));
+        return Err(format!(
+            "state too large ({} > {})",
+            body.len(),
+            MAX_STATE_BYTES
+        ));
     }
     let mut st: ViewerState =
         serde_json::from_slice(body).map_err(|e| format!("invalid state json: {e}"))?;
@@ -147,7 +151,14 @@ mod tests {
         let p = std::env::temp_dir().join(format!("ek_meta_{}.json", std::process::id()));
         let _ = std::fs::remove_file(&p);
         let mut st = ViewerState::default();
-        st.sessions.insert("2_ssh_u@h".into(), SessionMeta { alias: Some("db".into()), pinned: false, keep: true });
+        st.sessions.insert(
+            "2_ssh_u@h".into(),
+            SessionMeta {
+                alias: Some("db".into()),
+                pinned: false,
+                keep: true,
+            },
+        );
         save(&p, &st).unwrap();
         #[cfg(unix)]
         {
