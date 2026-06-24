@@ -202,9 +202,10 @@
 
   async function openHistSession(entry) {
     histSelected = "history:" + entry.id;
-    // deselect live session
+    // deselect live session and refresh both panels so stale .sel clears
     selected = null;
-    renderHistory();
+    renderSidebar(); // clears live .sel highlights
+    renderHistory(); // updates history .sel and re-appends fresh node
     titleEl.textContent = (entry.label) + "  (history)";
     transcriptEl.textContent = "Loading...";
     try {
@@ -321,6 +322,9 @@
       if (!groups.has(s.transport)) groups.set(s.transport, []);
       groups.get(s.transport).push(id);
     }
+    // Detach history section before clearing so we can reattach it cheaply.
+    const histNode = document.getElementById("hist-section");
+    if (histNode) histNode.remove();
     sidebarEl.textContent = "";
     for (const [transport, ids] of groups) {
       // Sort: pinned first, then by original insertion order
@@ -390,7 +394,9 @@
       grp.appendChild(list);
       sidebarEl.appendChild(grp);
     }
-    renderHistory();
+    // Reattach history section (detached above to survive the textContent clear).
+    // If it exists, just re-append it; otherwise do a full render.
+    if (histNode) { sidebarEl.appendChild(histNode); } else { renderHistory(); }
   }
 
   function atBottom() { return transcriptEl.scrollHeight - transcriptEl.scrollTop - transcriptEl.clientHeight < 24; }
