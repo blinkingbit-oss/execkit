@@ -56,7 +56,7 @@ jobs:
           manylinux: auto
           args: --release --out dist --manifest-path ${{ matrix.package.dir }}/Cargo.toml ${{ matrix.platform.args }}
           sccache: "true"
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           # Discriminate by crate dir (execkit-py / execkit-mcp); neither is a
           # glob prefix of the other, so the publish patterns below stay distinct.
@@ -79,7 +79,7 @@ jobs:
         with:
           command: sdist
           args: --out dist --manifest-path crates/execkit-py/Cargo.toml
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: wheels-execkit-py-sdist
           path: dist
