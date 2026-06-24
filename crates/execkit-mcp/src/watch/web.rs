@@ -258,9 +258,11 @@ async fn handle_post_state(
     if len > meta::MAX_STATE_BYTES {
         return write_simple(sock, "400 Bad Request", "text/plain", b"state too large\n").await;
     }
+    // len is already checked <= MAX_STATE_BYTES above.
     let mut body = Vec::with_capacity(len);
     if let Some(he) = head_end {
-        body.extend_from_slice(&already[he..]); // bytes already read past the header
+        let pre = &already[he..];
+        body.extend_from_slice(&pre[..pre.len().min(len)]); // never exceed Content-Length
     }
     while body.len() < len {
         let mut chunk = [0u8; 4096];
@@ -508,6 +510,7 @@ mod tests {
         // Isolate the state file by pointing HOME at a temp dir.
         let home = std::env::temp_dir().join(format!("ek_uxhome_{}", std::process::id()));
         let _ = std::fs::create_dir_all(&home);
+        let prior_home = std::env::var_os("HOME");
         std::env::set_var("HOME", &home);
         let path = seed_audit();
         let token = "tok".to_string();
@@ -534,6 +537,10 @@ mod tests {
 
         let _ = std::fs::remove_file(&path);
         let _ = std::fs::remove_dir_all(&home);
+        match prior_home {
+            Some(h) => std::env::set_var("HOME", h),
+            None => std::env::remove_var("HOME"),
+        }
     }
 
     #[test]
