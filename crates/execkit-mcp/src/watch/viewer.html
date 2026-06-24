@@ -106,6 +106,22 @@
     }).catch(() => {});
   }
 
+  // --- Screenshot helper ---
+  function screenshot(id, label, lines) {
+    const pad = 12, lh = 18, cw = 7.8, font = "13px ui-monospace, Menlo, Consolas, monospace";
+    const colors = { prompt: "#56b6c2", stdout: "#c8ccd4", stderr: "#e06c75", exit_ok: "#98c379", exit_err: "#e06c75", marker: "#6b7280" };
+    const maxLen = lines.reduce(function(m, l) { return Math.max(m, l.text.length); }, label.length + 4);
+    const cv = document.createElement("canvas");
+    cv.width = Math.ceil(pad * 2 + maxLen * cw);
+    cv.height = pad * 2 + lh * (lines.length + 1);
+    const x = cv.getContext("2d");
+    x.fillStyle = "#11141a"; x.fillRect(0, 0, cv.width, cv.height);
+    x.font = font; x.textBaseline = "top";
+    x.fillStyle = "#e6e9ef"; x.fillText(label + "  (" + id + ")", pad, pad);
+    lines.forEach(function(l, i) { x.fillStyle = colors[l.kind] || "#c8ccd4"; x.fillText(l.text, pad, pad + lh * (i + 1)); });
+    cv.toBlob(function(b) { const a = document.createElement("a"); a.href = URL.createObjectURL(b); a.download = id + ".png"; a.click(); URL.revokeObjectURL(a.href); });
+  }
+
   // --- Export helpers ---
   function toMd(label, id, lines) {
     return "# " + label + " - " + id + "\n\n" + "```text\n" + lines.map(function(l) { return l.text; }).join("\n") + "\n```\n";
@@ -194,6 +210,20 @@
     mkBtn("Export log",  () => exportSession(id, "log"));
     mkBtn("Export md",   () => exportSession(id, "md"));
     mkBtn("Export json", () => exportSession(id, "json"));
+
+    // Separator
+    const sep2 = document.createElement("div");
+    sep2.style.cssText = "border-top:1px solid #333;margin:3px 0;";
+    menu.appendChild(sep2);
+
+    mkBtn("Screenshot", () => {
+      const sc = sessions.get(id);
+      if (!sc) return;
+      const smd = (meta.sessions || {})[id] || {};
+      const parsed = parseId(id);
+      const slabel = smd.alias || parsed.label;
+      screenshot(id, slabel, sc.lines);
+    });
 
     document.body.appendChild(menu);
     activeMenu = menu;
