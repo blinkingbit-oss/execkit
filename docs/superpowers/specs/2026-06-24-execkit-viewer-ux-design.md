@@ -182,7 +182,10 @@ read-only" descriptor beneath (now "read + local notes").
   only within the audit dir; no traversal.
 - No external JS/CSS libraries; single self-contained `viewer.html` via
   `include_str!`.
-- ASCII only in code, docs, and the page (no em-dash/non-ASCII).
+- ASCII only in code, docs, and the page source (no em-dash/non-ASCII). UI
+  affordances (accordion arrows, the 3-dots menu glyph, pin marker, active dot)
+  are CSS-drawn (borders/pseudo-elements) or plain ASCII - never emoji or
+  box-drawing glyphs in the HTML source.
 - No `unwrap`/`expect` that can panic on network input or operator values.
 - Keep the existing TUI / follow / `watch --serve` / auto-start paths and the
   live SSE behavior working unchanged.
