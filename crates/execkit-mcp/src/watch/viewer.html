@@ -628,6 +628,8 @@
       document.documentElement.style.setProperty("--sidebar", meta.ui.sidebar_width + "px");
     }
     await loadHistory();
+    // Keep the history relative times ("5m ago") fresh without a manual refresh.
+    setInterval(function () { if (histSessions.length) renderHistory(); }, 30000);
 
     setConn("wait", "connecting...");
     const es = new EventSource(eventsUrl);
