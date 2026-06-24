@@ -1,8 +1,9 @@
 // SPDX-License-Identifier: Apache-2.0
-//! A live, read-only web viewer for the audit log. A hand-rolled HTTP/SSE
-//! server (loopback only, token-gated) tails the same Source the TUI uses,
-//! renders events with render_event, and streams the rendered lines as JSON to
-//! a self-contained page. Read-only: no endpoint mutates anything.
+//! A live web viewer for the audit log. A hand-rolled HTTP/SSE server (loopback
+//! only, token-gated) tails the same Source the TUI uses, renders events with
+//! render_event, and streams the rendered lines as JSON to a self-contained page.
+//! GET /state and POST /state let the page persist display-only metadata
+//! (aliases, pins, keeps, ui prefs) via meta::save - the only write surface.
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
@@ -13,8 +14,20 @@ use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::broadcast;
 
+use crate::watch::meta;
 use crate::watch::render::{render_event, LineKind, StyledLine};
 use crate::watch::source::Source;
+
+/// Per-connection context: everything `handle_conn` needs, cheaply cloned.
+struct Ctx {
+    backlog: Arc<Mutex<Vec<String>>>,
+    tx: broadcast::Sender<String>,
+    token: Arc<String>,
+    /// Path to the audit log (reserved for future routes; the poller owns its own copy).
+    #[allow(dead_code)]
+    audit: PathBuf,
+    state_path: PathBuf,
+}
 
 /// The page is embedded so the binary is self-contained (no asset files at run time).
 const PAGE: &str = include_str!("viewer.html");
@@ -92,7 +105,7 @@ fn wire_json(session: &str, line: &StyledLine) -> String {
 
 /// Bind 127.0.0.1 on an ephemeral port, tail `path` through Source, render each
 /// event, accumulate a replay backlog, and broadcast new lines to SSE clients.
-/// Returns the bound address and the accept-loop handle. Read-only throughout.
+/// Returns the bound address and the accept-loop handle.
 pub async fn serve(
     path: PathBuf,
     token: String,
@@ -103,6 +116,9 @@ pub async fn serve(
 
     let backlog: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(Vec::new()));
     let (tx, _rx) = broadcast::channel::<String>(1024);
+
+    // Clone the audit path before the poller takes ownership of `path`.
+    let path_for_routes = path.clone();
 
     // Poller: tail the audit Source, render, append to backlog, broadcast.
     {
@@ -124,19 +140,26 @@ pub async fn serve(
         });
     }
 
-    // Accept loop: one task per connection.
+    // Build the per-connection context; the accept loop clones the Arc.
     let token = Arc::new(token);
+    let ctx = Arc::new(Ctx {
+        backlog: backlog.clone(),
+        tx: tx.clone(),
+        token: token.clone(),
+        audit: path_for_routes,
+        state_path: crate::paths::default_viewer_state_path(),
+    });
+
+    // Accept loop: one task per connection.
     let handle = tokio::spawn(async move {
         loop {
             let (sock, _peer) = match listener.accept().await {
                 Ok(x) => x,
                 Err(_) => continue,
             };
-            let backlog = backlog.clone();
-            let tx = tx.clone();
-            let token = token.clone();
+            let ctx = ctx.clone();
             tokio::spawn(async move {
-                let _ = handle_conn(sock, backlog, tx, token).await;
+                let _ = handle_conn(sock, ctx).await;
             });
         }
     });
@@ -160,49 +183,113 @@ async fn write_simple(
     sock.flush().await
 }
 
-async fn handle_conn(
-    mut sock: TcpStream,
-    backlog: Arc<Mutex<Vec<String>>>,
-    tx: broadcast::Sender<String>,
-    token: Arc<String>,
-) -> std::io::Result<()> {
-    // Read the request head (bounded; we only need the first line).
+async fn handle_conn(mut sock: TcpStream, ctx: Arc<Ctx>) -> std::io::Result<()> {
+    // Read the request head; capture how many header bytes precede the body.
     let mut buf = vec![0u8; 8192];
     let mut n = 0;
+    let mut head_end = None;
     loop {
         let r = sock.read(&mut buf[n..]).await?;
         if r == 0 {
             return Ok(());
         }
         n += r;
-        if buf[..n].windows(4).any(|w| w == b"\r\n\r\n") || n == buf.len() {
+        if let Some(p) = find_subslice(&buf[..n], b"\r\n\r\n") {
+            head_end = Some(p + 4);
+            break;
+        }
+        if n == buf.len() {
             break;
         }
     }
-    let req = String::from_utf8_lossy(&buf[..n]);
-    let first = req.lines().next().unwrap_or("");
-    let target = first.split_whitespace().nth(1).unwrap_or("");
+    let head = String::from_utf8_lossy(&buf[..head_end.unwrap_or(n)]).to_string();
+    let first = head.lines().next().unwrap_or("");
+    let mut parts = first.split_whitespace();
+    let method = parts.next().unwrap_or("");
+    let target = parts.next().unwrap_or("");
     let (path, query) = target.split_once('?').unwrap_or((target, ""));
     let supplied = query
         .split('&')
         .find_map(|kv| kv.strip_prefix("t="))
         .unwrap_or("");
-
-    if supplied != token.as_str() {
+    if supplied != ctx.token.as_str() {
         return write_simple(&mut sock, "403 Forbidden", "text/plain", b"403 forbidden\n").await;
     }
-    match path {
-        "/" => {
+
+    match (method, path) {
+        ("GET", "/") => {
+            write_simple(&mut sock, "200 OK", "text/html; charset=utf-8", PAGE.as_bytes()).await
+        }
+        ("GET", "/events") => stream_events(sock, ctx.backlog.clone(), ctx.tx.clone()).await,
+        ("GET", "/state") => {
+            let body = serde_json::to_vec(&meta::load(&ctx.state_path))
+                .unwrap_or_else(|_| b"{}".to_vec());
+            write_simple(&mut sock, "200 OK", "application/json", &body).await
+        }
+        ("POST", "/state") => {
+            handle_post_state(&mut sock, &ctx, &head, &buf[..n], head_end).await
+        }
+        _ => write_simple(&mut sock, "404 Not Found", "text/plain", b"404 not found\n").await,
+    }
+}
+
+/// Find the start index of `needle` in `hay`.
+fn find_subslice(hay: &[u8], needle: &[u8]) -> Option<usize> {
+    hay.windows(needle.len()).position(|w| w == needle)
+}
+
+/// POST /state: read Content-Length bytes, validate, save; 400 on bad/oversized.
+async fn handle_post_state(
+    sock: &mut TcpStream,
+    ctx: &Ctx,
+    head: &str,
+    already: &[u8],
+    head_end: Option<usize>,
+) -> std::io::Result<()> {
+    let len: usize = head
+        .lines()
+        .find_map(|l| {
+            l.to_ascii_lowercase()
+                .strip_prefix("content-length:")
+                .map(|v| v.trim().to_string())
+        })
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(0);
+    if len > meta::MAX_STATE_BYTES {
+        return write_simple(sock, "400 Bad Request", "text/plain", b"state too large\n").await;
+    }
+    let mut body = Vec::with_capacity(len);
+    if let Some(he) = head_end {
+        body.extend_from_slice(&already[he..]); // bytes already read past the header
+    }
+    while body.len() < len {
+        let mut chunk = [0u8; 4096];
+        let r = sock.read(&mut chunk).await?;
+        if r == 0 {
+            break;
+        }
+        body.extend_from_slice(&chunk[..r]);
+        if body.len() > meta::MAX_STATE_BYTES {
+            break;
+        }
+    }
+    match meta::parse_validated(&body) {
+        Ok(st) => match meta::save(&ctx.state_path, &st) {
+            Ok(()) => write_simple(sock, "200 OK", "application/json", b"{\"ok\":true}").await,
+            Err(_) => {
+                write_simple(sock, "500 Internal Server Error", "text/plain", b"save failed\n")
+                    .await
+            }
+        },
+        Err(e) => {
             write_simple(
-                &mut sock,
-                "200 OK",
-                "text/html; charset=utf-8",
-                PAGE.as_bytes(),
+                sock,
+                "400 Bad Request",
+                "text/plain",
+                format!("{e}\n").as_bytes(),
             )
             .await
         }
-        "/events" => stream_events(sock, backlog, tx).await,
-        _ => write_simple(&mut sock, "404 Not Found", "text/plain", b"404 not found\n").await,
     }
 }
 
@@ -300,6 +387,25 @@ mod tests {
         p
     }
 
+    // Minimal HTTP POST; returns the full response text.
+    async fn http_post(addr: std::net::SocketAddr, target: &str, body: &str) -> String {
+        let mut s = tokio::net::TcpStream::connect(addr).await.unwrap();
+        let req = format!(
+            "POST {target} HTTP/1.1\r\nHost: x\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+            body.len()
+        );
+        s.write_all(req.as_bytes()).await.unwrap();
+        let mut b = vec![0u8; 4096];
+        let n = tokio::time::timeout(
+            std::time::Duration::from_millis(500),
+            s.read(&mut b),
+        )
+        .await
+        .map(|r| r.unwrap_or(0))
+        .unwrap_or(0);
+        String::from_utf8_lossy(&b[..n]).to_string()
+    }
+
     // Minimal HTTP GET; returns the full response text (headers + body so far).
     async fn http_get(addr: std::net::SocketAddr, target: &str, read_ms: u64) -> String {
         let mut s = tokio::net::TcpStream::connect(addr).await.unwrap();
@@ -395,6 +501,39 @@ mod tests {
         assert_eq!(v["session"], "1_local");
         assert_eq!(v["kind"], "prompt");
         assert_eq!(v["text"], "/tmp $ ls");
+    }
+
+    #[tokio::test]
+    async fn state_get_post_round_trip_and_token_and_validation() {
+        // Isolate the state file by pointing HOME at a temp dir.
+        let home = std::env::temp_dir().join(format!("ek_uxhome_{}", std::process::id()));
+        let _ = std::fs::create_dir_all(&home);
+        std::env::set_var("HOME", &home);
+        let path = seed_audit();
+        let token = "tok".to_string();
+        let (addr, _h) = serve(path.clone(), token.clone(), 0).await.unwrap();
+
+        // no token -> 403 on both methods
+        assert!(http_get(addr, "/state", 300).await.starts_with("HTTP/1.1 403"));
+        assert!(http_post(addr, "/state", "{}").await.starts_with("HTTP/1.1 403"));
+
+        // valid POST persists; GET returns it
+        let ok = http_post(
+            addr,
+            &format!("/state?t={token}"),
+            r#"{"sessions":{"1_local":{"alias":"build"}}}"#,
+        )
+        .await;
+        assert!(ok.starts_with("HTTP/1.1 200"), "post: {ok}");
+        let got = http_get(addr, &format!("/state?t={token}"), 300).await;
+        assert!(got.contains("\"alias\":\"build\""), "get: {got}");
+
+        // malformed -> 400
+        let bad = http_post(addr, &format!("/state?t={token}"), "{ not json").await;
+        assert!(bad.starts_with("HTTP/1.1 400"), "bad: {bad}");
+
+        let _ = std::fs::remove_file(&path);
+        let _ = std::fs::remove_dir_all(&home);
     }
 
     #[test]
