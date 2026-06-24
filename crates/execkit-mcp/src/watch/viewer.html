@@ -11,6 +11,8 @@
   header { padding: 8px 12px; background: #0b0d11; border-bottom: 1px solid #222; display: flex; align-items: baseline; gap: 10px; }
   header .brand { font-size: 20px; font-weight: 700; letter-spacing: 0.5px; color: #e6e9ef; }
   header .tag { color: #8a93a3; font-size: 12px; }
+  header .legend { margin-left: auto; font-size: 11px; display: flex; gap: 10px; align-items: center; }
+  header .legend span::before { content: "."; margin-right: 3px; font-weight: 700; }
   .main { flex: 1; display: flex; min-height: 0; }
   #sidebar { width: var(--sidebar); min-width: 140px; max-width: 70vw; border-right: 1px solid #222; overflow-y: auto; flex-shrink: 0; }
   #resizer { width: 5px; cursor: col-resize; background: transparent; flex-shrink: 0; }
@@ -60,10 +62,22 @@
   .hrow .hpin { color: #61afef; font-size: 10px; flex-shrink: 0; }
   .hrow .hkeep { color: #e5c07b; font-size: 10px; flex-shrink: 0; }
   .rename-input { background: #0b0d11; border: 1px solid #61afef; color: #e6e9ef; font: 13px ui-monospace, Menlo, Consolas, monospace; padding: 1px 4px; width: calc(100% - 8px); outline: none; border-radius: 2px; }
+  /* Bottom status bar */
+  #statusbar { padding: 4px 12px; background: #0b0d11; border-top: 1px solid #222; color: #8a93a3; font-size: 11px; display: flex; align-items: center; gap: 8px; flex-shrink: 0; }
+  #conn { display: flex; align-items: center; gap: 5px; }
+  #conn-dot { width: 7px; height: 7px; border-radius: 50%; background: #6b7280; flex-shrink: 0; }
+  #conn.up #conn-dot { background: #98c379; }
+  #conn.down #conn-dot { background: #e06c75; }
+  #conn.wait #conn-dot { background: #e5c07b; }
+  #status-msg { margin-left: auto; color: #c8ccd4; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 </style>
 </head>
 <body>
-<header><span class="brand">execkit</span><span class="tag">live - read-only shell transcript</span></header>
+<header>
+  <span class="brand">execkit</span>
+  <span class="tag">live - read-only shell transcript</span>
+  <span class="legend"><span class="prompt">cmd</span><span class="stdout">out</span><span class="stderr">err</span><span class="exit_ok">ok</span></span>
+</header>
 <div class="main">
   <div id="sidebar"></div>
   <div id="resizer"></div>
@@ -72,6 +86,10 @@
     <div id="transcript" aria-live="polite"></div>
   </div>
 </div>
+<div id="statusbar">
+  <span id="conn"><span id="conn-dot"></span><span id="conn-text">connecting...</span></span>
+  <span id="status-msg"></span>
+</div>
 <script>
   const token = new URLSearchParams(location.search).get("t") || "";
   const eventsUrl = "/events?t=" + encodeURIComponent(token);
@@ -79,6 +97,32 @@
   const sidebarEl = document.getElementById("sidebar");
   const titleEl = document.getElementById("title");
   const transcriptEl = document.getElementById("transcript");
+  const connEl = document.getElementById("conn");
+  const connTextEl = document.getElementById("conn-text");
+  const statusMsgEl = document.getElementById("status-msg");
+
+  // Bottom status bar: a transient message (auto-clears) + the connection state.
+  let statusTimer = null;
+  function setStatus(msg) {
+    statusMsgEl.textContent = msg;
+    if (statusTimer) clearTimeout(statusTimer);
+    statusTimer = setTimeout(function () { statusMsgEl.textContent = ""; }, 4000);
+  }
+  function setConn(state, text) {
+    connEl.className = state; // "up" | "down" | "wait"
+    connTextEl.textContent = text;
+  }
+
+  // count of executed commands in a transcript (one prompt line per exec; a
+  // blocked attempt renders a "! blocked" line).
+  function cmdCount(lines) {
+    let n = 0;
+    for (const l of lines) {
+      if (l.kind === "prompt") n++;
+      else if (l.kind === "exit_err" && l.text.indexOf("! blocked") === 0) n++;
+    }
+    return n;
+  }
 
   // session id -> { lines:[{kind,text}], closed:bool, transport, label }
   const sessions = new Map();
@@ -121,7 +165,7 @@
     x.font = font; x.textBaseline = "top";
     x.fillStyle = "#e6e9ef"; x.fillText(label + "  (" + id + ")", pad, pad);
     lines.forEach(function(l, i) { x.fillStyle = colors[l.kind] || "#c8ccd4"; x.fillText(l.text, pad, pad + lh * (i + 1)); });
-    cv.toBlob(function(b) { if (b) triggerDownload(URL.createObjectURL(b), id + ".png"); });
+    cv.toBlob(function(b) { if (b) { triggerDownload(URL.createObjectURL(b), id + ".png"); setStatus("Saved " + id + ".png"); } });
   }
 
   // --- Export helpers ---
@@ -159,6 +203,7 @@
     } else if (ext === "json") {
       download(id + ".json", "application/json", JSON.stringify(lines, null, 2));
     }
+    setStatus("Exported " + id + "." + ext);
   }
 
   // --- Context menu ---
@@ -194,6 +239,7 @@
       if (!meta.sessions[id]) meta.sessions[id] = {};
       meta.sessions[id].pinned = !md.pinned;
       saveMeta();
+      setStatus(meta.sessions[id].pinned ? "Pinned to top" : "Unpinned");
       renderSidebar();
     });
 
@@ -201,6 +247,7 @@
       if (!meta.sessions[id]) meta.sessions[id] = {};
       meta.sessions[id].keep = !md.keep;
       saveMeta();
+      setStatus(meta.sessions[id].keep ? "Kept (retained in history)" : "Unkept");
       renderSidebar();
     });
 
@@ -290,6 +337,7 @@
         span.textContent = l.text;
         transcriptEl.appendChild(span);
       }
+      setStatus("Loaded history: " + (hmd.alias || entry.label) + " (" + cmdCount(lines) + " commands)");
     } catch (_) { transcriptEl.textContent = "Error loading session."; }
   }
 
@@ -449,6 +497,7 @@
             }
             editingId = null;
             saveMeta();
+            setStatus(trimmed === "" ? "Name cleared" : "Renamed to " + trimmed);
             renderSidebar();
           }
           function cancelRename() {
@@ -477,7 +526,9 @@
         } else {
           const lbl = document.createElement("span");
           lbl.className = "lbl";
-          lbl.textContent = displayLabel + " (" + s.lines.length + ")";
+          const cc = cmdCount(s.lines);
+          lbl.textContent = displayLabel + " (" + cc + ")";
+          lbl.title = cc + (cc === 1 ? " command" : " commands");
 
           // Pin marker
           if (md.pinned) {
@@ -578,10 +629,11 @@
     }
     await loadHistory();
 
+    setConn("wait", "connecting...");
     const es = new EventSource(eventsUrl);
-    es.onopen = () => { sessions.clear(); selected = null; histSelected = null; transcriptEl.textContent = ""; sidebarEl.textContent = ""; setTitle(); renderHistory(); };
+    es.onopen = () => { setConn("up", "connected"); sessions.clear(); selected = null; histSelected = null; transcriptEl.textContent = ""; sidebarEl.textContent = ""; setTitle(); renderHistory(); };
     es.onmessage = (e) => { try { ingest(JSON.parse(e.data)); } catch (_) {} };
-    es.onerror = () => { if (!titleEl.textContent.includes("[disconnected]")) titleEl.textContent += "  [disconnected]"; };
+    es.onerror = () => { setConn("down", "disconnected - retrying"); };
   })();
 </script>
 </body>
