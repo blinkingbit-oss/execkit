@@ -59,6 +59,7 @@
   .hrow .htime { color: #6b7280; font-size: 10px; flex-shrink: 0; }
   .hrow .hpin { color: #61afef; font-size: 10px; flex-shrink: 0; }
   .hrow .hkeep { color: #e5c07b; font-size: 10px; flex-shrink: 0; }
+  .rename-input { background: #0b0d11; border: 1px solid #61afef; color: #e6e9ef; font: 13px ui-monospace, Menlo, Consolas, monospace; padding: 1px 4px; width: calc(100% - 8px); outline: none; border-radius: 2px; }
 </style>
 </head>
 <body>
@@ -86,6 +87,7 @@
 
   // --- Metadata (display-only: alias, pinned, keep, sidebar width) ---
   let meta = { sessions: {}, ui: {} };
+  let editingId = null;
 
   async function loadMeta() {
     try {
@@ -173,17 +175,8 @@
     }
 
     mkBtn("Rename", () => {
-      const current = md.alias || s.label;
-      const val = prompt("New name", current);
-      if (val === null) return; // cancelled
-      if (!meta.sessions[id]) meta.sessions[id] = {};
-      const trimmed = val.trim();
-      if (trimmed === "") {
-        delete meta.sessions[id].alias;
-      } else {
-        meta.sessions[id].alias = trimmed;
-      }
-      saveMeta();
+      editingId = id;
+      closeMenu();
       renderSidebar();
     });
 
@@ -425,19 +418,67 @@
 
         const dot = document.createElement("span"); dot.className = "dot";
 
-        const lbl = document.createElement("span");
-        lbl.className = "lbl";
-        lbl.textContent = displayLabel + " (" + s.lines.length + ")";
-
-        // Pin marker
-        if (md.pinned) {
-          const pm = document.createElement("span");
-          pm.className = "pin-mark";
-          pm.textContent = "*";
-          pm.title = "pinned";
-          row.appendChild(dot); row.appendChild(lbl); row.appendChild(pm);
+        if (id === editingId) {
+          // Inline rename input
+          const input = document.createElement("input");
+          input.type = "text";
+          input.className = "rename-input";
+          input.value = md.alias || s.label;
+          input.addEventListener("mousedown", (e) => e.stopPropagation());
+          input.addEventListener("click", (e) => e.stopPropagation());
+          let committed = false;
+          function commitRename() {
+            if (committed) return;
+            committed = true;
+            const trimmed = input.value.trim();
+            if (!meta.sessions[id]) meta.sessions[id] = {};
+            if (trimmed === "") {
+              delete meta.sessions[id].alias;
+            } else {
+              meta.sessions[id].alias = trimmed;
+            }
+            editingId = null;
+            saveMeta();
+            renderSidebar();
+          }
+          function cancelRename() {
+            if (committed) return;
+            committed = true;
+            editingId = null;
+            renderSidebar();
+          }
+          input.addEventListener("keydown", (e) => {
+            if (e.key === "Enter") { e.preventDefault(); commitRename(); }
+            else if (e.key === "Escape") { e.preventDefault(); cancelRename(); }
+          });
+          input.addEventListener("blur", () => commitRename());
+          row.appendChild(dot);
+          row.appendChild(input);
+          // Pin marker still shown during edit
+          if (md.pinned) {
+            const pm = document.createElement("span");
+            pm.className = "pin-mark";
+            pm.textContent = "*";
+            pm.title = "pinned";
+            row.appendChild(pm);
+          }
+          // Focus+select after DOM is painted
+          requestAnimationFrame(() => { input.focus(); input.select(); });
         } else {
-          row.appendChild(dot); row.appendChild(lbl);
+          const lbl = document.createElement("span");
+          lbl.className = "lbl";
+          lbl.textContent = displayLabel + " (" + s.lines.length + ")";
+
+          // Pin marker
+          if (md.pinned) {
+            const pm = document.createElement("span");
+            pm.className = "pin-mark";
+            pm.textContent = "*";
+            pm.title = "pinned";
+            row.appendChild(dot); row.appendChild(lbl); row.appendChild(pm);
+          } else {
+            row.appendChild(dot); row.appendChild(lbl);
+          }
         }
 
         // Keep marker
