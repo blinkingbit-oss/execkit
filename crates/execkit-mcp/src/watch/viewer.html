@@ -24,13 +24,22 @@
   .arrow { display: inline-block; width: 0; height: 0; border-left: 4px solid #8a93a3; border-top: 3px solid transparent; border-bottom: 3px solid transparent; transition: transform .1s; }
   .grp.open > .ghdr .arrow { transform: rotate(90deg); }
   .grp:not(.open) > .glist { display: none; }
-  .srow { padding: 4px 10px 4px 22px; cursor: pointer; display: flex; align-items: center; gap: 6px; white-space: nowrap; }
+  .srow { padding: 4px 6px 4px 22px; cursor: pointer; display: flex; align-items: center; gap: 6px; white-space: nowrap; position: relative; }
   .srow:hover { background: #1a1f29; }
   .srow.sel { background: #243044; color: #fff; }
   .srow.closed { color: #6b7280; }
   .srow .lbl { overflow: hidden; text-overflow: ellipsis; flex: 1; }
   .srow .dot { width: 7px; height: 7px; border-radius: 50%; background: #98c379; flex-shrink: 0; visibility: hidden; }
   .srow.sel .dot { visibility: visible; }
+  .srow .kept-mark { color: #e5c07b; font-size: 10px; flex-shrink: 0; }
+  .srow .pin-mark { color: #61afef; font-size: 10px; flex-shrink: 0; }
+  .dots-btn { background: none; border: none; color: #6b7280; cursor: pointer; padding: 0 4px; font-size: 13px; line-height: 1; flex-shrink: 0; display: none; font-family: inherit; }
+  .dots-btn::before { content: "..."; display: inline-block; writing-mode: vertical-rl; text-orientation: mixed; letter-spacing: -2px; line-height: 0.9; font-size: 11px; }
+  .srow:hover .dots-btn, .srow.sel .dots-btn { display: inline-flex; align-items: center; }
+  .dots-btn:hover { color: #c8ccd4; }
+  .ctx-menu { position: fixed; background: #1a1f29; border: 1px solid #333; border-radius: 4px; z-index: 9999; min-width: 130px; padding: 3px 0; box-shadow: 0 4px 12px rgba(0,0,0,0.5); }
+  .ctx-menu button { display: block; width: 100%; text-align: left; background: none; border: none; color: #c8ccd4; padding: 6px 12px; cursor: pointer; font: 13px ui-monospace, Menlo, Consolas, monospace; }
+  .ctx-menu button:hover { background: #243044; color: #fff; }
   .ln { display: block; }
   .prompt { color: #56b6c2; font-weight: 600; }
   .stdout { color: #c8ccd4; }
@@ -51,6 +60,8 @@
 </div>
 <script>
   const token = new URLSearchParams(location.search).get("t") || "";
+  const eventsUrl = "/events?t=" + encodeURIComponent(token);
+  const stateUrl = "/state?t=" + encodeURIComponent(token);
   const sidebarEl = document.getElementById("sidebar");
   const titleEl = document.getElementById("title");
   const transcriptEl = document.getElementById("transcript");
@@ -59,6 +70,100 @@
   const sessions = new Map();
   const openGroups = new Set(["local","ssh","docker"]); // groups expanded by default
   let selected = null;
+
+  // --- Metadata (display-only: alias, pinned, keep, sidebar width) ---
+  let meta = { sessions: {}, ui: {} };
+
+  async function loadMeta() {
+    try {
+      const r = await fetch(stateUrl);
+      if (r.ok) meta = await r.json();
+    } catch (_) {}
+    // Ensure shape even on partial data
+    if (!meta || typeof meta !== "object") meta = { sessions: {}, ui: {} };
+    if (!meta.sessions) meta.sessions = {};
+    if (!meta.ui) meta.ui = {};
+  }
+
+  function saveMeta() {
+    fetch(stateUrl, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(meta)
+    }).catch(() => {});
+  }
+
+  // --- Context menu ---
+  let activeMenu = null;
+
+  function closeMenu() {
+    if (activeMenu) { activeMenu.remove(); activeMenu = null; }
+  }
+
+  function openMenu(id, anchorEl) {
+    closeMenu();
+    const s = sessions.get(id);
+    if (!s) return;
+    const md = (meta.sessions || {})[id] || {};
+
+    const menu = document.createElement("div");
+    menu.className = "ctx-menu";
+
+    function mkBtn(label, action) {
+      const btn = document.createElement("button");
+      btn.textContent = label;
+      btn.onclick = (e) => { e.stopPropagation(); closeMenu(); action(); };
+      menu.appendChild(btn);
+    }
+
+    mkBtn("Rename", () => {
+      const current = md.alias || s.label;
+      const val = prompt("New name", current);
+      if (val === null) return; // cancelled
+      if (!meta.sessions[id]) meta.sessions[id] = {};
+      const trimmed = val.trim();
+      if (trimmed === "") {
+        delete meta.sessions[id].alias;
+      } else {
+        meta.sessions[id].alias = trimmed;
+      }
+      saveMeta();
+      renderSidebar();
+    });
+
+    mkBtn(md.pinned ? "Unpin" : "Pin", () => {
+      if (!meta.sessions[id]) meta.sessions[id] = {};
+      meta.sessions[id].pinned = !md.pinned;
+      saveMeta();
+      renderSidebar();
+    });
+
+    mkBtn(md.keep ? "Unkeep" : "Keep", () => {
+      if (!meta.sessions[id]) meta.sessions[id] = {};
+      meta.sessions[id].keep = !md.keep;
+      saveMeta();
+      renderSidebar();
+    });
+
+    document.body.appendChild(menu);
+    activeMenu = menu;
+
+    // Position near the dots button
+    const rect = anchorEl.getBoundingClientRect();
+    let top = rect.bottom + 2;
+    let left = rect.left;
+    // Keep within viewport
+    const mw = 140;
+    if (left + mw > window.innerWidth) left = window.innerWidth - mw - 4;
+    if (top + 120 > window.innerHeight) top = rect.top - 122;
+    menu.style.top = top + "px";
+    menu.style.left = left + "px";
+  }
+
+  document.addEventListener("click", closeMenu);
+  document.addEventListener("keydown", (e) => { if (e.key === "Escape") closeMenu(); });
+
+  // ---
 
   function parseId(id) {
     // {num}_{transport}_{detail} ; local has no detail
@@ -71,10 +176,14 @@
 
   function setTitle() {
     const s = selected && sessions.get(selected);
-    titleEl.textContent = selected ? (sessions.get(selected).label + (s.closed ? "  (closed)" : "  (active)")) : "(no sessions yet)";
+    if (!s) { titleEl.textContent = "(no sessions yet)"; return; }
+    const md = (meta.sessions || {})[selected] || {};
+    const displayLabel = md.alias || s.label;
+    titleEl.textContent = displayLabel + (s.closed ? "  (closed)" : "  (active)");
   }
 
   function renderSidebar() {
+    closeMenu();
     // group sessions by transport, preserving insertion order within a group
     const groups = new Map();
     for (const [id, s] of sessions) {
@@ -83,6 +192,15 @@
     }
     sidebarEl.textContent = "";
     for (const [transport, ids] of groups) {
+      // Sort: pinned first, then by original insertion order
+      const sorted = [...ids].sort((a, b) => {
+        const pa = !!((meta.sessions || {})[a] || {}).pinned;
+        const pb = !!((meta.sessions || {})[b] || {}).pinned;
+        if (pa && !pb) return -1;
+        if (!pa && pb) return 1;
+        return 0; // preserve original order
+      });
+
       const grp = document.createElement("div");
       grp.className = "grp" + (openGroups.has(transport) ? " open" : "");
       const hdr = document.createElement("div");
@@ -93,15 +211,49 @@
       hdr.onclick = () => { if (openGroups.has(transport)) openGroups.delete(transport); else openGroups.add(transport); renderSidebar(); };
       grp.appendChild(hdr);
       const list = document.createElement("div"); list.className = "glist";
-      for (const id of ids) {
+      for (const id of sorted) {
         const s = sessions.get(id);
+        const md = (meta.sessions || {})[id] || {};
+        const displayLabel = md.alias || s.label;
+
         const row = document.createElement("div");
         row.className = "srow" + (id === selected ? " sel" : "") + (s.closed ? " closed" : "");
         row.title = id;
+
         const dot = document.createElement("span"); dot.className = "dot";
-        const lbl = document.createElement("span"); lbl.className = "lbl"; lbl.textContent = s.label + " (" + s.lines.length + ")";
-        row.appendChild(dot); row.appendChild(lbl);
-        row.onclick = () => { selected = id; renderAll(); };
+
+        const lbl = document.createElement("span");
+        lbl.className = "lbl";
+        lbl.textContent = displayLabel + " (" + s.lines.length + ")";
+
+        // Pin marker
+        if (md.pinned) {
+          const pm = document.createElement("span");
+          pm.className = "pin-mark";
+          pm.textContent = "*";
+          pm.title = "pinned";
+          row.appendChild(dot); row.appendChild(lbl); row.appendChild(pm);
+        } else {
+          row.appendChild(dot); row.appendChild(lbl);
+        }
+
+        // Keep marker
+        if (md.keep) {
+          const km = document.createElement("span");
+          km.className = "kept-mark";
+          km.textContent = "K";
+          km.title = "kept";
+          row.appendChild(km);
+        }
+
+        // 3-dots overflow button
+        const dotsBtn = document.createElement("button");
+        dotsBtn.className = "dots-btn";
+        dotsBtn.title = "Session options";
+        dotsBtn.onclick = (e) => { e.stopPropagation(); openMenu(id, dotsBtn); };
+        row.appendChild(dotsBtn);
+
+        row.onclick = (e) => { if (e.target === dotsBtn) return; selected = id; renderAll(); };
         list.appendChild(row);
       }
       grp.appendChild(list);
@@ -140,19 +292,38 @@
     renderSidebar();
   }
 
-  // Resizable sidebar (ephemeral in phase 1; persisted via /state in phase 2).
+  // Resizable sidebar - persisted via /state.
   (function () {
     const rz = document.getElementById("resizer");
     let dragging = false;
     rz.addEventListener("mousedown", () => { dragging = true; document.body.style.userSelect = "none"; });
-    window.addEventListener("mousemove", (e) => { if (!dragging) return; const w = Math.max(140, Math.min(e.clientX, window.innerWidth * 0.7)); document.documentElement.style.setProperty("--sidebar", w + "px"); });
-    window.addEventListener("mouseup", () => { dragging = false; document.body.style.userSelect = ""; });
+    window.addEventListener("mousemove", (e) => {
+      if (!dragging) return;
+      const w = Math.max(140, Math.min(e.clientX, window.innerWidth * 0.7));
+      document.documentElement.style.setProperty("--sidebar", w + "px");
+    });
+    window.addEventListener("mouseup", (e) => {
+      if (!dragging) return;
+      dragging = false;
+      document.body.style.userSelect = "";
+      const w = Math.max(140, Math.min(e.clientX, window.innerWidth * 0.7));
+      meta.ui = { sidebar_width: w };
+      saveMeta();
+    });
   })();
 
-  const es = new EventSource("/events?t=" + encodeURIComponent(token));
-  es.onopen = () => { sessions.clear(); selected = null; transcriptEl.textContent = ""; sidebarEl.textContent = ""; setTitle(); };
-  es.onmessage = (e) => { try { ingest(JSON.parse(e.data)); } catch (_) {} };
-  es.onerror = () => { if (!titleEl.textContent.includes("[disconnected]")) titleEl.textContent += "  [disconnected]"; };
+  // Main boot sequence: load meta first, then apply sidebar width, then start SSE.
+  (async function () {
+    await loadMeta();
+    if (meta.ui && meta.ui.sidebar_width) {
+      document.documentElement.style.setProperty("--sidebar", meta.ui.sidebar_width + "px");
+    }
+
+    const es = new EventSource(eventsUrl);
+    es.onopen = () => { sessions.clear(); selected = null; transcriptEl.textContent = ""; sidebarEl.textContent = ""; setTitle(); };
+    es.onmessage = (e) => { try { ingest(JSON.parse(e.data)); } catch (_) {} };
+    es.onerror = () => { if (!titleEl.textContent.includes("[disconnected]")) titleEl.textContent += "  [disconnected]"; };
+  })();
 </script>
 </body>
 </html>
