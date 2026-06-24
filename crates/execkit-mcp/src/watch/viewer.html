@@ -106,6 +106,33 @@
     }).catch(() => {});
   }
 
+  // --- Export helpers ---
+  function toMd(label, id, lines) {
+    return "# " + label + " - " + id + "\n\n" + "```text\n" + lines.map(function(l) { return l.text; }).join("\n") + "\n```\n";
+  }
+
+  function download(name, mime, text) {
+    const a = document.createElement("a");
+    a.href = URL.createObjectURL(new Blob([text], { type: mime }));
+    a.download = name; a.click(); URL.revokeObjectURL(a.href);
+  }
+
+  function exportSession(id, ext) {
+    const s = sessions.get(id);
+    if (!s) return;
+    const md = (meta.sessions || {})[id] || {};
+    const parsed = parseId(id);
+    const label = md.alias || parsed.label;
+    const lines = s.lines;
+    if (ext === "txt" || ext === "log") {
+      download(id + "." + ext, "text/plain", lines.map(function(l) { return l.text; }).join("\n"));
+    } else if (ext === "md") {
+      download(id + ".md", "text/markdown", toMd(label, id, lines));
+    } else if (ext === "json") {
+      download(id + ".json", "application/json", JSON.stringify(lines, null, 2));
+    }
+  }
+
   // --- Context menu ---
   let activeMenu = null;
 
@@ -158,6 +185,16 @@
       renderSidebar();
     });
 
+    // Separator
+    const sep = document.createElement("div");
+    sep.style.cssText = "border-top:1px solid #333;margin:3px 0;";
+    menu.appendChild(sep);
+
+    mkBtn("Export txt",  () => exportSession(id, "txt"));
+    mkBtn("Export log",  () => exportSession(id, "log"));
+    mkBtn("Export md",   () => exportSession(id, "md"));
+    mkBtn("Export json", () => exportSession(id, "json"));
+
     document.body.appendChild(menu);
     activeMenu = menu;
 
@@ -168,7 +205,7 @@
     // Keep within viewport
     const mw = 140;
     if (left + mw > window.innerWidth) left = window.innerWidth - mw - 4;
-    if (top + 120 > window.innerHeight) top = rect.top - 122;
+    if (top + 240 > window.innerHeight) top = rect.top - 242;
     menu.style.top = top + "px";
     menu.style.left = left + "px";
   }
