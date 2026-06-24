@@ -54,6 +54,9 @@ impl OperatorPolicy {
             .with_context(|| format!("parsing policy file {}", path.display()))?;
         let mut deny_patterns = Vec::with_capacity(pf.deny_patterns.len());
         for p in &pf.deny_patterns {
+            // `regex` guarantees linear-time matching (no backtracking), so an
+            // operator pattern cannot ReDoS the server. Do not swap in a
+            // backtracking engine. Compiled once here, never per command.
             let re = Regex::new(p).with_context(|| format!("invalid deny_pattern /{p}/"))?;
             deny_patterns.push(re);
         }
@@ -68,6 +71,9 @@ impl OperatorPolicy {
 
     /// Ok if allowed; Err(reason) if blocked. Operator deny patterns first
     /// (most specific operator intent), then the reused name-based check.
+    /// Precedence (in `execkit::Policy`): deny wins over allow; an empty allow
+    /// list means allow-all, a non-empty one is default-deny; the built-in
+    /// dangerous-pattern check always applies.
     pub fn check(&self, command: &str) -> Result<(), String> {
         for re in &self.deny_patterns {
             if re.is_match(command) {
@@ -189,9 +195,14 @@ mod tests {
 
     #[test]
     fn load_from_env_unset_is_empty() {
-        // Note: env is process-global; this test asserts the unset branch only.
+        // env is process-global; save + restore so this does not clobber the
+        // var for any other test sharing the binary.
+        let prior = std::env::var_os("EXECKIT_MCP_POLICY_FILE");
         std::env::remove_var("EXECKIT_MCP_POLICY_FILE");
         let p = load_from_env().unwrap();
         assert_eq!(p.counts(), (0, 0, 0));
+        if let Some(v) = prior {
+            std::env::set_var("EXECKIT_MCP_POLICY_FILE", v);
+        }
     }
 }
