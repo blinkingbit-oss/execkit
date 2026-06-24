@@ -207,10 +207,39 @@ at a glance.
 
 ### Live viewer in your browser
 
-`execkit-mcp watch --serve [--open] <audit-file>` serves the same read-only
-transcript as a local web page (127.0.0.1 only, single-use URL token). Add
-`--open` to launch your browser at it. This is the same view as the terminal
-`watch`, in a browser tab instead of a TTY.
+`execkit-mcp watch --serve [--open] <audit-file-or-dir>` serves the transcript as
+a local web page (127.0.0.1 only, single-use URL token in the link). Add `--open`
+to launch your browser at it. The MCP server also starts it automatically when
+`EXECKIT_MCP_WATCH_WEB` is set (it prints the link and pushes it as a
+notification; the link is stable across restarts so an open tab reconnects).
+
+Reading the page:
+
+- **Sidebar** - sessions grouped by transport (`local`, `ssh`, `docker`) in
+  collapsible accordions. The number on a **group** header is the count of
+  sessions in it (`ssh (2)`); the number on a **session** row is its **command
+  count** - how many commands ran (`deploy@web-01 (7)`), with the exact count on
+  hover. The active session is highlighted with a dot.
+- **Transcript colors** (legend in the header): the prompt line `cwd $ command`
+  is cyan (`cmd`), stdout is default (`out`), stderr and failing exits are red
+  (`err`), a clean exit is green (`ok`), and session/markers are dimmed. Each
+  command shows its exit code and duration.
+- **Bottom status bar** - the connection state (`connected` /
+  `disconnected - retrying`) on the left, and transient confirmations on the
+  right (e.g. `Exported 1_local.md`, `Renamed to ...`, `Pinned to top`).
+- **History** - past sessions from `EXECKIT_MCP_AUDIT_DIR` (one file per session)
+  appear under "History", newest first; click one to view its transcript
+  read-only. Requires dir-mode auditing; with a single `EXECKIT_MCP_AUDIT` file
+  there is no per-session history.
+- **Per-session actions** (the 3-dots menu on a row): **Rename** (inline edit; a
+  display alias only), **Pin** to the top, **Keep** (retain in history past the
+  trim limit), **Export** to `.txt` / `.log` / `.md` / `.json`, and
+  **Screenshot** to `.png`.
+
+Renames, pins, keeps, and the sidebar width persist in `~/.execkit/viewer-state.json`
+(mode 0600). That file is the viewer's only write surface: it holds display
+metadata only and can never affect a session, command, or the audit log. The page
+itself is read-only - it only reads the audit stream and that one metadata file.
 
 ### In the agent's client (no terminal, no audit log)
 
