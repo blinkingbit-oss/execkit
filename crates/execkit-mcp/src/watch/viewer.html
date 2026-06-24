@@ -271,7 +271,7 @@
   }
 
   async function openHistSession(entry) {
-    histSelected = "history:" + entry.id;
+    histSelected = "history:" + entry.key;
     // deselect live session and refresh both panels so stale .sel clears
     selected = null;
     renderSidebar(); // clears live .sel highlights
@@ -280,7 +280,7 @@
     titleEl.textContent = (hmd.alias || entry.label) + "  (history)";
     transcriptEl.textContent = "Loading...";
     try {
-      const r = await fetch("/session/" + encodeURIComponent(entry.id) + "?t=" + encodeURIComponent(token));
+      const r = await fetch("/session/" + encodeURIComponent(entry.key) + "?t=" + encodeURIComponent(token));
       if (!r.ok) { transcriptEl.textContent = "Error loading session."; return; }
       const lines = await r.json();
       transcriptEl.textContent = "";
@@ -342,8 +342,8 @@
       const md = mds[entry.id] || {};
       const displayLabel = md.alias || entry.label;
       const row = document.createElement("div");
-      row.className = "hrow" + (histSelected === "history:" + entry.id ? " sel" : "");
-      row.title = entry.id;
+      row.className = "hrow" + (histSelected === "history:" + entry.key ? " sel" : "");
+      row.title = entry.key;
 
       if (md.pinned) {
         const pm = document.createElement("span"); pm.className = "hpin"; pm.textContent = "*"; pm.title = "pinned";

@@ -238,8 +238,8 @@ async fn handle_conn(mut sock: TcpStream, ctx: Arc<Ctx>) -> std::io::Result<()> 
             write_simple(&mut sock, "200 OK", "application/json", &body).await
         }
         ("GET", p) if p.starts_with("/session/") => {
-            let id = &p["/session/".len()..];
-            match session_transcript(&ctx.audit, id) {
+            let key = &p["/session/".len()..];
+            match session_transcript(&ctx.audit, key) {
                 Some(body) => write_simple(&mut sock, "200 OK", "application/json", &body).await,
                 None => {
                     write_simple(
@@ -270,6 +270,10 @@ fn id_ok(id: &str) -> bool {
 
 #[derive(serde::Serialize)]
 struct SessionInfo {
+    /// Unique handle for this past session = the file stem `<id>-<open_ms>`.
+    /// Session ids reset per server run, so the id alone is NOT unique across
+    /// runs; the key is what /session/<key> resolves.
+    key: String,
     id: String,
     label: String,
     transport: String,
@@ -306,6 +310,7 @@ fn list_sessions(audit: &Path) -> Vec<SessionInfo> {
         let size = ent.metadata().map(|m| m.len()).unwrap_or(0);
         let (transport, label) = split_label(id);
         out.push(SessionInfo {
+            key: stem.to_string(),
             id: id.to_string(),
             label,
             transport,
@@ -331,21 +336,18 @@ fn split_label(id: &str) -> (String, String) {
 
 /// Render one past session's transcript. Id is validated and resolved ONLY
 /// within `audit`; no traversal. None if missing/invalid.
-fn session_transcript(audit: &Path, id: &str) -> Option<Vec<u8>> {
-    if !audit.is_dir() || !id_ok(id) {
+fn session_transcript(audit: &Path, key: &str) -> Option<Vec<u8>> {
+    if !audit.is_dir() || !id_ok(key) {
         return None;
     }
-    // find the file `<id>-<ts>.jsonl` in the dir (do not build a path from the id)
+    // `key` is the unique file stem `<id>-<open_ms>`. Resolve by scanning the
+    // dir for an exact stem match (never build a path from the key), so two
+    // same-id sessions from different runs stay distinguishable.
     let rd = std::fs::read_dir(audit).ok()?;
     let mut found: Option<std::path::PathBuf> = None;
     for ent in rd.flatten() {
         let name = ent.file_name().to_string_lossy().to_string();
-        if name
-            .strip_suffix(".jsonl")
-            .and_then(|s| s.rsplit_once('-'))
-            .map(|(i, _)| i)
-            == Some(id)
-        {
+        if name.strip_suffix(".jsonl") == Some(key) {
             found = Some(ent.path());
             break;
         }
@@ -730,9 +732,17 @@ mod tests {
             "list: {list}"
         );
         assert!(list.contains("\"label\":\"u@h\""), "label: {list}");
+        // each entry carries its unique file-stem key (so same-id sessions across
+        // runs stay distinguishable).
+        assert!(list.contains("\"key\":\"1_local-100\""), "key: {list}");
 
-        let tr = http_get(addr, &format!("/session/1_local?t={token}"), 400).await;
+        // resolve by the unique key (stem), not the bare id
+        let tr = http_get(addr, &format!("/session/1_local-100?t={token}"), 400).await;
         assert!(tr.contains("/tmp $ echo hi"), "transcript: {tr}");
+
+        // the bare id (no timestamp) no longer resolves a file -> 404
+        let bare = http_get(addr, &format!("/session/1_local?t={token}"), 400).await;
+        assert!(bare.contains("404"), "bare id must 404: {bare}");
 
         // traversal / bad id -> 404 (id_ok rejects it; nothing served)
         let trav = http_get(addr, &format!("/session/../../etc/passwd?t={token}"), 400).await;
