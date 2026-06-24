@@ -46,6 +46,19 @@
   .stderr, .exit_err { color: #e06c75; }
   .exit_ok { color: #98c379; }
   .marker { color: #6b7280; }
+  /* History section */
+  .hist-hdr { padding: 6px 10px 4px; color: #8a93a3; font-size: 11px; display: flex; align-items: center; justify-content: space-between; border-top: 1px solid #222; margin-top: 4px; }
+  .hist-hdr .hhdr-label { text-transform: uppercase; letter-spacing: 0.5px; }
+  .hist-refresh { background: none; border: 1px solid #333; color: #6b7280; cursor: pointer; font: 11px ui-monospace, Menlo, Consolas, monospace; padding: 1px 5px; border-radius: 3px; }
+  .hist-refresh:hover { color: #c8ccd4; border-color: #555; }
+  .hist-empty { padding: 5px 12px 8px; color: #6b7280; font-size: 11px; }
+  .hrow { padding: 4px 6px 4px 14px; cursor: pointer; display: flex; align-items: baseline; gap: 6px; white-space: nowrap; }
+  .hrow:hover { background: #1a1f29; }
+  .hrow.sel { background: #243044; color: #fff; }
+  .hrow .hlbl { overflow: hidden; text-overflow: ellipsis; flex: 1; font-size: 12px; }
+  .hrow .htime { color: #6b7280; font-size: 10px; flex-shrink: 0; }
+  .hrow .hpin { color: #61afef; font-size: 10px; flex-shrink: 0; }
+  .hrow .hkeep { color: #e5c07b; font-size: 10px; flex-shrink: 0; }
 </style>
 </head>
 <body>
@@ -165,6 +178,123 @@
 
   // ---
 
+  // --- History panel ---
+  const HIST_N = 20;
+  let histSessions = []; // [{id, label, transport, started_ms, size}]
+  let histSelected = null; // "history:<id>" or null
+
+  function relTime(ms) {
+    const diff = Math.floor((Date.now() - ms) / 1000);
+    if (diff < 60) return "just now";
+    if (diff < 3600) return Math.floor(diff / 60) + "m ago";
+    if (diff < 86400) return Math.floor(diff / 3600) + "h ago";
+    return Math.floor(diff / 86400) + "d ago";
+  }
+
+  async function loadHistory() {
+    try {
+      const r = await fetch("/sessions?t=" + encodeURIComponent(token));
+      if (r.ok) histSessions = await r.json();
+      else histSessions = [];
+    } catch (_) { histSessions = []; }
+    renderHistory();
+  }
+
+  async function openHistSession(entry) {
+    histSelected = "history:" + entry.id;
+    // deselect live session
+    selected = null;
+    renderHistory();
+    titleEl.textContent = (entry.label) + "  (history)";
+    transcriptEl.textContent = "Loading...";
+    try {
+      const r = await fetch("/session/" + encodeURIComponent(entry.id) + "?t=" + encodeURIComponent(token));
+      if (!r.ok) { transcriptEl.textContent = "Error loading session."; return; }
+      const lines = await r.json();
+      transcriptEl.textContent = "";
+      for (const l of lines) {
+        const span = document.createElement("span");
+        span.className = "ln " + l.kind;
+        span.textContent = l.text;
+        transcriptEl.appendChild(span);
+      }
+    } catch (_) { transcriptEl.textContent = "Error loading session."; }
+  }
+
+  function renderHistory() {
+    // Remove existing history DOM if present
+    const existing = document.getElementById("hist-section");
+    if (existing) existing.remove();
+
+    const section = document.createElement("div");
+    section.id = "hist-section";
+
+    const hdr = document.createElement("div");
+    hdr.className = "hist-hdr";
+    const lbl = document.createElement("span");
+    lbl.className = "hhdr-label";
+    lbl.textContent = "History";
+    const refreshBtn = document.createElement("button");
+    refreshBtn.className = "hist-refresh";
+    refreshBtn.textContent = "refresh";
+    refreshBtn.onclick = () => loadHistory();
+    hdr.appendChild(lbl);
+    hdr.appendChild(refreshBtn);
+    section.appendChild(hdr);
+
+    if (!histSessions || histSessions.length === 0) {
+      const note = document.createElement("div");
+      note.className = "hist-empty";
+      note.textContent = "no session history (set EXECKIT_MCP_AUDIT_DIR)";
+      section.appendChild(note);
+      sidebarEl.appendChild(section);
+      return;
+    }
+
+    const mds = meta.sessions || {};
+    // Separate kept and non-kept
+    const kept = histSessions.filter(e => (mds[e.id] || {}).keep);
+    const nonKept = histSessions.filter(e => !(mds[e.id] || {}).keep);
+    // Non-kept capped at N, kept always shown
+    const visible = nonKept.slice(0, HIST_N).concat(kept.filter(e => !nonKept.slice(0, HIST_N).includes(e)));
+    // Pinned float to top
+    visible.sort((a, b) => {
+      const pa = !!(mds[a.id] || {}).pinned;
+      const pb = !!(mds[b.id] || {}).pinned;
+      if (pa && !pb) return -1;
+      if (!pa && pb) return 1;
+      return 0;
+    });
+
+    for (const entry of visible) {
+      const md = mds[entry.id] || {};
+      const displayLabel = md.alias || entry.label;
+      const row = document.createElement("div");
+      row.className = "hrow" + (histSelected === "history:" + entry.id ? " sel" : "");
+      row.title = entry.id;
+
+      if (md.pinned) {
+        const pm = document.createElement("span"); pm.className = "hpin"; pm.textContent = "*"; pm.title = "pinned";
+        row.appendChild(pm);
+      }
+      const ll = document.createElement("span"); ll.className = "hlbl"; ll.textContent = displayLabel;
+      row.appendChild(ll);
+      if (md.keep) {
+        const km = document.createElement("span"); km.className = "hkeep"; km.textContent = "K"; km.title = "kept";
+        row.appendChild(km);
+      }
+      const tm = document.createElement("span"); tm.className = "htime"; tm.textContent = relTime(entry.started_ms);
+      row.appendChild(tm);
+
+      row.onclick = () => openHistSession(entry);
+      section.appendChild(row);
+    }
+
+    sidebarEl.appendChild(section);
+  }
+
+  // ---
+
   function parseId(id) {
     // {num}_{transport}_{detail} ; local has no detail
     const m = String(id).match(/^(\d+)_([a-z]+)(?:_(.*))?$/);
@@ -175,6 +305,7 @@
   }
 
   function setTitle() {
+    if (histSelected) return; // history title managed by openHistSession
     const s = selected && sessions.get(selected);
     if (!s) { titleEl.textContent = "(no sessions yet)"; return; }
     const md = (meta.sessions || {})[selected] || {};
@@ -253,17 +384,19 @@
         dotsBtn.onclick = (e) => { e.stopPropagation(); openMenu(id, dotsBtn); };
         row.appendChild(dotsBtn);
 
-        row.onclick = (e) => { if (e.target === dotsBtn) return; selected = id; renderAll(); };
+        row.onclick = (e) => { if (e.target === dotsBtn) return; selected = id; histSelected = null; renderAll(); };
         list.appendChild(row);
       }
       grp.appendChild(list);
       sidebarEl.appendChild(grp);
     }
+    renderHistory();
   }
 
   function atBottom() { return transcriptEl.scrollHeight - transcriptEl.scrollTop - transcriptEl.clientHeight < 24; }
 
   function renderTranscript() {
+    if (histSelected) return; // keep history view intact
     const s = selected && sessions.get(selected);
     setTitle();
     transcriptEl.textContent = "";
@@ -318,9 +451,10 @@
     if (meta.ui && meta.ui.sidebar_width) {
       document.documentElement.style.setProperty("--sidebar", meta.ui.sidebar_width + "px");
     }
+    await loadHistory();
 
     const es = new EventSource(eventsUrl);
-    es.onopen = () => { sessions.clear(); selected = null; transcriptEl.textContent = ""; sidebarEl.textContent = ""; setTitle(); };
+    es.onopen = () => { sessions.clear(); selected = null; transcriptEl.textContent = ""; sidebarEl.textContent = ""; setTitle(); renderHistory(); };
     es.onmessage = (e) => { try { ingest(JSON.parse(e.data)); } catch (_) {} };
     es.onerror = () => { if (!titleEl.textContent.includes("[disconnected]")) titleEl.textContent += "  [disconnected]"; };
   })();
