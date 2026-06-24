@@ -23,8 +23,7 @@ struct Ctx {
     backlog: Arc<Mutex<Vec<String>>>,
     tx: broadcast::Sender<String>,
     token: Arc<String>,
-    /// Path to the audit log (reserved for future routes; the poller owns its own copy).
-    #[allow(dead_code)]
+    /// Path to the audit log (used by /sessions + /session/<id> routes).
     audit: PathBuf,
     state_path: PathBuf,
 }
@@ -229,8 +228,90 @@ async fn handle_conn(mut sock: TcpStream, ctx: Arc<Ctx>) -> std::io::Result<()> 
         ("POST", "/state") => {
             handle_post_state(&mut sock, &ctx, &head, &buf[..n], head_end).await
         }
+        ("GET", "/sessions") => {
+            let body = serde_json::to_vec(&list_sessions(&ctx.audit)).unwrap_or_else(|_| b"[]".to_vec());
+            write_simple(&mut sock, "200 OK", "application/json", &body).await
+        }
+        ("GET", p) if p.starts_with("/session/") => {
+            let id = &p["/session/".len()..];
+            match session_transcript(&ctx.audit, id) {
+                Some(body) => write_simple(&mut sock, "200 OK", "application/json", &body).await,
+                None => write_simple(&mut sock, "404 Not Found", "text/plain", b"no such session\n").await,
+            }
+        }
         _ => write_simple(&mut sock, "404 Not Found", "text/plain", b"404 not found\n").await,
     }
+}
+
+fn id_ok(id: &str) -> bool {
+    !id.is_empty()
+        && id.len() <= 128
+        && id.bytes().enumerate().all(|(i, b)| {
+            b.is_ascii_alphanumeric() || matches!(b, b'@' | b'.' | b':' | b'_' | b'-')
+                || (b == b'_') || (i > 0 && b.is_ascii_digit())
+        })
+        && id.as_bytes()[0].is_ascii_digit()
+}
+
+#[derive(serde::Serialize)]
+struct SessionInfo { id: String, label: String, transport: String, started_ms: u64, size: u64 }
+
+/// List past session files in the audit dir (dir mode). Empty if `audit` is not
+/// a directory (single-file mode has no per-session history).
+fn list_sessions(audit: &Path) -> Vec<SessionInfo> {
+    let mut out = Vec::new();
+    if !audit.is_dir() { return out; }
+    let rd = match std::fs::read_dir(audit) { Ok(r) => r, Err(_) => return out };
+    for ent in rd.flatten() {
+        let name = ent.file_name().to_string_lossy().to_string();
+        // <id>-<open_ms>.jsonl
+        let stem = match name.strip_suffix(".jsonl") { Some(s) => s, None => continue };
+        let (id, ts) = match stem.rsplit_once('-') { Some(x) => x, None => continue };
+        if !id_ok(id) { continue; }
+        let started_ms = ts.parse().unwrap_or(0);
+        let size = ent.metadata().map(|m| m.len()).unwrap_or(0);
+        let (transport, label) = split_label(id);
+        out.push(SessionInfo { id: id.to_string(), label, transport, started_ms, size });
+    }
+    out.sort_by(|a, b| b.started_ms.cmp(&a.started_ms)); // newest first
+    out
+}
+
+/// Parse transport + friendly label out of an id like `2_ssh_u@h` / `1_local`.
+fn split_label(id: &str) -> (String, String) {
+    let rest = id.split_once('_').map(|x| x.1).unwrap_or(""); // after the number
+    let (transport, tail) = rest.split_once('_').unwrap_or((rest, ""));
+    let label = if transport == "local" || tail.is_empty() { transport.to_string() } else { tail.to_string() };
+    (transport.to_string(), label)
+}
+
+/// Render one past session's transcript. Id is validated and resolved ONLY
+/// within `audit`; no traversal. None if missing/invalid.
+fn session_transcript(audit: &Path, id: &str) -> Option<Vec<u8>> {
+    if !audit.is_dir() || !id_ok(id) { return None; }
+    // find the file `<id>-<ts>.jsonl` in the dir (do not build a path from the id)
+    let rd = std::fs::read_dir(audit).ok()?;
+    let mut found: Option<std::path::PathBuf> = None;
+    for ent in rd.flatten() {
+        let name = ent.file_name().to_string_lossy().to_string();
+        if name.strip_suffix(".jsonl").and_then(|s| s.rsplit_once('-')).map(|(i, _)| i) == Some(id) {
+            found = Some(ent.path());
+            break;
+        }
+    }
+    let file = found?;
+    let text = std::fs::read_to_string(&file).ok()?;
+    let mut lines = Vec::new();
+    for l in text.lines() {
+        if let Ok(ev) = serde_json::from_str::<crate::audit::AuditEvent>(l) {
+            let session = ev.session().to_string();
+            for sl in render_event(&ev) {
+                // reuse the same wire shape as live
+                lines.push(serde_json::json!({"session": session, "kind": kind_str(sl.kind), "text": sl.text}));
+            }
+        }
+    }
+    serde_json::to_vec(&lines).ok()
 }
 
 /// Find the start index of `needle` in `hay`.
@@ -569,5 +650,31 @@ mod tests {
                 ]
             );
         }
+    }
+
+    #[tokio::test]
+    async fn sessions_list_and_transcript_and_reject_traversal() {
+        // dir-mode audit with two per-session files
+        let dir = std::env::temp_dir().join(format!("ek_uxdir_{}", std::process::id()));
+        let _ = std::fs::create_dir_all(&dir);
+        std::fs::write(dir.join("1_local-100.jsonl"),
+            "{\"event\":\"open\",\"ts\":100,\"session\":\"1_local\",\"transport\":\"local\"}\n{\"event\":\"exec\",\"ts\":101,\"session\":\"1_local\",\"transport\":\"local\",\"command\":\"echo hi\",\"stdout\":\"hi\",\"stderr\":\"\",\"exit_code\":0,\"duration_ms\":3,\"cwd\":\"/tmp\",\"truncated\":false}\n").unwrap();
+        std::fs::write(dir.join("2_ssh_u@h-200.jsonl"),
+            "{\"event\":\"open\",\"ts\":200,\"session\":\"2_ssh_u@h\",\"transport\":\"ssh\"}\n").unwrap();
+        let token = "tok".to_string();
+        let (addr, _h) = serve(dir.clone(), token.clone(), 0).await.unwrap();
+
+        let list = http_get(addr, &format!("/sessions?t={token}"), 400).await;
+        assert!(list.contains("\"id\":\"2_ssh_u@h\"") && list.contains("\"transport\":\"ssh\""), "list: {list}");
+        assert!(list.contains("\"label\":\"u@h\""), "label: {list}");
+
+        let tr = http_get(addr, &format!("/session/1_local?t={token}"), 400).await;
+        assert!(tr.contains("/tmp $ echo hi"), "transcript: {tr}");
+
+        // traversal / bad id -> 404 (id_ok rejects it; nothing served)
+        let trav = http_get(addr, &format!("/session/../../etc/passwd?t={token}"), 400).await;
+        assert!(trav.contains("404"), "traversal must 404: {trav}");
+
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }
