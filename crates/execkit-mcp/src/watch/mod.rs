@@ -8,6 +8,7 @@ pub mod state;
 pub mod tail;
 pub mod tui;
 pub mod web;
+pub mod meta;
 
 use std::io::{IsTerminal, Write};
 use std::path::PathBuf;

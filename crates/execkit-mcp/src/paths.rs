@@ -35,6 +35,11 @@ pub fn default_web_token_path() -> PathBuf {
     home_dir().join(".execkit").join("watch-token")
 }
 
+/// Viewer display-metadata file (aliases/pins/keeps/ui), written by POST /state.
+pub fn default_viewer_state_path() -> PathBuf {
+    home_dir().join(".execkit").join("viewer-state.json")
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -61,5 +66,12 @@ mod tests {
         assert!(p.is_absolute());
         assert!(p.ends_with("watch-token"));
         assert_eq!(p, home_dir().join(".execkit").join("watch-token"));
+    }
+
+    #[test]
+    fn default_viewer_state_path_is_under_home() {
+        let p = default_viewer_state_path();
+        assert!(p.is_absolute());
+        assert_eq!(p, home_dir().join(".execkit").join("viewer-state.json"));
     }
 }
