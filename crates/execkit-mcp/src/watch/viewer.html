@@ -206,7 +206,8 @@
     selected = null;
     renderSidebar(); // clears live .sel highlights
     renderHistory(); // updates history .sel and re-appends fresh node
-    titleEl.textContent = (entry.label) + "  (history)";
+    const hmd = (meta.sessions || {})[entry.id] || {};
+    titleEl.textContent = (hmd.alias || entry.label) + "  (history)";
     transcriptEl.textContent = "Loading...";
     try {
       const r = await fetch("/session/" + encodeURIComponent(entry.id) + "?t=" + encodeURIComponent(token));
@@ -460,7 +461,7 @@
     await loadHistory();
 
     const es = new EventSource(eventsUrl);
-    es.onopen = () => { sessions.clear(); selected = null; transcriptEl.textContent = ""; sidebarEl.textContent = ""; setTitle(); renderHistory(); };
+    es.onopen = () => { sessions.clear(); selected = null; histSelected = null; transcriptEl.textContent = ""; sidebarEl.textContent = ""; setTitle(); renderHistory(); };
     es.onmessage = (e) => { try { ingest(JSON.parse(e.data)); } catch (_) {} };
     es.onerror = () => { if (!titleEl.textContent.includes("[disconnected]")) titleEl.textContent += "  [disconnected]"; };
   })();
