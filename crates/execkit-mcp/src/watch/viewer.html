@@ -121,7 +121,7 @@
     x.font = font; x.textBaseline = "top";
     x.fillStyle = "#e6e9ef"; x.fillText(label + "  (" + id + ")", pad, pad);
     lines.forEach(function(l, i) { x.fillStyle = colors[l.kind] || "#c8ccd4"; x.fillText(l.text, pad, pad + lh * (i + 1)); });
-    cv.toBlob(function(b) { const a = document.createElement("a"); a.href = URL.createObjectURL(b); a.download = id + ".png"; a.click(); URL.revokeObjectURL(a.href); });
+    cv.toBlob(function(b) { if (b) triggerDownload(URL.createObjectURL(b), id + ".png"); });
   }
 
   // --- Export helpers ---
@@ -129,10 +129,20 @@
     return "# " + label + " - " + id + "\n\n" + "```text\n" + lines.map(function(l) { return l.text; }).join("\n") + "\n```\n";
   }
 
-  function download(name, mime, text) {
+  // Robust download: append to the DOM (Firefox needs the anchor connected) and
+  // revoke the object URL on a LATER tick - revoking synchronously right after
+  // click() races the async download and yields an empty/invalid file.
+  function triggerDownload(url, name) {
     const a = document.createElement("a");
-    a.href = URL.createObjectURL(new Blob([text], { type: mime }));
-    a.download = name; a.click(); URL.revokeObjectURL(a.href);
+    a.href = url; a.download = name;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    setTimeout(function() { URL.revokeObjectURL(url); }, 4000);
+  }
+
+  function download(name, mime, text) {
+    triggerDownload(URL.createObjectURL(new Blob([text], { type: mime })), name);
   }
 
   function exportSession(id, ext) {
