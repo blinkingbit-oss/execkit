@@ -225,12 +225,16 @@ Reading the page:
   (`err`), a clean exit is green (`ok`), and session/markers are dimmed. Each
   command shows its exit code and duration.
 - **Bottom status bar** - the connection state (`connected` /
-  `disconnected - retrying`) on the left, and transient confirmations on the
-  right (e.g. `Exported 1_local.md`, `Renamed to ...`, `Pinned to top`).
+  `disconnected - retrying`) on the left. On the right it shows details of the
+  currently selected session - its id, transport, command count, live/closed
+  state, and absolute last-activity time - and stays there as you browse. An
+  action (e.g. `Exported 1_local.md`, `Renamed to ...`, `Pinned to top`) flashes
+  briefly, then the bar reverts to the selected session's details.
 - **History** - past sessions from `EXECKIT_MCP_AUDIT_DIR` (one file per session)
-  appear under "History", newest first; click one to view its transcript
-  read-only. Requires dir-mode auditing; with a single `EXECKIT_MCP_AUDIT` file
-  there is no per-session history.
+  appear under "History", newest first, each with a relative time (`5m ago`;
+  hover for the absolute last-activity timestamp); click one to view its
+  transcript read-only. Requires dir-mode auditing; with a single
+  `EXECKIT_MCP_AUDIT` file there is no per-session history.
 - **Per-session actions** (the 3-dots menu on a row): **Rename** (inline edit; a
   display alias only), **Pin** to the top, **Keep** (retain in history past the
   trim limit), **Export** to `.txt` / `.log` / `.md` / `.json`, and

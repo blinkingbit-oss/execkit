@@ -11,7 +11,7 @@
   header { padding: 8px 12px; background: #0b0d11; border-bottom: 1px solid #222; display: flex; align-items: baseline; gap: 10px; }
   header .brand { font-size: 20px; font-weight: 700; letter-spacing: 0.5px; color: #e6e9ef; }
   header .tag { color: #8a93a3; font-size: 12px; }
-  header .legend { margin-left: auto; font-size: 11px; display: flex; gap: 10px; align-items: center; }
+  header .legend { margin-left: auto; font-size: 11px; display: flex; gap: 10px; align-items: center; cursor: help; }
   header .legend span::before { content: "."; margin-right: 3px; font-weight: 700; }
   .main { flex: 1; display: flex; min-height: 0; }
   #sidebar { width: var(--sidebar); min-width: 140px; max-width: 70vw; border-right: 1px solid #222; overflow-y: auto; flex-shrink: 0; }
@@ -76,7 +76,7 @@
 <header>
   <span class="brand">execkit</span>
   <span class="tag">live - read-only shell transcript</span>
-  <span class="legend"><span class="prompt">cmd</span><span class="stdout">out</span><span class="stderr">err</span><span class="exit_ok">ok</span></span>
+  <span class="legend" title="Color legend for the transcript below"><span class="prompt" title="command / prompt line">cmd</span><span class="stdout" title="standard output">out</span><span class="stderr" title="stderr, non-zero exit, or blocked command">err</span><span class="exit_ok" title="clean exit (code 0)">ok</span></span>
 </header>
 <div class="main">
   <div id="sidebar"></div>
@@ -101,12 +101,21 @@
   const connTextEl = document.getElementById("conn-text");
   const statusMsgEl = document.getElementById("status-msg");
 
-  // Bottom status bar: a transient message (auto-clears) + the connection state.
+  // Bottom status bar: the resting line shows the selected session's details and
+  // stays until the selection changes; an action (export/pin/...) flashes a
+  // transient message for 4s, then the bar reverts to the resting line.
   let statusTimer = null;
+  let restingMsg = "";
   function setStatus(msg) {
     statusMsgEl.textContent = msg;
     if (statusTimer) clearTimeout(statusTimer);
-    statusTimer = setTimeout(function () { statusMsgEl.textContent = ""; }, 4000);
+    statusTimer = setTimeout(function () { statusMsgEl.textContent = restingMsg; statusTimer = null; }, 4000);
+  }
+  // Persistent line for the current selection; shown immediately unless a
+  // transient message is currently up (it reverts here when it expires).
+  function setResting(msg) {
+    restingMsg = msg;
+    if (!statusTimer) statusMsgEl.textContent = msg;
   }
   function setConn(state, text) {
     connEl.className = state; // "up" | "down" | "wait"
@@ -308,6 +317,36 @@
     return Math.floor(diff / 86400) + "d ago";
   }
 
+  // Absolute local datetime for the "last activity" tooltip / details line.
+  function fmtAbs(ms) {
+    if (!ms) return "unknown";
+    try { return new Date(ms).toLocaleString(); } catch (_) { return "unknown"; }
+  }
+
+  // One-line summary of a session for the resting status bar.
+  function detailLine(id, transport, label, lines, state, lastMs) {
+    const where = (label && label !== transport) ? transport + " " + label : transport;
+    return ["id " + id, where, cmdCount(lines) + " commands", state, "last activity " + fmtAbs(lastMs)].join("  -  ");
+  }
+
+  // Refresh the resting status bar for the currently selected LIVE session.
+  // (History selection sets its own resting line in openHistSession.)
+  function refreshSelectionStatus() {
+    if (!selected) return;
+    const sc = sessions.get(selected);
+    if (!sc) return;
+    // For an open session the client-observed lastSeen tracks live activity; for
+    // a closed one prefer the file mtime from the matching history entry (the
+    // boot-time snapshot would otherwise freeze a streaming session's time).
+    let lastMs = sc.lastSeen;
+    if (sc.closed) {
+      const hist = histSessions.find(h => h.id === selected);
+      if (hist) lastMs = hist.last_ms || hist.started_ms;
+    }
+    const md = (meta.sessions || {})[selected] || {};
+    setResting(detailLine(selected, sc.transport, md.alias || sc.label, sc.lines, sc.closed ? "closed" : "live", lastMs));
+  }
+
   async function loadHistory() {
     try {
       const r = await fetch("/sessions?t=" + encodeURIComponent(token));
@@ -337,6 +376,8 @@
         span.textContent = l.text;
         transcriptEl.appendChild(span);
       }
+      const lastMs = entry.last_ms || entry.started_ms;
+      setResting(detailLine(entry.id, entry.transport, hmd.alias || entry.label, lines, "history", lastMs));
       setStatus("Loaded history: " + (hmd.alias || entry.label) + " (" + cmdCount(lines) + " commands)");
     } catch (_) { transcriptEl.textContent = "Error loading session."; }
   }
@@ -403,7 +444,9 @@
         const km = document.createElement("span"); km.className = "hkeep"; km.textContent = "K"; km.title = "kept";
         row.appendChild(km);
       }
-      const tm = document.createElement("span"); tm.className = "htime"; tm.textContent = relTime(entry.started_ms);
+      const lastMs = entry.last_ms || entry.started_ms;
+      const tm = document.createElement("span"); tm.className = "htime"; tm.textContent = relTime(lastMs);
+      tm.title = "Last activity: " + fmtAbs(lastMs);
       row.appendChild(tm);
 
       row.onclick = () => openHistSession(entry);
@@ -558,7 +601,7 @@
         dotsBtn.onclick = (e) => { e.stopPropagation(); openMenu(id, dotsBtn); };
         row.appendChild(dotsBtn);
 
-        row.onclick = (e) => { if (e.target === dotsBtn) return; selected = id; histSelected = null; renderAll(); };
+        row.onclick = (e) => { if (e.target === dotsBtn) return; selected = id; histSelected = null; renderAll(); refreshSelectionStatus(); };
         list.appendChild(row);
       }
       grp.appendChild(list);
@@ -587,7 +630,8 @@
 
   function ingest(m) {
     let s = sessions.get(m.session);
-    if (!s) { const p = parseId(m.session); s = { lines: [], closed: false, transport: p.transport, label: p.label }; sessions.set(m.session, s); if (!selected) selected = m.session; }
+    if (!s) { const p = parseId(m.session); s = { lines: [], closed: false, transport: p.transport, label: p.label, firstSeen: Date.now(), lastSeen: Date.now() }; sessions.set(m.session, s); if (!selected) selected = m.session; }
+    s.lastSeen = Date.now();
     if (m.kind === "marker" && m.text.startsWith("-- closed")) s.closed = true;
     if (m.kind === "marker" && m.text.startsWith("-- opened")) s.closed = false;
     s.lines.push({ kind: m.kind, text: m.text });
@@ -597,6 +641,7 @@
       const span = document.createElement("span"); span.className = "ln " + m.kind; span.textContent = m.text;
       transcriptEl.appendChild(span);
       if (stick) transcriptEl.scrollTop = transcriptEl.scrollHeight;
+      refreshSelectionStatus();
     }
     renderSidebar();
   }
@@ -633,7 +678,7 @@
 
     setConn("wait", "connecting...");
     const es = new EventSource(eventsUrl);
-    es.onopen = () => { setConn("up", "connected"); sessions.clear(); selected = null; histSelected = null; transcriptEl.textContent = ""; sidebarEl.textContent = ""; setTitle(); renderHistory(); };
+    es.onopen = () => { setConn("up", "connected"); sessions.clear(); selected = null; histSelected = null; setResting(""); transcriptEl.textContent = ""; sidebarEl.textContent = ""; setTitle(); renderHistory(); };
     es.onmessage = (e) => { try { ingest(JSON.parse(e.data)); } catch (_) {} };
     es.onerror = () => { setConn("down", "disconnected - retrying"); };
   })();

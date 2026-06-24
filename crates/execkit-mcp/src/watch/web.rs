@@ -6,7 +6,7 @@
 //! (aliases, pins, keeps, ui prefs) via meta::save - the only write surface.
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
-use std::time::Duration;
+use std::time::{Duration, UNIX_EPOCH};
 
 use anyhow::Context;
 
@@ -278,6 +278,10 @@ struct SessionInfo {
     label: String,
     transport: String,
     started_ms: u64,
+    /// Last activity = the file's modification time in epoch millis (falls back
+    /// to `started_ms` if the mtime is unavailable). Drives the relative time
+    /// and the absolute "last activity" tooltip in the history panel.
+    last_ms: u64,
     size: u64,
 }
 
@@ -307,7 +311,15 @@ fn list_sessions(audit: &Path) -> Vec<SessionInfo> {
             continue;
         }
         let started_ms = ts.parse().unwrap_or(0);
-        let size = ent.metadata().map(|m| m.len()).unwrap_or(0);
+        let meta = ent.metadata().ok();
+        let size = meta.as_ref().map(|m| m.len()).unwrap_or(0);
+        let last_ms = meta
+            .as_ref()
+            .and_then(|m| m.modified().ok())
+            .and_then(|t| t.duration_since(UNIX_EPOCH).ok())
+            .map(|d| d.as_millis() as u64)
+            .filter(|&ms| ms > 0)
+            .unwrap_or(started_ms);
         let (transport, label) = split_label(id);
         out.push(SessionInfo {
             key: stem.to_string(),
@@ -315,6 +327,7 @@ fn list_sessions(audit: &Path) -> Vec<SessionInfo> {
             label,
             transport,
             started_ms,
+            last_ms,
             size,
         });
     }
