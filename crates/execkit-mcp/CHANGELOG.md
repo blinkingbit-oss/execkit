@@ -7,6 +7,52 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.8.0](https://github.com/blinkingbit-oss/execkit/compare/v0.7.2...v0.8.0) - 2026-06-25
+
+### Added
+
+- *(mcp)* viewer transcript search, legend filter, copy-id, auto-refresh
+- *(mcp)* viewer status bar persistently shows the selected session's details
+- *(mcp)* viewer history relative times refresh every 30s (no manual refresh needed)
+- *(mcp)* viewer UX - bottom status bar, command-count labels, color legend, action feedback
+- *(mcp)* viewer session screenshot - canvas to PNG
+- *(mcp)* viewer session export - txt/log/md/json
+- *(mcp)* viewer history panel - browse past sessions from the audit dir
+- *(mcp)* GET /sessions + /session/<id> - dir history, id-validated, no traversal
+- *(mcp)* viewer 3-dots menu - rename/pin/keep + persisted sidebar width
+- *(mcp)* GET/POST /state route - token-gated, validated, no-store
+- *(mcp)* viewer metadata store (validated, capped, 0600 display-only state)
+- *(mcp)* viewer sidebar redesign - transport groups, labels, active, resize, branding
+- *(mcp)* stable+configurable auto-start web endpoint; link by default, opt-in open, reconnect recovery
+- *(mcp)* EXECKIT_MCP_WATCH_WEB auto-starts the browser viewer
+- *(mcp)* watch --serve [--open] - browser-view any audit log
+- *(mcp)* web viewer browser-open helper (per-OS, best-effort)
+- *(mcp)* web viewer page - session sidebar + transcript panes
+- *(mcp)* web viewer HTTP/SSE core - token-gated, loopback, replay+live
+- *(mcp)* web viewer scaffolding - URL token + SSE wire JSON
+
+### Fixed
+
+- *(mcp)* viewer export/screenshot filenames + add blinking favicon
+- *(mcp)* viewer history addresses past sessions by unique file key
+- *(mcp)* valid export/screenshot downloads - defer object-URL revoke, append anchor
+- *(mcp)* inline session rename in the sidebar (replace the prompt dialog)
+- *(mcp)* history title respects alias; clear history selection on reconnect
+- *(mcp)* viewer history - fix stale live-sel on hist click; avoid DOM thrash per SSE event
+- *(mcp)* cap /state body pre-fill to Content-Length; hermetic HOME in test
+- *(mcp)* web viewer resets state on (re)connect so reconnect replay does not duplicate
+- *(mcp)* web viewer renderTranscript scopes the session; dedupe disconnect note
+- *(mcp)* web viewer title tracks the selected session as it streams
+
+### Other
+
+- *(mcp)* document the browser viewer UX (sidebar command counts, colors, status bar, history, actions)
+- *(mcp)* use sort_by_key for /sessions ordering (clippy 1.96 unnecessary_sort_by)
+- *(mcp)* cargo fmt the viewer-ux changes (incl. alpha-ordered module decl)
+- *(mcp)* stabilize web_viewer e2e - non-discarding harness, token I/O off the executor, settle before tool calls
+- Merge pull request #29 from blinkingbit-oss/feat/docs-site
+- link the docs site from crates.io and PyPI metadata
+
 ## [0.7.2](https://github.com/blinkingbit-oss/execkit/compare/v0.7.1...v0.7.2) - 2026-06-19
 
 ### Added
