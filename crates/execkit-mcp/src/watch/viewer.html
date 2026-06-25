@@ -3,6 +3,7 @@
 <head>
 <meta charset="utf-8">
 <title>execkit - live</title>
+<link rel="icon" type="image/gif" href="data:image/gif;base64,R0lGODlhIAAgAIEAAJjDeREUGgAAAAAAACH/C05FVFNDQVBFMi4wAwEAAAAh+QQIPAAAACwAAAAAIAAgAAAIWgADCBxIsKDBgwgTKlzIsKHDhxAjSpxIsaJFiAAyarwoUKNHABY/igQ5ceTHkiZPYkwpciVLjy5fZowpk+ZLmywjypwpsSbKnBVNcgzQcqjRo0iTKl3KtOnBgAAh+QQIMgAAACwAAAAAIAAgAIEsPCgRFBoAAAAAAAAIUQADCBxIsKDBgwgTKlzIsKHDhxAjSpxIsaLFixgzJgTAEYDGjiA9WgwZciTJjhVPlpyoEiTFlihZwhQpU6VJmzdXYnSpsafPn0CDCh1KtKjPgAA7">
 <style>
   :root { color-scheme: dark; --sidebar: 260px; }
   * { box-sizing: border-box; }
@@ -174,7 +175,7 @@
     x.font = font; x.textBaseline = "top";
     x.fillStyle = "#e6e9ef"; x.fillText(label + "  (" + id + ")", pad, pad);
     lines.forEach(function(l, i) { x.fillStyle = colors[l.kind] || "#c8ccd4"; x.fillText(l.text, pad, pad + lh * (i + 1)); });
-    cv.toBlob(function(b) { if (b) { triggerDownload(URL.createObjectURL(b), id + ".png"); setStatus("Saved " + id + ".png"); } });
+    cv.toBlob(function(b) { if (b) { const fn = safeName(id, "png"); triggerDownload(URL.createObjectURL(b), fn); setStatus("Saved " + fn); } });
   }
 
   // --- Export helpers ---
@@ -198,6 +199,14 @@
     triggerDownload(URL.createObjectURL(new Blob([text], { type: mime })), name);
   }
 
+  // A portable download filename. Session ids carry `@`, `:`, `.` (ssh user@host,
+  // docker names); several browsers/OSes mangle those when deriving a filename
+  // and drop the extension. Reduce to [A-Za-z0-9_-] so the ".<ext>" always sticks.
+  function safeName(id, ext) {
+    const base = String(id).replace(/[^A-Za-z0-9_-]+/g, "-").replace(/^-+|-+$/g, "") || "session";
+    return base + "." + ext;
+  }
+
   function exportSession(id, ext) {
     const s = sessions.get(id);
     if (!s) return;
@@ -205,14 +214,15 @@
     const parsed = parseId(id);
     const label = md.alias || parsed.label;
     const lines = s.lines;
+    const fn = safeName(id, ext);
     if (ext === "txt" || ext === "log") {
-      download(id + "." + ext, "text/plain", lines.map(function(l) { return l.text; }).join("\n"));
+      download(fn, "text/plain", lines.map(function(l) { return l.text; }).join("\n"));
     } else if (ext === "md") {
-      download(id + ".md", "text/markdown", toMd(label, id, lines));
+      download(fn, "text/markdown", toMd(label, id, lines));
     } else if (ext === "json") {
-      download(id + ".json", "application/json", JSON.stringify(lines, null, 2));
+      download(fn, "application/json", JSON.stringify(lines, null, 2));
     }
-    setStatus("Exported " + id + "." + ext);
+    setStatus("Exported " + fn);
   }
 
   // --- Context menu ---
