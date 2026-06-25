@@ -557,19 +557,29 @@ mod tests {
         String::from_utf8_lossy(&b[..n]).to_string()
     }
 
-    // Minimal HTTP GET; returns the full response text (headers + body so far).
+    // Minimal HTTP GET; returns the response text (headers + body) read within
+    // the time budget. Accumulates across reads so a large page (which spans
+    // more than one buffer) is captured in full; SSE is bounded by the budget.
     async fn http_get(addr: std::net::SocketAddr, target: &str, read_ms: u64) -> String {
         let mut s = tokio::net::TcpStream::connect(addr).await.unwrap();
         s.write_all(format!("GET {target} HTTP/1.1\r\nHost: x\r\n\r\n").as_bytes())
             .await
             .unwrap();
+        let deadline = std::time::Instant::now() + std::time::Duration::from_millis(read_ms);
+        let mut out: Vec<u8> = Vec::new();
         let mut buf = vec![0u8; 8192];
-        // Read briefly; SSE never closes, so bound the read by time.
-        let n = tokio::time::timeout(std::time::Duration::from_millis(read_ms), s.read(&mut buf))
-            .await
-            .map(|r| r.unwrap_or(0))
-            .unwrap_or(0);
-        String::from_utf8_lossy(&buf[..n]).to_string()
+        loop {
+            let remaining = deadline.saturating_duration_since(std::time::Instant::now());
+            if remaining.is_zero() {
+                break;
+            }
+            match tokio::time::timeout(remaining, s.read(&mut buf)).await {
+                Ok(Ok(0)) => break,                            // EOF
+                Ok(Ok(n)) => out.extend_from_slice(&buf[..n]), // got data; keep reading
+                Ok(Err(_)) | Err(_) => break,                  // error or budget elapsed
+            }
+        }
+        String::from_utf8_lossy(&out).to_string()
     }
 
     #[tokio::test]

@@ -12,8 +12,10 @@
   header { padding: 8px 12px; background: #0b0d11; border-bottom: 1px solid #222; display: flex; align-items: baseline; gap: 10px; }
   header .brand { font-size: 20px; font-weight: 700; letter-spacing: 0.5px; color: #e6e9ef; }
   header .tag { color: #8a93a3; font-size: 12px; }
-  header .legend { margin-left: auto; font-size: 11px; display: flex; gap: 10px; align-items: center; cursor: help; }
+  header .legend { margin-left: auto; font-size: 11px; display: flex; gap: 10px; align-items: center; }
+  header .legend span { cursor: pointer; user-select: none; }
   header .legend span::before { content: "."; margin-right: 3px; font-weight: 700; }
+  header .legend span.off { opacity: 0.35; text-decoration: line-through; }
   .main { flex: 1; display: flex; min-height: 0; }
   #sidebar { width: var(--sidebar); min-width: 140px; max-width: 70vw; border-right: 1px solid #222; overflow-y: auto; flex-shrink: 0; }
   #resizer { width: 5px; cursor: col-resize; background: transparent; flex-shrink: 0; }
@@ -71,19 +73,42 @@
   #conn.down #conn-dot { background: #e06c75; }
   #conn.wait #conn-dot { background: #e5c07b; }
   #status-msg { margin-left: auto; color: #c8ccd4; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  #status-msg.copyable { cursor: pointer; }
+  #status-msg.copyable:hover { color: #fff; }
+  /* Empty / disconnected placeholder in the transcript pane */
+  .placeholder { color: #6b7280; padding: 24px 12px; text-align: center; font-size: 12px; }
+  .placeholder.down { color: #e06c75; }
+  /* Transcript search */
+  #searchbar { display: none; padding: 5px 12px; border-bottom: 1px solid #222; background: #0b0d11; align-items: center; gap: 8px; }
+  #searchbar.on { display: flex; }
+  #search-input { flex: 1; background: #11141a; border: 1px solid #333; color: #e6e9ef; font: 12px ui-monospace, Menlo, Consolas, monospace; padding: 2px 6px; outline: none; border-radius: 3px; }
+  #search-input:focus { border-color: #61afef; }
+  #search-count { color: #8a93a3; font-size: 11px; flex-shrink: 0; min-width: 48px; text-align: right; }
+  .search-btn { background: none; border: 1px solid #333; color: #8a93a3; cursor: pointer; font: 11px ui-monospace, Menlo, Consolas, monospace; padding: 1px 6px; border-radius: 3px; flex-shrink: 0; }
+  .search-btn:hover { color: #c8ccd4; border-color: #555; }
+  #transcript mark { background: #4d3a00; color: #ffd479; border-radius: 2px; }
+  #transcript mark.cur { background: #e5c07b; color: #11141a; }
 </style>
 </head>
 <body>
 <header>
   <span class="brand">execkit</span>
   <span class="tag">live - read-only shell transcript</span>
-  <span class="legend" title="Color legend for the transcript below"><span class="prompt" title="command / prompt line">cmd</span><span class="stdout" title="standard output">out</span><span class="stderr" title="stderr, non-zero exit, or blocked command">err</span><span class="exit_ok" title="clean exit (code 0)">ok</span></span>
+  <span class="legend" title="Color legend - click an item to show/hide those lines"><span class="prompt" data-cat="cmd" title="command / prompt line (click to filter)">cmd</span><span class="stdout" data-cat="out" title="standard output (click to filter)">out</span><span class="stderr" data-cat="err" title="stderr, non-zero exit, or blocked command (click to filter)">err</span><span class="exit_ok" data-cat="ok" title="clean exit, code 0 (click to filter)">ok</span></span>
 </header>
 <div class="main">
   <div id="sidebar"></div>
   <div id="resizer"></div>
   <div class="pane">
     <div id="title">(no sessions yet)</div>
+    <div id="searchbar">
+      <input id="search-input" type="text" placeholder="Find in transcript..." aria-label="Find in transcript" autocomplete="off" spellcheck="false">
+      <span id="search-count"></span>
+      <button class="search-btn" id="search-prev" title="Previous match (Shift+Enter)">prev</button>
+      <button class="search-btn" id="search-next" title="Next match (Enter)">next</button>
+      <button class="search-btn" id="search-err" title="Jump to next error / blocked line (e)">next err</button>
+      <button class="search-btn" id="search-close" title="Close (Esc)">x</button>
+    </div>
     <div id="transcript" aria-live="polite"></div>
   </div>
 </div>
@@ -118,10 +143,40 @@
     restingMsg = msg;
     if (!statusTimer) statusMsgEl.textContent = msg;
   }
+  let connState = "wait";
+  let histLoading = false; // true while a history transcript is being fetched
   function setConn(state, text) {
+    connState = state;
     connEl.className = state; // "up" | "down" | "wait"
     connTextEl.textContent = text;
+    // Keep the empty/disconnected placeholder message in sync, but don't stomp
+    // the "Loading..." text while a history session is mid-fetch.
+    if (!histLoading && !currentLines().length) renderTranscriptLines();
   }
+
+  // Click-to-copy the selected session id from the status bar.
+  let statusCopyId = null;
+  function setCopyId(id) {
+    statusCopyId = id || null;
+    statusMsgEl.classList.toggle("copyable", !!statusCopyId);
+    statusMsgEl.title = statusCopyId ? "Click to copy session id: " + statusCopyId : "";
+  }
+  function copyText(text, okMsg) {
+    function fallback() {
+      try {
+        const ta = document.createElement("textarea");
+        ta.value = text; ta.style.position = "fixed"; ta.style.opacity = "0";
+        document.body.appendChild(ta); ta.focus(); ta.select();
+        document.execCommand("copy"); document.body.removeChild(ta); setStatus(okMsg);
+      } catch (_) { setStatus("Copy failed"); }
+    }
+    if (navigator.clipboard && navigator.clipboard.writeText) {
+      navigator.clipboard.writeText(text).then(function () { setStatus(okMsg); }, fallback);
+    } else { fallback(); }
+  }
+  statusMsgEl.addEventListener("click", function () {
+    if (statusCopyId) copyText(statusCopyId, "Copied id " + statusCopyId);
+  });
 
   // count of executed commands in a transcript (one prompt line per exec; a
   // blocked attempt renders a "! blocked" line).
@@ -345,24 +400,25 @@
     if (!selected) return;
     const sc = sessions.get(selected);
     if (!sc) return;
-    // For an open session the client-observed lastSeen tracks live activity; for
-    // a closed one prefer the file mtime from the matching history entry (the
-    // boot-time snapshot would otherwise freeze a streaming session's time).
-    let lastMs = sc.lastSeen;
-    if (sc.closed) {
-      const hist = histSessions.find(h => h.id === selected);
-      if (hist) lastMs = hist.last_ms || hist.started_ms;
-    }
+    // last-activity time. A closed session uses the file mtime from the matching
+    // history entry (the true final write; the 15s /sessions poll keeps it
+    // fresh). An open session takes the max of that mtime and the client-observed
+    // lastSeen, so live streaming reads in real time and the value never ticks
+    // backwards. Single-file mode (no /sessions entry) falls back to lastSeen.
+    const hist = histSessions.find(h => h.id === selected);
+    const histMs = hist ? (hist.last_ms || hist.started_ms) : 0;
+    const lastMs = sc.closed ? (histMs || sc.lastSeen) : Math.max(histMs, sc.lastSeen);
     const md = (meta.sessions || {})[selected] || {};
     setResting(detailLine(selected, sc.transport, md.alias || sc.label, sc.lines, sc.closed ? "closed" : "live", lastMs));
+    setCopyId(selected);
   }
 
   async function loadHistory() {
     try {
       const r = await fetch("/sessions?t=" + encodeURIComponent(token));
       if (r.ok) histSessions = await r.json();
-      else histSessions = [];
-    } catch (_) { histSessions = []; }
+      // On a non-OK / failed poll, keep the last good list rather than blanking.
+    } catch (_) {}
     renderHistory();
   }
 
@@ -374,22 +430,21 @@
     renderHistory(); // updates history .sel and re-appends fresh node
     const hmd = (meta.sessions || {})[entry.id] || {};
     titleEl.textContent = (hmd.alias || entry.label) + "  (history)";
+    histLines = [];
+    histLoading = true;
     transcriptEl.textContent = "Loading...";
     try {
       const r = await fetch("/session/" + encodeURIComponent(entry.key) + "?t=" + encodeURIComponent(token));
       if (!r.ok) { transcriptEl.textContent = "Error loading session."; return; }
       const lines = await r.json();
-      transcriptEl.textContent = "";
-      for (const l of lines) {
-        const span = document.createElement("span");
-        span.className = "ln " + l.kind;
-        span.textContent = l.text;
-        transcriptEl.appendChild(span);
-      }
+      histLines = lines;
+      renderTranscriptLines(); // respects the legend filter + active search
       const lastMs = entry.last_ms || entry.started_ms;
       setResting(detailLine(entry.id, entry.transport, hmd.alias || entry.label, lines, "history", lastMs));
+      setCopyId(entry.id);
       setStatus("Loaded history: " + (hmd.alias || entry.label) + " (" + cmdCount(lines) + " commands)");
     } catch (_) { transcriptEl.textContent = "Error loading session."; }
+    finally { histLoading = false; }
   }
 
   function renderHistory() {
@@ -624,37 +679,224 @@
 
   function atBottom() { return transcriptEl.scrollHeight - transcriptEl.scrollTop - transcriptEl.clientHeight < 24; }
 
-  function renderTranscript() {
-    if (histSelected) return; // keep history view intact
+  // --- Transcript rendering: legend filter + search highlight + empty states ---
+  const CAT_KINDS = { cmd: ["prompt"], out: ["stdout"], err: ["stderr", "exit_err"], ok: ["exit_ok"] };
+  const hiddenCats = new Set();   // legend categories toggled off
+  let histLines = [];             // lines of the currently open history session
+  let searchQuery = "";           // active search text, lowercased
+  let searchMatches = [];         // <mark> elements in document order
+  let searchIdx = -1;             // current match index
+
+  function lineVisible(kind) {
+    if (kind === "marker") return true;
+    for (const cat of hiddenCats) { if (CAT_KINDS[cat].indexOf(kind) >= 0) return false; }
+    return true;
+  }
+
+  function currentLines() {
+    if (histSelected) return histLines;
     const s = selected && sessions.get(selected);
-    setTitle();
-    transcriptEl.textContent = "";
-    if (!s) return;
-    for (const l of s.lines) {
-      const span = document.createElement("span"); span.className = "ln " + l.kind; span.textContent = l.text;
-      transcriptEl.appendChild(span);
+    return s ? s.lines : [];
+  }
+
+  // Append text to `span`, wrapping case-insensitive matches of the search query
+  // in <mark>. Always via text nodes - never innerHTML - so content stays inert.
+  function appendText(span, text) {
+    if (!searchQuery) { span.appendChild(document.createTextNode(text)); return; }
+    const low = text.toLowerCase();
+    let from = 0, i;
+    while ((i = low.indexOf(searchQuery, from)) >= 0) {
+      if (i > from) span.appendChild(document.createTextNode(text.slice(from, i)));
+      const m = document.createElement("mark");
+      m.textContent = text.slice(i, i + searchQuery.length);
+      span.appendChild(m);
+      from = i + searchQuery.length;
     }
+    if (from < text.length) span.appendChild(document.createTextNode(text.slice(from)));
+  }
+
+  function appendLineSpan(l) {
+    const span = document.createElement("span");
+    span.className = "ln " + l.kind;
+    appendText(span, l.text);
+    transcriptEl.appendChild(span);
+  }
+
+  function placeholder(text, down) {
+    const ph = document.createElement("div");
+    ph.className = "placeholder" + (down ? " down" : "");
+    ph.textContent = text;
+    transcriptEl.appendChild(ph);
+  }
+
+  function renderTranscriptLines() {
+    transcriptEl.textContent = "";
+    searchMatches = []; searchIdx = -1;
+    const lines = currentLines();
+    if (!lines.length) {
+      if (connState === "down") placeholder("Disconnected - retrying...", true);
+      else if (histSelected) placeholder("This session has no recorded activity.", false);
+      else placeholder("Waiting for shell activity...", false);
+      updateSearchCount();
+      return;
+    }
+    let anyVisible = false;
+    for (const l of lines) {
+      if (!lineVisible(l.kind)) continue;
+      anyVisible = true;
+      appendLineSpan(l);
+    }
+    if (!anyVisible) placeholder("No lines match the current filter.", false);
+    if (searchQuery) {
+      searchMatches = Array.prototype.slice.call(transcriptEl.querySelectorAll("mark"));
+      if (searchMatches.length) { searchIdx = 0; markCurrent(false); }
+    }
+    updateSearchCount();
+  }
+
+  function renderTranscript() {
+    if (histSelected) return; // history view is managed by openHistSession
+    setTitle();
+    renderTranscriptLines();
   }
 
   function renderAll() { renderSidebar(); renderTranscript(); }
 
   function ingest(m) {
     let s = sessions.get(m.session);
-    if (!s) { const p = parseId(m.session); s = { lines: [], closed: false, transport: p.transport, label: p.label, firstSeen: Date.now(), lastSeen: Date.now() }; sessions.set(m.session, s); if (!selected) selected = m.session; }
+    let firstSelect = false;
+    if (!s) { const p = parseId(m.session); s = { lines: [], closed: false, transport: p.transport, label: p.label, firstSeen: Date.now(), lastSeen: Date.now() }; sessions.set(m.session, s); if (!selected && !histSelected) { selected = m.session; firstSelect = true; } }
     s.lastSeen = Date.now();
     if (m.kind === "marker" && m.text.startsWith("-- closed")) s.closed = true;
     if (m.kind === "marker" && m.text.startsWith("-- opened")) s.closed = false;
     s.lines.push({ kind: m.kind, text: m.text });
-    if (m.session === selected) {
+    if (m.session === selected && !histSelected) {
       setTitle();
-      const stick = atBottom();
-      const span = document.createElement("span"); span.className = "ln " + m.kind; span.textContent = m.text;
-      transcriptEl.appendChild(span);
-      if (stick) transcriptEl.scrollTop = transcriptEl.scrollHeight;
+      // Fast path: append in place when no filter/search is active. Otherwise a
+      // full re-render keeps filtering, highlighting, and match indices correct.
+      if (!firstSelect && !searchQuery && hiddenCats.size === 0) {
+        const stick = atBottom();
+        const ph = transcriptEl.querySelector(".placeholder");
+        if (ph) transcriptEl.textContent = "";
+        if (lineVisible(m.kind)) appendLineSpan({ kind: m.kind, text: m.text });
+        if (stick) transcriptEl.scrollTop = transcriptEl.scrollHeight;
+      } else {
+        // Filter/search active: re-render the whole pane (O(n) per line, fine for
+        // typical transcripts). New lines append at the bottom, so prior matches
+        // keep their order - preserve the current match index across the rebuild.
+        const stick = atBottom();
+        const prevIdx = searchIdx;
+        renderTranscriptLines();
+        if (searchQuery && searchMatches.length && prevIdx > 0) {
+          searchIdx = Math.min(prevIdx, searchMatches.length - 1);
+          markCurrent(false);
+          updateSearchCount();
+        }
+        if (stick) transcriptEl.scrollTop = transcriptEl.scrollHeight;
+      }
       refreshSelectionStatus();
     }
     renderSidebar();
   }
+
+  // --- Transcript search + jump-to-error ---
+  const searchBar = document.getElementById("searchbar");
+  const searchInput = document.getElementById("search-input");
+  const searchCount = document.getElementById("search-count");
+
+  function updateSearchCount() {
+    if (!searchQuery) { searchCount.textContent = ""; return; }
+    searchCount.textContent = searchMatches.length ? (searchIdx + 1) + " / " + searchMatches.length : "no matches";
+  }
+  function markCurrent(scroll) {
+    searchMatches.forEach(function (m, i) { m.classList.toggle("cur", i === searchIdx); });
+    if (scroll && searchMatches[searchIdx]) searchMatches[searchIdx].scrollIntoView({ block: "center" });
+  }
+  function matchInView(el) {
+    const er = el.getBoundingClientRect(), tr = transcriptEl.getBoundingClientRect();
+    // A match taller than the viewport can never be fully enclosed; for those,
+    // any overlap counts as in-view so typing doesn't scroll on every keystroke.
+    if (er.height >= tr.height) return er.bottom > tr.top && er.top < tr.bottom;
+    return er.top >= tr.top && er.bottom <= tr.bottom;
+  }
+  function gotoMatch(delta) {
+    if (!searchMatches.length) return;
+    searchIdx = (searchIdx + delta + searchMatches.length) % searchMatches.length;
+    markCurrent(true);
+    updateSearchCount();
+  }
+  function jumpNextErr() {
+    const errs = Array.prototype.slice.call(transcriptEl.querySelectorAll(".ln.exit_err, .ln.stderr"));
+    if (!errs.length) { setStatus("No error lines in this view"); return; }
+    const top = transcriptEl.getBoundingClientRect().top;
+    let next = errs.find(function (el) { return el.getBoundingClientRect().top > top + 4; });
+    if (!next) next = errs[0]; // wrap to the first
+    next.scrollIntoView({ block: "center" });
+  }
+  function openSearch() { searchBar.classList.add("on"); searchInput.focus(); searchInput.select(); }
+  function closeSearch() {
+    searchBar.classList.remove("on");
+    if (searchQuery) { searchQuery = ""; searchInput.value = ""; renderTranscriptLines(); }
+  }
+
+  searchInput.addEventListener("input", function () {
+    searchQuery = searchInput.value.trim().toLowerCase();
+    renderTranscriptLines();
+    // Reveal the first match only if it is off-screen, so typing does not yank
+    // the view when matches are already visible.
+    const cur = searchMatches[searchIdx];
+    if (cur && !matchInView(cur)) cur.scrollIntoView({ block: "center" });
+  });
+  searchInput.addEventListener("keydown", function (e) {
+    if (e.key === "Enter") { e.preventDefault(); gotoMatch(e.shiftKey ? -1 : 1); }
+    else if (e.key === "Escape") { e.preventDefault(); closeSearch(); }
+  });
+  document.getElementById("search-next").onclick = function () { gotoMatch(1); };
+  document.getElementById("search-prev").onclick = function () { gotoMatch(-1); };
+  document.getElementById("search-err").onclick = jumpNextErr;
+  document.getElementById("search-close").onclick = closeSearch;
+
+  // Global shortcuts (ignored while typing): / opens search, e jumps to next error.
+  document.addEventListener("keydown", function (e) {
+    const tag = document.activeElement && document.activeElement.tagName;
+    if (tag === "INPUT" || tag === "TEXTAREA") return;
+    if (e.key === "/") { e.preventDefault(); openSearch(); }
+    else if (e.key === "e") { e.preventDefault(); jumpNextErr(); }
+  });
+
+  // --- Legend click -> show/hide that line category ---
+  Array.prototype.forEach.call(document.querySelectorAll(".legend span[data-cat]"), function (el) {
+    el.addEventListener("click", function () {
+      const cat = el.getAttribute("data-cat");
+      if (hiddenCats.has(cat)) { hiddenCats.delete(cat); el.classList.remove("off"); }
+      else { hiddenCats.add(cat); el.classList.add("off"); }
+      renderTranscriptLines();
+    });
+  });
+
+  // --- Blinking favicon: a green dot on a dark tab icon ---
+  // Chrome does not animate GIF favicons, so drive it from JS by swapping the
+  // <link rel="icon"> between a lit and a dim frame. The static GIF in the head
+  // is the pre-script fallback (and keeps /favicon.ico from 404/403-ing).
+  (function () {
+    let link = document.querySelector('link[rel="icon"]');
+    if (!link) { link = document.createElement("link"); link.rel = "icon"; document.head.appendChild(link); }
+    const c = document.createElement("canvas"); c.width = 32; c.height = 32;
+    const x = c.getContext("2d");
+    if (!x) return; // keep the static GIF fallback if canvas is unavailable
+    function frame(on) {
+      x.clearRect(0, 0, 32, 32);
+      x.fillStyle = "#11141a"; x.fillRect(0, 0, 32, 32);
+      x.beginPath(); x.arc(16, 16, on ? 9 : 5, 0, Math.PI * 2);
+      x.fillStyle = on ? "#98c379" : "#1d271a";
+      x.fill();
+      return c.toDataURL("image/png");
+    }
+    const lit = frame(true), dim = frame(false);
+    let on = true;
+    link.type = "image/png"; link.href = lit;
+    setInterval(function () { on = !on; link.href = on ? lit : dim; }, 600);
+  })();
 
   // Resizable sidebar - persisted via /state.
   (function () {
@@ -683,12 +925,13 @@
       document.documentElement.style.setProperty("--sidebar", meta.ui.sidebar_width + "px");
     }
     await loadHistory();
-    // Keep the history relative times ("5m ago") fresh without a manual refresh.
-    setInterval(function () { if (histSessions.length) renderHistory(); }, 30000);
+    // Periodically re-poll /sessions: refreshes the history list AND the selected
+    // session's last-activity time (file mtime), so both stay current hands-free.
+    setInterval(async function () { await loadHistory(); refreshSelectionStatus(); }, 15000);
 
     setConn("wait", "connecting...");
     const es = new EventSource(eventsUrl);
-    es.onopen = () => { setConn("up", "connected"); sessions.clear(); selected = null; histSelected = null; setResting(""); transcriptEl.textContent = ""; sidebarEl.textContent = ""; setTitle(); renderHistory(); };
+    es.onopen = () => { setConn("up", "connected"); sessions.clear(); selected = null; histSelected = null; histLines = []; setResting(""); setCopyId(null); sidebarEl.textContent = ""; setTitle(); renderHistory(); renderTranscriptLines(); };
     es.onmessage = (e) => { try { ingest(JSON.parse(e.data)); } catch (_) {} };
     es.onerror = () => { setConn("down", "disconnected - retrying"); };
   })();

@@ -223,18 +223,26 @@ Reading the page:
 - **Transcript colors** (legend in the header): the prompt line `cwd $ command`
   is cyan (`cmd`), stdout is default (`out`), stderr and failing exits are red
   (`err`), a clean exit is green (`ok`), and session/markers are dimmed. Each
-  command shows its exit code and duration.
+  command shows its exit code and duration. **Click a legend item** to show/hide
+  that line type (e.g. click `out` to hide stdout and skim just the commands and
+  errors).
+- **Search** - press `/` to find within the current transcript; matches are
+  highlighted with a running `n / m` count, `Enter` / `Shift+Enter` (or the
+  next/prev buttons) step through them, and `Esc` clears. Press `e` (or "next
+  err") to jump to the next error/blocked line.
 - **Bottom status bar** - the connection state (`connected` /
   `disconnected - retrying`) on the left. On the right it shows details of the
   currently selected session - its id, transport, command count, live/closed
-  state, and absolute last-activity time - and stays there as you browse. An
-  action (e.g. `Exported 1_local.md`, `Renamed to ...`, `Pinned to top`) flashes
-  briefly, then the bar reverts to the selected session's details.
+  state, and absolute last-activity time - and stays there as you browse. Click
+  it to copy the session id. An action (e.g. `Exported 1_local.md`, `Renamed
+  to ...`, `Pinned to top`) flashes briefly, then the bar reverts to the
+  session's details.
 - **History** - past sessions from `EXECKIT_MCP_AUDIT_DIR` (one file per session)
   appear under "History", newest first, each with a relative time (`5m ago`;
   hover for the absolute last-activity timestamp); click one to view its
-  transcript read-only. Requires dir-mode auditing; with a single
-  `EXECKIT_MCP_AUDIT` file there is no per-session history.
+  transcript read-only. The list and last-activity times refresh automatically.
+  Requires dir-mode auditing; with a single `EXECKIT_MCP_AUDIT` file there is no
+  per-session history.
 - **Per-session actions** (the 3-dots menu on a row): **Rename** (inline edit; a
   display alias only), **Pin** to the top, **Keep** (retain in history past the
   trim limit), **Export** to `.txt` / `.log` / `.md` / `.json`, and
