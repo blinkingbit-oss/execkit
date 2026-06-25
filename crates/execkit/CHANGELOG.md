@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.8.0](https://github.com/blinkingbit-oss/execkit/compare/execkit-v0.7.2...execkit-v0.8.0) - 2026-06-25
+
+### Other
+
+- add a guide badge linking the docs site to the README header
+- link the docs site from crates.io and PyPI metadata
+
 ## [0.6.0](https://github.com/blinkingbit-oss/execkit/compare/execkit-v0.5.0...execkit-v0.6.0) - 2026-06-17
 
 ### Added
