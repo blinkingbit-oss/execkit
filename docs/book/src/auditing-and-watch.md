@@ -36,6 +36,46 @@ exit status), rendered like a normal shell rather than JSON. Switch sessions wit
 reads the log. Because the data comes from the server, it works the same under
 any MCP client.
 
+### Browser viewer
+
+For a richer view in a normal browser tab, serve the transcript as a local web
+page:
+
+```bash
+execkit-mcp watch --serve /var/log/execkit/        # prints a loopback URL with a token
+execkit-mcp watch --serve --open /var/log/execkit/ # ...and open it in your browser
+```
+
+The MCP server also starts the viewer automatically when `EXECKIT_MCP_WATCH_WEB`
+is set: it binds `127.0.0.1` only, prints the tokened URL and pushes it to the
+client as a notification, and keeps the URL stable across restarts so an open tab
+reconnects. `EXECKIT_MCP_WATCH_PORT` sets the port (default `7878`, falls back to
+a random one if taken) and `EXECKIT_MCP_WATCH_OPEN` also opens the browser for
+you.
+
+The page is read-only and local by construction: it binds loopback only, every
+request needs the URL token, and it can read the audit stream but never touch a
+session, a command, or your files. What you get:
+
+- **Sidebar** grouped by transport (`local` / `ssh` / `docker`); a group header
+  shows its session count, a session row shows its command count, and the active
+  session is highlighted.
+- **Colored transcript** with a header legend (`cmd` / `out` / `err` / `ok`).
+  Click a legend item to show or hide that line type.
+- **Search**: press `/` to find within the transcript, step matches with `Enter`
+  / `Shift+Enter`, and press `e` to jump to the next error or blocked line.
+- **History** of past sessions (newest first, with relative times) when
+  `EXECKIT_MCP_AUDIT_DIR` is set; click one to read its transcript. With a single
+  `EXECKIT_MCP_AUDIT` file there is no per-session history.
+- **Per-session actions** from a 3-dots menu: rename (a display alias), pin, keep,
+  export to `.txt` / `.log` / `.md` / `.json`, and screenshot to `.png`.
+- A **status bar** that shows the selected session's details; click it to copy the
+  session id.
+
+Rename / pin / keep and the sidebar width persist in `~/.execkit/viewer-state.json`
+(mode `0600`). That file is the viewer's only write surface: display metadata
+only, never able to affect a session, a command, or the audit log.
+
 ### Headless follow mode
 
 For a pipeable, no-TTY view, use `--follow` instead of the TUI. It prints each

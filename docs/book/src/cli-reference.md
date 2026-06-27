@@ -10,7 +10,8 @@ execkit-mcp                          Run the MCP server on stdio (default)
 execkit-mcp setup <client>           Print the config to wire execkit into a client
                                      client: claude | cursor | gemini
 execkit-mcp doctor                   Check the local environment and print a report
-execkit-mcp watch [--follow] <path>  Live, read-only viewer over the audit log
+execkit-mcp watch [--follow|--serve] [--open] <path>
+                                     Live, read-only viewer (TUI, follow stream, or browser)
 execkit-mcp --version                Print version
 execkit-mcp --help                   Print help
 ```
@@ -29,10 +30,11 @@ and `known_hosts` (with the env var that overrides each), and whether the Docker
 daemon is reachable. Use it after install to catch setup problems before an agent
 connects. See [Installation](./installation.md).
 
-### `watch [--follow] <path>`
+### `watch [--follow|--serve] [--open] <path>`
 
 A live read-only viewer over the audit log; a file or a directory. `--follow`
-gives a headless, pipeable stream instead of the TUI. See
+gives a headless, pipeable stream instead of the TUI; `--serve` serves a loopback,
+token-gated web page instead, and `--open` also launches your browser at it. See
 [Auditing and the watch viewer](./auditing-and-watch.md).
 
 ## Environment
@@ -44,6 +46,9 @@ and rationale on the [Security model](./security-model.md) page.
 EXECKIT_MCP_AUDIT                  Append a JSONL audit log of every command here
 EXECKIT_MCP_AUDIT_DIR             One JSONL file per session in this directory
 EXECKIT_MCP_AUDIT_RETENTION_DAYS  Prune per-session files older than N days (default 14)
+EXECKIT_MCP_WATCH_WEB             Auto-start the loopback browser viewer and surface its URL
+EXECKIT_MCP_WATCH_PORT            Port for the browser viewer (default 7878; random if taken)
+EXECKIT_MCP_WATCH_OPEN            Also auto-open the browser at the viewer URL (default: link only)
 EXECKIT_MCP_KEY_DIR               Directory SSH keys must live under (default ~/.ssh)
 EXECKIT_MCP_KNOWN_HOSTS           SSH known_hosts file (default ~/.ssh/known_hosts)
 EXECKIT_MCP_MAX_SESSIONS          Soft cap on concurrent live sessions (default 64)
