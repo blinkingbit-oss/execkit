@@ -6,6 +6,7 @@
 
 - [Installation](./installation.md)
 - [Wiring into an agent](./wiring-into-an-agent.md)
+- [FAQ](./faq.md)
 
 # Using execkit
 
