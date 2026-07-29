@@ -20,7 +20,7 @@ serde_json = "1"
 anyhow = "1"
 rmcp = { version = "1.7.0", features = ["server", "transport-io", "macros"] }
 schemars = "1"
-ratatui = "0.29"
+ratatui = "0.30"
 crossterm = "0.28"
 # Resolve ~ the way ssh/cargo do (HOME, then the passwd db) so default key
 # paths are correct even when $HOME is unset.
