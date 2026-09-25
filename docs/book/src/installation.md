@@ -31,7 +31,7 @@ execkit-mcp 0.8.0
 
 [ -- ] audit: off (set EXECKIT_MCP_AUDIT or EXECKIT_MCP_AUDIT_DIR to record + watch activity)
 [ ok ] ssh key dir: /home/you/.ssh (override: EXECKIT_MCP_KEY_DIR)
-[ ok ] known_hosts: /home/you/.ssh/known_hosts
+[ ok ] known_hosts: /home/you/.execkit/known_hosts
 [ ok ] docker: daemon reachable
 ```
 

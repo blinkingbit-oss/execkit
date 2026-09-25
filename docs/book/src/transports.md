@@ -28,7 +28,8 @@ Required: `host`, `user`, and one of `password` or `key_path`. Optional: `port`
 Host-key handling is safe by default:
 
 - **Verified against `known_hosts` (TOFU).** A changed key is rejected as a likely
-  man-in-the-middle. The file is `~/.ssh/known_hosts` unless
+  man-in-the-middle. This is execkit's own file, not your OpenSSH
+  `~/.ssh/known_hosts` - it defaults to `~/.execkit/known_hosts` unless
   `EXECKIT_MCP_KNOWN_HOSTS` overrides it, and the first connection records the key.
 - **Pin a key** by passing `fingerprint` for an exact match.
 - **`key_path` is sandboxed.** It must canonicalize to inside the key directory

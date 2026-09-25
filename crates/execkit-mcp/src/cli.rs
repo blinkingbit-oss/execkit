@@ -31,7 +31,7 @@ ENVIRONMENT (operator-controlled; see the README):
   EXECKIT_MCP_AUDIT_DIR             One JSONL file per session in this directory
   EXECKIT_MCP_AUDIT_RETENTION_DAYS  Prune per-session files older than N days (default 14)
   EXECKIT_MCP_KEY_DIR               Directory SSH keys must live under (default ~/.ssh)
-  EXECKIT_MCP_KNOWN_HOSTS           SSH known_hosts file (default ~/.ssh/known_hosts)
+  EXECKIT_MCP_KNOWN_HOSTS           execkit-managed SSH known_hosts file (default ~/.execkit/known_hosts)
   EXECKIT_MCP_MAX_SESSIONS          Soft cap on concurrent live sessions (default 64)
   EXECKIT_MCP_SESSION_TTL           Reap sessions idle longer than N seconds (default 1800)
   EXECKIT_MCP_POLICY_FILE           JSON allow/deny + deny_patterns the agent cannot edit (advisory)
@@ -197,7 +197,7 @@ pub fn doctor() -> anyhow::Result<()> {
     }
     let known_hosts = std::env::var_os("EXECKIT_MCP_KNOWN_HOSTS")
         .map(PathBuf::from)
-        .unwrap_or_else(|| execkit_mcp::paths::ssh_dir().join("known_hosts"));
+        .unwrap_or_else(execkit_mcp::paths::default_known_hosts_path);
     if known_hosts.is_file() {
         line(
             Status::Ok,

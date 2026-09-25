@@ -6,8 +6,12 @@
 //! are pure and unit-tested, independent of any network.
 
 use std::path::{Path, PathBuf};
+use std::time::Duration;
 
-use crate::error::Result;
+use crate::error::{Error, Result};
+
+/// Default timeout for establishing the SSH TCP connection (see [`SshConfig::connect_timeout`]).
+const DEFAULT_CONNECT_TIMEOUT: Duration = Duration::from_secs(15);
 
 /// How to reach an SSH host.
 #[derive(Clone)]
@@ -17,6 +21,9 @@ pub struct SshConfig {
     pub user: String,
     pub auth: SshAuth,
     pub host_key: HostKeyVerification,
+    /// How long to wait for the TCP connection to be established before
+    /// giving up. Does not cover auth or shell startup. Default 15s.
+    pub connect_timeout: Duration,
 }
 
 impl SshConfig {
@@ -33,6 +40,7 @@ impl SshConfig {
             user: user.into(),
             auth,
             host_key,
+            connect_timeout: DEFAULT_CONNECT_TIMEOUT,
         }
     }
 }
@@ -65,6 +73,7 @@ impl std::fmt::Debug for SshConfig {
             .field("user", &self.user)
             .field("auth", &self.auth)
             .field("host_key", &self.host_key)
+            .field("connect_timeout", &self.connect_timeout)
             .finish()
     }
 }
@@ -90,17 +99,31 @@ pub enum HostKeyVerification {
 pub(crate) fn verify_fingerprint(
     policy: &HostKeyVerification,
     host: &str,
+    port: u16,
     fingerprint: &str,
 ) -> Result<bool> {
     match policy {
         HostKeyVerification::AcceptAny => Ok(true),
         HostKeyVerification::Pinned(expected) => Ok(expected == fingerprint),
-        HostKeyVerification::KnownHosts(path) => verify_known_hosts(path, host, fingerprint),
+        HostKeyVerification::KnownHosts(path) => verify_known_hosts(path, host, port, fingerprint),
+    }
+}
+
+/// The known_hosts key for a host: bare `host` on the default SSH port (22),
+/// else `[host]:port` - so a non-standard port never collides with (or is
+/// silently verified against) the port-22 entry for the same hostname.
+fn known_hosts_key(host: &str, port: u16) -> String {
+    if port == 22 {
+        host.to_string()
+    } else {
+        format!("[{host}]:{port}")
     }
 }
 
 #[allow(dead_code)]
-fn verify_known_hosts(path: &Path, host: &str, fingerprint: &str) -> Result<bool> {
+fn verify_known_hosts(path: &Path, host: &str, port: u16, fingerprint: &str) -> Result<bool> {
+    let key = known_hosts_key(host, port);
+
     // SEC-2: distinguish "file absent" (first use -> TOFU) from "file present
     // but unreadable" (any other I/O error -> fail closed, return Err).
     // Using read() + from_utf8_lossy so that real ASCII/hashed lines still
@@ -111,24 +134,63 @@ fn verify_known_hosts(path: &Path, host: &str, fingerprint: &str) -> Result<bool
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => String::new(),
         Err(e) => return Err(e.into()),
     };
+
+    // execkit's own format is `<key> SHA256:<fp>`. Any line whose second field
+    // is not a `SHA256:` fingerprint (e.g. a real OpenSSH known_hosts entry, if
+    // an operator points the path at one) is not ours: it is never matched
+    // against, and never treated as a mismatch. Its mere presence, though,
+    // means this file is not execkit-managed - so an unseen host must not be
+    // silently TOFU-pinned into it (that would mix formats and, for a hashed
+    // OpenSSH file, be unreadable/unsafe to append to).
+    let mut foreign_format = false;
     for line in content.lines() {
         let mut it = line.split_whitespace();
-        if let (Some(h), Some(fp)) = (it.next(), it.next()) {
-            if h == host {
-                // Known host: the fingerprint MUST match. A mismatch is a MITM
-                // signal - reject loudly, never silently re-pin.
-                return Ok(fp == fingerprint);
+        let (Some(h), Some(fp)) = (it.next(), it.next()) else {
+            continue;
+        };
+        if !fp.starts_with("SHA256:") {
+            foreign_format = true;
+            continue;
+        }
+        if h == key {
+            // Known host: the fingerprint MUST match. A mismatch is a MITM
+            // signal - reject loudly, never silently re-pin.
+            return Ok(fp == fingerprint);
+        }
+    }
+
+    if foreign_format {
+        return Err(Error::Transport(format!(
+            "known_hosts file {} is in OpenSSH format; point EXECKIT_MCP_KNOWN_HOSTS at an \
+             execkit-managed file (default ~/.execkit/known_hosts) or pin 'fingerprint'",
+            path.display()
+        )));
+    }
+
+    // Unseen host in an execkit-managed (or absent) file: trust on first use
+    // and pin it. One atomic O_APPEND write so a concurrent reader never sees
+    // a partial line.
+    if let Some(parent) = path.parent() {
+        if !parent.as_os_str().is_empty() && !parent.exists() {
+            std::fs::create_dir_all(parent)?;
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::PermissionsExt;
+                std::fs::set_permissions(parent, std::fs::Permissions::from_mode(0o700))?;
             }
         }
     }
-    // Unseen host: trust on first use and pin it. One atomic O_APPEND write so a
-    // concurrent reader never sees a partial line.
     use std::io::Write;
     let mut f = std::fs::OpenOptions::new()
         .create(true)
         .append(true)
         .open(path)?;
-    f.write_all(format!("{host} {fingerprint}\n").as_bytes())?;
+    f.write_all(format!("{key} {fingerprint}\n").as_bytes())?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600))?;
+    }
     Ok(true)
 }
 
@@ -235,6 +297,7 @@ mod imp {
     struct Handler {
         policy: HostKeyVerification,
         host: String,
+        port: u16,
     }
 
     impl client::Handler for Handler {
@@ -247,7 +310,7 @@ mod imp {
             let fp = server_public_key
                 .fingerprint(russh::keys::ssh_key::HashAlg::Sha256)
                 .to_string();
-            Ok(verify_fingerprint(&self.policy, &self.host, &fp).unwrap_or(false))
+            Ok(verify_fingerprint(&self.policy, &self.host, self.port, &fp).unwrap_or(false))
         }
     }
 
@@ -258,10 +321,21 @@ mod imp {
         let handler = Handler {
             policy: cfg.host_key.clone(),
             host: cfg.host.clone(),
+            port: cfg.port,
         };
-        let mut handle = client::connect(config, (cfg.host.as_str(), cfg.port), handler)
-            .await
-            .map_err(|e| Error::Transport(format!("ssh connect: {e}")))?;
+        let connect_fut = client::connect(config, (cfg.host.as_str(), cfg.port), handler);
+        let mut handle = match tokio::time::timeout(cfg.connect_timeout, connect_fut).await {
+            Ok(Ok(handle)) => handle,
+            Ok(Err(e)) => return Err(Error::Transport(format!("ssh connect: {e}"))),
+            Err(_) => {
+                return Err(Error::Transport(format!(
+                    "ssh: connect to {}:{} timed out after {}s",
+                    cfg.host,
+                    cfg.port,
+                    cfg.connect_timeout.as_secs()
+                )))
+            }
+        };
 
         let result = match &cfg.auth {
             SshAuth::Password(p) => handle
@@ -365,8 +439,8 @@ mod tests {
     #[test]
     fn pinned_matches_only_exact() {
         let p = HostKeyVerification::Pinned("SHA256:abc".into());
-        assert!(verify_fingerprint(&p, "h", "SHA256:abc").unwrap());
-        assert!(!verify_fingerprint(&p, "h", "SHA256:evil").unwrap());
+        assert!(verify_fingerprint(&p, "h", 22, "SHA256:abc").unwrap());
+        assert!(!verify_fingerprint(&p, "h", 22, "SHA256:evil").unwrap());
     }
 
     #[test]
@@ -377,13 +451,13 @@ mod tests {
         let p = HostKeyVerification::KnownHosts(path.clone());
 
         // First sight: accepted (TOFU) and pinned.
-        assert!(verify_fingerprint(&p, "prod-1", "SHA256:good").unwrap());
+        assert!(verify_fingerprint(&p, "prod-1", 22, "SHA256:good").unwrap());
         // Same key again: accepted.
-        assert!(verify_fingerprint(&p, "prod-1", "SHA256:good").unwrap());
+        assert!(verify_fingerprint(&p, "prod-1", 22, "SHA256:good").unwrap());
         // Changed key for a known host: REJECTED (MITM).
-        assert!(!verify_fingerprint(&p, "prod-1", "SHA256:evil").unwrap());
+        assert!(!verify_fingerprint(&p, "prod-1", 22, "SHA256:evil").unwrap());
         // A different host is independent.
-        assert!(verify_fingerprint(&p, "prod-2", "SHA256:other").unwrap());
+        assert!(verify_fingerprint(&p, "prod-2", 22, "SHA256:other").unwrap());
 
         let _ = std::fs::remove_file(&path);
     }
@@ -408,7 +482,7 @@ mod tests {
 
         let p = HostKeyVerification::KnownHosts(path.clone());
         // Present a DIFFERENT (attacker) fingerprint for the already-pinned host.
-        let result = verify_fingerprint(&p, "prod-1", "SHA256:ATTACKER");
+        let result = verify_fingerprint(&p, "prod-1", 22, "SHA256:ATTACKER");
         let _ = std::fs::remove_file(&path);
 
         // Must be Ok(false) (pinned entry found and key mismatched) OR Err.
@@ -428,9 +502,133 @@ mod tests {
 
         // File absent: first sight must be accepted (TOFU).
         assert!(
-            verify_fingerprint(&p, "new-host", "SHA256:firstkey").unwrap(),
+            verify_fingerprint(&p, "new-host", 22, "SHA256:firstkey").unwrap(),
             "TOFU must accept first-ever connection when known_hosts is absent"
         );
         let _ = std::fs::remove_file(&path);
+    }
+
+    fn unique_path(tag: &str) -> PathBuf {
+        std::env::temp_dir().join(format!(
+            "execkit_kh_{tag}_{}_{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ))
+    }
+
+    #[test]
+    fn tofu_writes_bracketed_host_port_key_for_non_default_port() {
+        let path = unique_path("bracket");
+        let _ = std::fs::remove_file(&path);
+
+        assert!(verify_known_hosts(&path, "h", 2222, "SHA256:x").unwrap());
+
+        let content = std::fs::read_to_string(&path).unwrap();
+        assert!(
+            content.contains("[h]:2222 SHA256:x"),
+            "expected bracketed host:port entry, got: {content:?}"
+        );
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn same_host_different_port_is_a_separate_unknown_entry() {
+        let path = unique_path("portsep");
+        let _ = std::fs::remove_file(&path);
+
+        // Pin host "h" on port 2222.
+        assert!(verify_known_hosts(&path, "h", 2222, "SHA256:x").unwrap());
+        // Port 22 for the same host must be treated as unseen -> TOFU accept,
+        // not compared against the port-2222 pin.
+        assert!(verify_known_hosts(&path, "h", 22, "SHA256:y").unwrap());
+
+        let content = std::fs::read_to_string(&path).unwrap();
+        assert!(content.contains("[h]:2222 SHA256:x"));
+        assert!(content.contains("h SHA256:y"));
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn mismatch_on_same_host_and_port_is_rejected() {
+        let path = unique_path("mismatch");
+        let _ = std::fs::remove_file(&path);
+
+        assert!(verify_known_hosts(&path, "h", 2222, "SHA256:good").unwrap());
+        assert!(!verify_known_hosts(&path, "h", 2222, "SHA256:evil").unwrap());
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn openssh_format_file_and_unknown_host_errors_with_guidance() {
+        let path = unique_path("openssh_unknown");
+        std::fs::write(&path, "otherhost ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAA\n").unwrap();
+
+        let err = verify_known_hosts(&path, "newhost", 22, "SHA256:whatever")
+            .expect_err("OpenSSH-format file must block TOFU for an unknown host");
+        let msg = err.to_string();
+        assert!(
+            msg.contains("OpenSSH format"),
+            "error should mention OpenSSH format, got: {msg}"
+        );
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn openssh_line_for_same_host_is_ignored_not_treated_as_mismatch() {
+        let path = unique_path("openssh_sameone");
+        std::fs::write(&path, "samehost ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAA\n").unwrap();
+
+        let result = verify_known_hosts(&path, "samehost", 22, "SHA256:x");
+        // Must NOT be Ok(false) (that would mean we treated the OpenSSH line as
+        // a mismatching execkit pin). Either Err (foreign-format file blocks
+        // TOFU) is correct here.
+        assert!(
+            !matches!(result, Ok(false)),
+            "OpenSSH line must never be treated as a fingerprint mismatch"
+        );
+        assert!(
+            result.is_err(),
+            "expected Err (foreign-format file present)"
+        );
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[cfg(feature = "ssh")]
+    #[test]
+    #[ignore = "requires a network stack that can attempt (and hang on) a TCP \
+        connect to an unused/unroutable address; run explicitly with \
+        `cargo test -p execkit --features ssh -- --ignored ssh_connect_times_out`"]
+    fn ssh_connect_times_out() {
+        use std::time::{Duration, Instant};
+
+        use super::SshTransport;
+
+        let mut cfg = SshConfig::new(
+            "10.255.255.1",
+            "nobody",
+            SshAuth::Password("x".into()),
+            HostKeyVerification::AcceptAny,
+        );
+        cfg.connect_timeout = Duration::from_secs(1);
+
+        let start = Instant::now();
+        let err = match SshTransport::connect(cfg) {
+            Ok(_) => panic!("connect to a black-hole IP must fail"),
+            Err(e) => e,
+        };
+        let elapsed = start.elapsed();
+
+        assert!(
+            elapsed < Duration::from_secs(3),
+            "connect took too long: {elapsed:?}"
+        );
+        let msg = err.to_string();
+        assert!(
+            msg.contains("timed out after 1s"),
+            "expected a timeout message, got: {msg}"
+        );
     }
 }

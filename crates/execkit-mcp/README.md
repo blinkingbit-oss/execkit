@@ -145,7 +145,7 @@ by the **operator at startup** (env vars), not by per-call agent arguments:
 | `EXECKIT_MCP_AUDIT_DIR` | write one JSONL file per session into this directory (`<session_id>-<open_ms>.jsonl`); takes precedence over `EXECKIT_MCP_AUDIT` when both are set | off |
 | `EXECKIT_MCP_AUDIT_RETENTION_DAYS` | delete per-session log files older than this many days at startup (dir mode only); `0` disables | `14` |
 | `EXECKIT_MCP_KEY_DIR` | SSH `key_path` must canonicalize to inside this dir | `~/.ssh` |
-| `EXECKIT_MCP_KNOWN_HOSTS` | SSH host-key verification file (TOFU; rejects changed keys) | `~/.ssh/known_hosts` |
+| `EXECKIT_MCP_KNOWN_HOSTS` | execkit-managed SSH host-key verification file (TOFU; rejects changed keys) | `~/.execkit/known_hosts` |
 | `EXECKIT_MCP_INSECURE_ACCEPT_ANY_HOSTKEY` | **DANGEROUS** - disable host-key checks | unset |
 | `EXECKIT_MCP_MAX_SESSIONS` | soft cap on concurrent live sessions | `64` |
 | `EXECKIT_MCP_SESSION_TTL` | reap sessions idle longer than this many seconds (frees the process + cap slot); `0` disables | `1800` (30 min) |

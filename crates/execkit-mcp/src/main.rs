@@ -21,7 +21,8 @@
 //!   - `EXECKIT_MCP_AUDIT_RETENTION_DAYS` - delete per-session files older than this
 //!     many days at startup (default 14, 0 disables; dir mode only).
 //!   - `EXECKIT_MCP_KEY_DIR`              - dir SSH private keys must live under (default ~/.ssh).
-//!   - `EXECKIT_MCP_KNOWN_HOSTS`          - SSH known_hosts file (default ~/.ssh/known_hosts).
+//!   - `EXECKIT_MCP_KNOWN_HOSTS`          - execkit-managed SSH known_hosts file
+//!     (default ~/.execkit/known_hosts; NOT the OpenSSH ~/.ssh/known_hosts).
 //!   - `EXECKIT_MCP_INSECURE_ACCEPT_ANY_HOSTKEY=1` - DANGEROUS: disable host-key
 //!     verification. Never in production.
 
@@ -119,7 +120,7 @@ impl Config {
                 .unwrap_or_else(|| ssh.clone()),
             known_hosts: std::env::var_os("EXECKIT_MCP_KNOWN_HOSTS")
                 .map(PathBuf::from)
-                .unwrap_or_else(|| ssh.join("known_hosts")),
+                .unwrap_or_else(execkit_mcp::paths::default_known_hosts_path),
             insecure_accept_any: std::env::var_os("EXECKIT_MCP_INSECURE_ACCEPT_ANY_HOSTKEY")
                 .is_some(),
             max_sessions: std::env::var("EXECKIT_MCP_MAX_SESSIONS")
@@ -1078,8 +1079,9 @@ async fn run_server() -> anyhow::Result<()> {
     }
     if std::env::var_os("HOME").is_none() {
         eprintln!(
-            "execkit-mcp: NOTE HOME is unset - SSH key dir / known_hosts default under \
-             /root/.ssh; set EXECKIT_MCP_KEY_DIR / EXECKIT_MCP_KNOWN_HOSTS explicitly."
+            "execkit-mcp: NOTE HOME is unset - SSH key dir defaults under /root/.ssh and \
+             known_hosts under /root/.execkit; set EXECKIT_MCP_KEY_DIR / \
+             EXECKIT_MCP_KNOWN_HOSTS explicitly."
         );
     }
     if config.insecure_accept_any {

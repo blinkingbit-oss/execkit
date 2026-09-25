@@ -18,9 +18,16 @@ pub fn home_dir() -> PathBuf {
 }
 
 /// Default SSH directory (`~/.ssh`). Override the key dir with
-/// `EXECKIT_MCP_KEY_DIR` and the known_hosts file with `EXECKIT_MCP_KNOWN_HOSTS`.
+/// `EXECKIT_MCP_KEY_DIR`.
 pub fn ssh_dir() -> PathBuf {
     home_dir().join(".ssh")
+}
+
+/// Default known_hosts file (`~/.execkit/known_hosts`) - execkit-managed, not
+/// the user's real OpenSSH `~/.ssh/known_hosts`. Override with
+/// `EXECKIT_MCP_KNOWN_HOSTS`.
+pub fn default_known_hosts_path() -> PathBuf {
+    home_dir().join(".execkit").join("known_hosts")
 }
 
 /// Default audit file used when the web viewer is enabled but no audit path is
@@ -73,5 +80,13 @@ mod tests {
         let p = default_viewer_state_path();
         assert!(p.is_absolute());
         assert_eq!(p, home_dir().join(".execkit").join("viewer-state.json"));
+    }
+
+    #[test]
+    fn default_known_hosts_path_is_under_home_execkit_dir_not_ssh() {
+        let p = default_known_hosts_path();
+        assert!(p.is_absolute());
+        assert_eq!(p, home_dir().join(".execkit").join("known_hosts"));
+        assert!(!p.starts_with(ssh_dir()));
     }
 }

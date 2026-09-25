@@ -50,7 +50,7 @@ EXECKIT_MCP_WATCH_WEB             Auto-start the loopback browser viewer and sur
 EXECKIT_MCP_WATCH_PORT            Port for the browser viewer (default 7878; random if taken)
 EXECKIT_MCP_WATCH_OPEN            Also auto-open the browser at the viewer URL (default: link only)
 EXECKIT_MCP_KEY_DIR               Directory SSH keys must live under (default ~/.ssh)
-EXECKIT_MCP_KNOWN_HOSTS           SSH known_hosts file (default ~/.ssh/known_hosts)
+EXECKIT_MCP_KNOWN_HOSTS           execkit-managed SSH known_hosts file (default ~/.execkit/known_hosts)
 EXECKIT_MCP_MAX_SESSIONS          Soft cap on concurrent live sessions (default 64)
 EXECKIT_MCP_SESSION_TTL           Reap sessions idle longer than N seconds (default 1800)
 EXECKIT_MCP_POLICY_FILE           JSON allow/deny + deny_patterns the agent cannot edit (advisory)

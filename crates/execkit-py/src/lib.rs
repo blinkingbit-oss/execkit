@@ -249,16 +249,12 @@ fn build_ssh_config(
     } else if let Some(fp) = pin {
         HostKeyVerification::Pinned(fp)
     } else {
-        let kh = known_hosts.unwrap_or_else(|| "~/.ssh/known_hosts".to_string());
+        let kh = known_hosts.unwrap_or_else(|| "~/.execkit/known_hosts".to_string());
         HostKeyVerification::KnownHosts(expand_tilde(&kh))
     };
-    Ok(SshConfig {
-        host,
-        port,
-        user,
-        auth,
-        host_key,
-    })
+    let mut cfg = SshConfig::new(host, user, auth, host_key);
+    cfg.port = port;
+    Ok(cfg)
 }
 
 /// A persistent, stateful shell session (cwd/env stick across commands).
