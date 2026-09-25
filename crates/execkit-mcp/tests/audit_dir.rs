@@ -138,10 +138,17 @@ fn audit_dir_one_file_per_session() {
         matches!(ms, Some(m) if !m.is_empty() && m.chars().all(|c| c.is_ascii_digit())),
         "filename {file_name:?} should be {sid}-<digits>.jsonl"
     );
-    // The id itself follows the self-identifying scheme: "<number>_local" here.
+    // The id itself follows the self-identifying scheme: "<run>-<number>_local"
+    // here, where <run> is a 4-hex-char prefix chosen once at server start (so
+    // ids from different server runs never collide in the viewer).
+    let (run, rest) = sid.split_once('-').unwrap_or(("", sid.as_str()));
     assert!(
-        sid.starts_with(|c: char| c.is_ascii_digit()) && sid.ends_with("_local"),
-        "session id {sid:?} should be <number>_local"
+        run.len() == 4 && run.chars().all(|c| c.is_ascii_hexdigit()),
+        "session id {sid:?} should start with a 4-hex-char run prefix"
+    );
+    assert!(
+        rest.starts_with(|c: char| c.is_ascii_digit()) && rest.ends_with("_local"),
+        "session id {sid:?} should be <run>-<number>_local"
     );
 
     // Lines are ordered open/exec/close with correct session id and transport.

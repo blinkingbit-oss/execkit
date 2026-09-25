@@ -11,11 +11,27 @@ pub mod tui;
 pub mod web;
 
 use std::io::{IsTerminal, Write};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use crate::watch::render::LineKind;
 use crate::watch::source::Source;
+
+/// If `path`'s parent directory doesn't exist yet, the warning to print to the
+/// operator - they likely pointed `watch` at an audit path before whatever
+/// creates it (the MCP server, or `EXECKIT_MCP_AUDIT_DIR`) has run. Not fatal:
+/// the poll-based tailers already cope with an absent file/dir and pick it up
+/// once it appears, so this is purely informational.
+pub fn missing_parent_warning(path: &Path) -> Option<String> {
+    let parent = path.parent()?;
+    if parent.as_os_str().is_empty() || parent.exists() {
+        return None;
+    }
+    Some(format!(
+        "warning: {} does not exist yet; waiting for it to appear",
+        parent.display()
+    ))
+}
 
 pub fn run(path: PathBuf) -> anyhow::Result<()> {
     if !std::io::stdout().is_terminal() {
@@ -61,5 +77,35 @@ fn ansi(kind: LineKind) -> &'static str {
         LineKind::ExitOk => "32",  // green
         LineKind::ExitErr => "31", // red
         LineKind::Marker => "90",  // dim
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn warns_when_parent_dir_is_missing() {
+        let dir = std::env::temp_dir().join(format!("ek_watch_mod_missing_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let path = dir.join("audit.jsonl");
+        let msg = missing_parent_warning(&path).expect("should warn");
+        assert!(msg.contains(&dir.display().to_string()), "{msg}");
+        assert!(
+            msg.contains("does not exist yet; waiting for it to appear"),
+            "{msg}"
+        );
+    }
+
+    #[test]
+    fn no_warning_when_parent_dir_exists() {
+        let path = std::env::temp_dir().join("audit.jsonl"); // temp_dir() always exists
+        assert!(missing_parent_warning(&path).is_none());
+    }
+
+    #[test]
+    fn no_warning_for_a_bare_relative_filename() {
+        // Path::new("audit.jsonl").parent() is Some("") - not a real dir to warn about.
+        assert!(missing_parent_warning(Path::new("audit.jsonl")).is_none());
     }
 }

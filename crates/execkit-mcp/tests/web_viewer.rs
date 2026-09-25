@@ -144,10 +144,17 @@ fn web_viewer_emits_url_and_streams_sse() {
     // Create a session and run a command; it lands in the audit file the viewer tails.
     m.send(json!({"jsonrpc":"2.0","id":3,"method":"tools/call",
         "params":{"name":"session_create","arguments":{"transport":"local"}}}));
-    m.recv_id(3); // consume session_create response
+    let created = m.recv_id(3);
+    // Session ids carry a random per-run prefix (`<run>-<n>_<label>`), so
+    // pull the real id out of the response instead of assuming "1_local".
+    let sid = created["result"]["content"][0]["text"]
+        .as_str()
+        .and_then(|t| serde_json::from_str::<Value>(t).ok())
+        .and_then(|v| v["session_id"].as_str().map(str::to_string))
+        .expect("session_create returned a session_id");
 
     m.send(json!({"jsonrpc":"2.0","id":4,"method":"tools/call",
-        "params":{"name":"session_exec","arguments":{"session_id":"1_local","command":"echo sse-demo"}}}));
+        "params":{"name":"session_exec","arguments":{"session_id":sid,"command":"echo sse-demo"}}}));
     m.recv_id(4); // consume session_exec response
 
     // Connect to /events and confirm the exec arrives over SSE.

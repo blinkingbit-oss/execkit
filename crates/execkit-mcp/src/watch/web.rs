@@ -211,7 +211,7 @@ async fn handle_conn(mut sock: TcpStream, ctx: Arc<Ctx>) -> std::io::Result<()> 
         .split('&')
         .find_map(|kv| kv.strip_prefix("t="))
         .unwrap_or("");
-    if supplied != ctx.token.as_str() {
+    if !ct_eq(supplied.as_bytes(), ctx.token.as_bytes()) {
         return write_simple(&mut sock, "403 Forbidden", "text/plain", b"403 forbidden\n").await;
     }
 
@@ -259,20 +259,36 @@ async fn handle_conn(mut sock: TcpStream, ctx: Arc<Ctx>) -> std::io::Result<()> 
 fn id_ok(id: &str) -> bool {
     !id.is_empty()
         && id.len() <= 128
-        && id.bytes().enumerate().all(|(i, b)| {
-            b.is_ascii_alphanumeric()
-                || matches!(b, b'@' | b'.' | b':' | b'_' | b'-')
-                || (b == b'_')
-                || (i > 0 && b.is_ascii_digit())
-        })
-        && id.as_bytes()[0].is_ascii_digit()
+        && id
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'@' | b'.' | b':' | b'_' | b'-'))
+        // First char must be alphanumeric (never '.', '-', '@', ':') - ids look
+        // like "<run>-<n>_<label>" (run is a 4-hex-char server-run prefix), so
+        // it need not be a digit.
+        && id.as_bytes()[0].is_ascii_alphanumeric()
+}
+
+/// Constant-time byte comparison (XOR-fold, no early return on mismatch) so the
+/// viewer's token check doesn't leak, via timing, how many leading bytes of a
+/// guessed token matched. Hand-written - no extra dependency for this.
+fn ct_eq(a: &[u8], b: &[u8]) -> bool {
+    if a.len() != b.len() {
+        return false;
+    }
+    let mut diff: u8 = 0;
+    for (x, y) in a.iter().zip(b.iter()) {
+        diff |= x ^ y;
+    }
+    diff == 0
 }
 
 #[derive(serde::Serialize)]
 struct SessionInfo {
     /// Unique handle for this past session = the file stem `<id>-<open_ms>`.
-    /// Session ids reset per server run, so the id alone is NOT unique across
-    /// runs; the key is what /session/<key> resolves.
+    /// Session ids carry a random 4-hex-char prefix chosen once per server
+    /// run (`<run>-<n>_<label>`), so two runs writing to the same audit dir
+    /// never collide on id alone; `key` still disambiguates same-id
+    /// sessions within one run's history and is what /session/<key> resolves.
     key: String,
     id: String,
     label: String,
@@ -704,6 +720,15 @@ mod tests {
             Some(h) => std::env::set_var("HOME", h),
             None => std::env::remove_var("HOME"),
         }
+    }
+
+    #[test]
+    fn ct_eq_matches_equal_rejects_unequal_or_wrong_length() {
+        assert!(ct_eq(b"secrettoken", b"secrettoken"));
+        assert!(!ct_eq(b"secrettoken", b"secrettokeX"));
+        assert!(!ct_eq(b"short", b"shorter"));
+        assert!(!ct_eq(b"", b"x"));
+        assert!(ct_eq(b"", b""));
     }
 
     #[test]

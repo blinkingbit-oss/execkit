@@ -18,25 +18,57 @@ pub fn help() {
 An MCP (stdio) server exposing stateful, structured, safe shell sessions to AI agents.
 
 USAGE:
-  execkit-mcp                          Run the MCP server on stdio (default; how an agent launches it)
-  execkit-mcp setup <client>           Print the config to wire execkit into a client
-                                       client: claude | cursor | gemini
-  execkit-mcp doctor                   Check the local environment and print a report
-  execkit-mcp watch [--follow] <path>  Live, read-only viewer over the audit log
-  execkit-mcp --version                Print version
-  execkit-mcp --help                   Print this help
+  execkit-mcp                                    Run the MCP server on stdio (default; how an agent launches it)
+  execkit-mcp setup <client>                     Print the config to wire execkit into a client
+                                                 client: claude | cursor | gemini | codex | vscode | windsurf
+  execkit-mcp doctor                             Check the local environment and print a report
+  execkit-mcp watch [--follow|--serve [--open]] <path>
+                                                 Live, read-only viewer over the audit log
+                                                 --follow  plain streaming log, no TTY required
+                                                 --serve   token-gated local web viewer
+                                                 --open    (with --serve) open it in the default browser
+                                                 execkit-mcp watch --help  for details
+  execkit-mcp --version | version                Print version
+  execkit-mcp --help                             Print this help
 
 ENVIRONMENT (operator-controlled; see the README):
   EXECKIT_MCP_AUDIT                 Append a JSONL audit log of every command here
   EXECKIT_MCP_AUDIT_DIR             One JSONL file per session in this directory
   EXECKIT_MCP_AUDIT_RETENTION_DAYS  Prune per-session files older than N days (default 14)
+  EXECKIT_MCP_EXEC_TIMEOUT          Default per-call exec timeout in seconds (default 120, clamped 1-3600)
   EXECKIT_MCP_KEY_DIR               Directory SSH keys must live under (default ~/.ssh)
   EXECKIT_MCP_KNOWN_HOSTS           execkit-managed SSH known_hosts file (default ~/.execkit/known_hosts)
   EXECKIT_MCP_MAX_SESSIONS          Soft cap on concurrent live sessions (default 64)
   EXECKIT_MCP_SESSION_TTL           Reap sessions idle longer than N seconds (default 1800)
   EXECKIT_MCP_POLICY_FILE           JSON allow/deny + deny_patterns the agent cannot edit (advisory)
+  EXECKIT_MCP_WATCH_WEB             Start the live web viewer alongside the stdio server (any value)
+  EXECKIT_MCP_WATCH_PORT            Port for the web viewer (default 7878, falls back to a random port)
+  EXECKIT_MCP_WATCH_OPEN            Auto-open the web viewer in the default browser (any value)
 
 Docs: {REPO}
+"
+    );
+}
+
+/// `watch --help`: just the watch section, for someone who already knows the
+/// rest and wants the flags/env vars for this one subcommand.
+pub fn watch_help() {
+    print!(
+        "execkit-mcp watch [--follow|--serve [--open]] <path>
+
+Live, read-only viewer over the audit log (EXECKIT_MCP_AUDIT / EXECKIT_MCP_AUDIT_DIR).
+<path> may be a single audit file or an audit directory (one file per session);
+omit it to use whichever of those two env vars is set.
+
+  execkit-mcp watch <path>                 Interactive TUI (needs a terminal)
+  execkit-mcp watch --follow <path>        Plain streaming log to stdout (no TTY needed)
+  execkit-mcp watch --serve <path>         Serve a token-gated local web viewer
+  execkit-mcp watch --serve --open <path>  ...and open it in the default browser
+
+ENVIRONMENT:
+  EXECKIT_MCP_WATCH_WEB    Start the web viewer alongside the stdio server (any value)
+  EXECKIT_MCP_WATCH_PORT   Port for the web viewer (default 7878, falls back to a random port)
+  EXECKIT_MCP_WATCH_OPEN   Auto-open the web viewer in the default browser (any value)
 "
     );
 }
@@ -55,6 +87,22 @@ fn config_block(bin: &str) -> String {
         "{{
   \"mcpServers\": {{
     \"execkit\": {{ \"command\": \"{bin}\" }}
+  }}
+}}"
+    )
+}
+
+/// TOML snippet for Codex CLI's `~/.codex/config.toml`.
+fn codex_block(bin: &str) -> String {
+    format!("[mcp_servers.execkit]\ncommand = \"{bin}\"")
+}
+
+/// JSON snippet for VS Code's workspace `.vscode/mcp.json`.
+fn vscode_block(bin: &str) -> String {
+    format!(
+        "{{
+  \"servers\": {{
+    \"execkit\": {{ \"type\": \"stdio\", \"command\": \"{bin}\" }}
   }}
 }}"
     )
@@ -84,12 +132,31 @@ pub fn setup(client: Option<&str>) -> anyhow::Result<()> {
             println!("  ~/.gemini/settings.json\n");
             println!("and merge in:\n\n{block}");
         }
+        Some("codex") => {
+            println!("Add execkit to Codex CLI. Edit this file:\n");
+            println!("  ~/.codex/config.toml\n");
+            println!("and add:\n\n{}", codex_block(&bin));
+        }
+        Some("vscode") => {
+            println!("Add execkit to VS Code (workspace-scoped). Edit this file:\n");
+            println!("  .vscode/mcp.json\n");
+            println!("and merge in:\n\n{}", vscode_block(&bin));
+        }
+        Some("windsurf") => {
+            println!("Add execkit to Windsurf. Edit this file:\n");
+            println!("  ~/.codeium/windsurf/mcp_config.json\n");
+            println!("and merge in:\n\n{block}");
+        }
         Some(other) => {
-            eprintln!("execkit-mcp setup: unknown client {other:?}. Use: claude | cursor | gemini");
+            eprintln!(
+                "execkit-mcp setup: unknown client {other:?}. Use: claude | cursor | gemini | codex | vscode | windsurf"
+            );
             std::process::exit(2);
         }
         None => {
-            eprintln!("execkit-mcp setup: name a client. Use: claude | cursor | gemini");
+            eprintln!(
+                "execkit-mcp setup: name a client. Use: claude | cursor | gemini | codex | vscode | windsurf"
+            );
             std::process::exit(2);
         }
     }

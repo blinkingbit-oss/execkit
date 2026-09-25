@@ -420,7 +420,7 @@ impl ExeckitServer {
         };
         match built {
             Ok(session) => {
-                let id = format!("{}_{}", next_num(), label);
+                let id = format!("{}-{}_{}", run_id(), next_num(), label);
                 let audit = self.audit_sink.writer_for(&id);
                 if let Some(a) = &audit {
                     a.open(&id, &transport);
@@ -1107,6 +1107,23 @@ fn next_num() -> u64 {
     COUNTER.fetch_add(1, Ordering::Relaxed)
 }
 
+/// 4 lowercase hex chars, drawn from the system RNG once at server start and
+/// cached for the life of the process. Session ids embed this as
+/// `<run>-<n>_<label>`, so two server runs sharing an audit dir (or the live
+/// viewer across a restart) never produce colliding ids that would merge
+/// unrelated sessions together in the UI.
+fn run_id() -> &'static str {
+    static RUN: std::sync::OnceLock<String> = std::sync::OnceLock::new();
+    RUN.get_or_init(|| {
+        let mut b = [0u8; 2];
+        // Best-effort: on the vanishingly unlikely RNG failure, fall back to a
+        // fixed prefix rather than panicking the whole server over an id
+        // cosmetic - ids stay well-formed either way.
+        let _ = getrandom::fill(&mut b);
+        b.iter().map(|x| format!("{x:02x}")).collect()
+    })
+}
+
 /// Filename- and log-safe rendering of an agent-provided value: keep
 /// `[A-Za-z0-9._-]`, replace anything else (notably `/`) with `_`, and cap the
 /// length. The session id derived from this becomes an audit FILENAME, so this
@@ -1174,7 +1191,7 @@ fn main() -> anyhow::Result<()> {
     // stdio server. An unknown first arg is a human typo, so help + exit.
     match args.get(1).map(String::as_str) {
         None => {}
-        Some("--version") | Some("-V") => {
+        Some("--version") | Some("-V") | Some("version") => {
             cli::version();
             return Ok(());
         }
@@ -1185,8 +1202,12 @@ fn main() -> anyhow::Result<()> {
         Some("setup") => return cli::setup(args.get(2).map(String::as_str)),
         Some("doctor") => return cli::doctor(),
         Some("watch") => {
-            // `--follow`/`-f` streams plain lines (no TTY); otherwise the TUI.
             let rest = &args[2..];
+            if rest.iter().any(|a| a == "--help" || a == "-h") {
+                cli::watch_help();
+                return Ok(());
+            }
+            // `--follow`/`-f` streams plain lines (no TTY); otherwise the TUI.
             let follow = rest.iter().any(|a| a == "--follow" || a == "-f");
             let do_serve = rest.iter().any(|a| a == "--serve");
             let do_open = rest.iter().any(|a| a == "--open");
@@ -1198,6 +1219,9 @@ fn main() -> anyhow::Result<()> {
                 .or_else(|| std::env::var_os("EXECKIT_MCP_AUDIT").map(std::path::PathBuf::from));
             match path {
                 Some(p) => {
+                    if let Some(msg) = watch::missing_parent_warning(&p) {
+                        eprintln!("{msg}");
+                    }
                     if do_serve {
                         return tokio::runtime::Runtime::new()?.block_on(async move {
                             let token = watch::web::gen_token()?;

@@ -2,7 +2,9 @@
 //! Drives the built binary's operator subcommands (--version, --help, setup,
 //! doctor) and asserts their output and exit codes. These are commands a human
 //! at a terminal would type; the no-arg server path is covered by mcp_e2e.
+use std::io::Read;
 use std::process::Command;
+use std::time::Duration;
 
 fn run(args: &[&str]) -> (String, String, i32) {
     let out = Command::new(env!("CARGO_BIN_EXE_execkit-mcp"))
@@ -66,6 +68,127 @@ fn setup_cursor_and_gemini_name_their_files() {
     let (gemini, _, c2) = run(&["setup", "gemini"]);
     assert_eq!(c2, 0);
     assert!(gemini.contains(".gemini/settings.json"), "got {gemini:?}");
+}
+
+#[test]
+fn setup_codex_prints_toml_snippet() {
+    let (stdout, _, code) = run(&["setup", "codex"]);
+    assert_eq!(code, 0);
+    assert!(stdout.contains(".codex/config.toml"), "got {stdout:?}");
+    assert!(stdout.contains("[mcp_servers.execkit]"), "got {stdout:?}");
+    assert!(stdout.contains("command ="), "got {stdout:?}");
+}
+
+#[test]
+fn setup_vscode_prints_mcp_json_snippet() {
+    let (stdout, _, code) = run(&["setup", "vscode"]);
+    assert_eq!(code, 0);
+    assert!(stdout.contains(".vscode/mcp.json"), "got {stdout:?}");
+    assert!(stdout.contains("\"servers\""), "got {stdout:?}");
+    assert!(stdout.contains("\"type\": \"stdio\""), "got {stdout:?}");
+}
+
+#[test]
+fn setup_windsurf_prints_mcp_config_snippet() {
+    let (stdout, _, code) = run(&["setup", "windsurf"]);
+    assert_eq!(code, 0);
+    assert!(
+        stdout.contains(".codeium/windsurf/mcp_config.json"),
+        "got {stdout:?}"
+    );
+    assert!(stdout.contains("\"mcpServers\""), "got {stdout:?}");
+}
+
+#[test]
+fn version_word_works_like_dash_capital_v() {
+    let (stdout, _, code) = run(&["version"]);
+    assert_eq!(code, 0);
+    let (expected, _, _) = run(&["--version"]);
+    assert_eq!(stdout, expected);
+}
+
+#[test]
+fn help_lists_watch_flags_and_new_env_vars() {
+    let (stdout, _, code) = run(&["--help"]);
+    assert_eq!(code, 0);
+    for needle in [
+        "--serve",
+        "--open",
+        "EXECKIT_MCP_EXEC_TIMEOUT",
+        "EXECKIT_MCP_WATCH_WEB",
+        "EXECKIT_MCP_WATCH_PORT",
+        "EXECKIT_MCP_WATCH_OPEN",
+        "EXECKIT_MCP_KNOWN_HOSTS",
+    ] {
+        assert!(stdout.contains(needle), "help missing {needle:?}");
+    }
+}
+
+#[test]
+fn watch_help_prints_watch_section() {
+    let (stdout, _, code) = run(&["watch", "--help"]);
+    assert_eq!(code, 0);
+    assert!(stdout.contains("--serve"), "got {stdout:?}");
+    assert!(stdout.contains("EXECKIT_MCP_WATCH_PORT"), "got {stdout:?}");
+    // a focused section, not the full top-level usage
+    assert!(!stdout.contains("setup <client>"), "got {stdout:?}");
+}
+
+#[test]
+fn watch_on_missing_parent_dir_warns() {
+    let dir = std::env::temp_dir().join(format!("ek_watch_missing_{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    let path = dir.join("audit.jsonl"); // dir itself does not exist
+
+    let mut child = Command::new(env!("CARGO_BIN_EXE_execkit-mcp"))
+        .args(["watch", "--follow", path.to_str().unwrap()])
+        .env_remove("EXECKIT_MCP_AUDIT")
+        .env_remove("EXECKIT_MCP_AUDIT_DIR")
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+        .expect("spawn watch --follow");
+
+    // Read stderr on a background thread, sending the accumulated text so far
+    // on every chunk; the main thread polls with a deadline (the child never
+    // exits on its own - `--follow` loops until killed).
+    let mut stderr = child.stderr.take().unwrap();
+    let (tx, rx) = std::sync::mpsc::channel::<String>();
+    std::thread::spawn(move || {
+        let mut buf = [0u8; 4096];
+        let mut acc = String::new();
+        loop {
+            match stderr.read(&mut buf) {
+                Ok(0) | Err(_) => break,
+                Ok(n) => {
+                    acc.push_str(&String::from_utf8_lossy(&buf[..n]));
+                    if tx.send(acc.clone()).is_err() {
+                        break;
+                    }
+                }
+            }
+        }
+    });
+
+    let expected = format!(
+        "warning: {} does not exist yet; waiting for it to appear",
+        dir.display()
+    );
+    let deadline = std::time::Instant::now() + Duration::from_secs(5);
+    let mut found = false;
+    while std::time::Instant::now() < deadline {
+        match rx.recv_timeout(Duration::from_millis(200)) {
+            Ok(acc) if acc.contains(&expected) => {
+                found = true;
+                break;
+            }
+            Ok(_) => continue,
+            Err(_) => continue,
+        }
+    }
+    let _ = child.kill();
+    let _ = child.wait();
+    assert!(found, "expected stderr to contain {expected:?}");
 }
 
 #[test]

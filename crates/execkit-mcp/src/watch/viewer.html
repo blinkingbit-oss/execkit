@@ -524,8 +524,9 @@
   // ---
 
   function parseId(id) {
-    // {num}_{transport}_{detail} ; local has no detail
-    const m = String(id).match(/^(\d+)_([a-z]+)(?:_(.*))?$/);
+    // {run}-{num}_{transport}_{detail} ; run is a 4-hex-char per-server-run
+    // prefix (so ids never collide across runs); local has no detail.
+    const m = String(id).match(/^[0-9a-f]{4}-(\d+)_([a-z]+)(?:_(.*))?$/);
     if (!m) return { num: 0, transport: "other", label: id };
     const transport = m[2];
     const label = transport === "local" ? "local" : (m[3] || transport);
