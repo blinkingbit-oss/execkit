@@ -90,10 +90,12 @@ fn patterns() -> &'static [Pattern] {
             // only `v` is redacted and the rest of the command stays readable.
             // The value must also END at a boundary - end of text,
             // whitespace, a quote, or one of `;&|,)` - which is captured and
-            // put back (no look-around in `regex`). A value that runs into
-            // `(`, `<`, `[`, `{` or `.` is code, not a secret: `cfg.get("x")`,
-            // `Option<String>`, `vec[0]`, `self.token.clone()` stay intact.
-            // A bare identifier value (TS `password: string`) still matches.
+            // put back (no look-around in `regex`). The value may not contain
+            // `(`, `<`, `[` or `{`, and `.` is not a boundary, so code stays
+            // intact: `cfg.get("x")`, `Option<String>`, `vec[0]`,
+            // `self.token.clone()`. `.` inside a value is fine (`a.b` at a
+            // boundary is redacted). A bare identifier value (TS
+            // `password: string`) still matches.
             templated(
                 r#"(?i)\b((?:[a-z0-9_]*_)?(?:password|passwd|secret|token|api[_-]?key|access[_-]?key|private[_-]?key)["']?\s*[:=]\s*["']?)[^\s"';&|,)(<\[{]{4,}($|[\s"';&|,)])"#,
                 "${1}[REDACTED]${2}",
