@@ -20,6 +20,10 @@ pub struct ExecResult {
     /// Present only when a non-default budget shaped this result.
     #[serde(skip_serializing_if = "Option::is_none", default)]
     pub budget: Option<BudgetReport>,
+    /// True if the command outlived its timeout and was interrupted with
+    /// Ctrl-C (`exit_code` is then 124). The session is still usable.
+    #[serde(default)]
+    pub timed_out: bool,
 }
 
 /// A snapshot of shell state carried alongside results.

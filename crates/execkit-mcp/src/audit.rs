@@ -171,6 +171,7 @@ mod tests {
                 cwd: "/root".into(),
                 truncated: false,
                 budget: None,
+                timed_out: false,
             },
         );
         w.close("sess_1", "destroyed");

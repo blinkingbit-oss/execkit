@@ -21,6 +21,8 @@ use execkit_core::{
 
 // Exception hierarchy: base ExeckitError, with SessionUnusable grouping the
 // poisoned-session errors so callers can catch "make a new session" in one arm.
+// `Timeout` is raised only when a timed-out command could not be interrupted;
+// an interruptible timeout returns an ExecResult with `timed_out=True`.
 create_exception!(execkit, ExeckitError, PyException);
 create_exception!(execkit, PolicyViolation, ExeckitError);
 create_exception!(execkit, TransportError, ExeckitError);
@@ -65,16 +67,21 @@ struct ExecResult {
     cwd: String,
     #[pyo3(get)]
     truncated: bool,
+    /// True if the command outlived its timeout and was interrupted with
+    /// Ctrl-C (`exit_code` is then 124); the session is still usable.
+    #[pyo3(get)]
+    timed_out: bool,
 }
 
 #[pymethods]
 impl ExecResult {
     fn __repr__(&self) -> String {
         format!(
-            "ExecResult(exit_code={}, cwd={:?}, truncated={}, stdout_len={}, stderr_len={})",
+            "ExecResult(exit_code={}, cwd={:?}, truncated={}, timed_out={}, stdout_len={}, stderr_len={})",
             self.exit_code,
             self.cwd,
             self.truncated,
+            if self.timed_out { "True" } else { "False" },
             self.stdout.len(),
             self.stderr.len()
         )
@@ -91,6 +98,7 @@ impl From<execkit_core::ExecResult> for ExecResult {
             duration_ms: r.duration_ms,
             cwd: r.cwd,
             truncated: r.truncated,
+            timed_out: r.timed_out,
         }
     }
 }
@@ -168,12 +176,7 @@ fn apply_opts(
         s = s.with_policy(p.to_rust());
     }
     if let Some(t) = timeout {
-        if !t.is_finite() || t < 0.0 {
-            return Err(PyValueError::new_err(
-                "timeout must be a non-negative number of seconds",
-            ));
-        }
-        s = s.with_timeout(Duration::from_secs_f64(t));
+        s = s.with_timeout(to_duration(t)?);
     }
     if let Some(m) = max_output_bytes {
         s = s.with_max_output(m);
@@ -182,6 +185,16 @@ fn apply_opts(
         s = s.with_output_budget(b);
     }
     Ok(s)
+}
+
+/// Validate a timeout in seconds.
+fn to_duration(t: f64) -> PyResult<Duration> {
+    if !t.is_finite() || t < 0.0 {
+        return Err(PyValueError::new_err(
+            "timeout must be a non-negative number of seconds",
+        ));
+    }
+    Ok(Duration::from_secs_f64(t))
 }
 
 /// Expand a leading `~`/`~/` to `$HOME` (the Rust core takes raw paths and does
@@ -387,32 +400,44 @@ impl Session {
     }
 
     /// Run a command and return a structured result. Releases the GIL while the
-    /// command runs. Per-call budget kwargs override the session default.
-    #[pyo3(signature = (command, *, tail=None, head=None, grep=None, max_chars=None))]
+    /// command runs.
+    ///
+    /// `timeout` (seconds) overrides the session timeout for this call. A
+    /// command that outlives it is interrupted with Ctrl-C and returned with
+    /// `timed_out=True` and exit code 124; the session stays usable. Only a
+    /// command that cannot be interrupted raises `Timeout` (and poisons the
+    /// session). Budget kwargs `tail`, `head`, `grep` and `max_chars` shape
+    /// this call's output and override the session default.
+    #[pyo3(signature = (command, *, timeout=None, tail=None, head=None, grep=None, max_chars=None))]
+    #[allow(clippy::too_many_arguments)]
     fn exec(
         &self,
         py: Python<'_>,
         command: String,
+        timeout: Option<f64>,
         tail: Option<usize>,
         head: Option<usize>,
         grep: Option<String>,
         max_chars: Option<usize>,
     ) -> PyResult<ExecResult> {
+        let timeout = timeout.map(to_duration).transpose()?;
         let budget = build_budget(tail, head, grep, max_chars);
         let mut guard = self.inner.lock().unwrap();
         let s = guard
             .as_mut()
             .ok_or_else(|| ExeckitError::new_err("session is closed"))?;
         let r = py
-            .detach(|| match &budget {
-                Some(b) => s.exec_budgeted(&command, b),
-                None => s.exec(&command),
+            .detach(|| match (timeout, &budget) {
+                (Some(t), b) => s.exec_with_timeout(&command, b.as_ref(), t),
+                (None, Some(b)) => s.exec_budgeted(&command, b),
+                (None, None) => s.exec(&command),
             })
             .map_err(map_err)?;
         Ok(r.into())
     }
 
-    /// True if a prior timeout left the session unusable (or it is closed).
+    /// True if the session is unusable: a timed-out command could not be
+    /// interrupted, the shell exited, or the session is closed.
     #[getter]
     fn is_poisoned(&self) -> bool {
         self.inner

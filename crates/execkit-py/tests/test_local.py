@@ -79,11 +79,32 @@ def test_output_budget_grep_kwarg_filters():
         assert "apple" not in r.stdout
 
 
-def test_timeout_raises_timeout_and_poisons_session():
+def test_timeout_interrupts_and_keeps_session():
+    with Session.local(timeout=1.0) as s:
+        s.exec("cd /tmp")
+        r = s.exec("echo started; sleep 5")
+        assert r.timed_out is True
+        assert r.exit_code == 124
+        assert "started" in r.stdout
+        assert s.is_poisoned is False
+        after = s.exec("pwd")
+        assert (after.stdout, after.timed_out) == ("/tmp", False)
+
+
+def test_per_call_timeout_overrides_session_default():
+    with Session.local(timeout=1.0) as s:
+        r = s.exec("sleep 2; echo done", timeout=5.0)
+        assert (r.stdout, r.timed_out) == ("done", False)
+        assert s.exec("sleep 5", timeout=0.5).timed_out is True
+        with pytest.raises(ValueError):
+            s.exec("true", timeout=-1.0)
+
+
+def test_uninterruptible_timeout_raises_timeout_and_poisons_session():
     with Session.local(timeout=1.0) as s:
         assert s.is_poisoned is False
         with pytest.raises(Timeout) as ei:
-            s.exec("sleep 5")
+            s.exec("sh -c 'trap \"\" INT; sleep 20'")
         # Timeout is a SessionUnusable is an ExeckitError
         assert isinstance(ei.value, SessionUnusable)
         assert isinstance(ei.value, ExeckitError)

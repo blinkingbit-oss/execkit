@@ -26,8 +26,9 @@ pub struct Session {
     max_output: usize,
     /// Default budget applied to every `exec` that does not pass its own.
     output_budget: Option<Budget>,
-    /// Set after a timeout: the prior command is still running and would desync
-    /// framing, so the session refuses further commands.
+    /// Set when a timed-out command could not be interrupted (or the shell
+    /// exited): its later output would desync framing, so the session refuses
+    /// further commands.
     poisoned: bool,
     /// Some only for remote (ssh/docker) sessions; None for local.
     checkpointer: Option<Checkpointer>,
@@ -115,6 +116,11 @@ impl Session {
         self
     }
 
+    /// Change the per-command completion timeout on a live session.
+    pub fn set_timeout(&mut self, timeout: Duration) {
+        self.timeout = timeout;
+    }
+
     /// Cap the (char) size of returned stdout/stderr; also bounds in-memory
     /// accumulation so a flooding command can't exhaust RAM.
     pub fn with_max_output(mut self, max: usize) -> Self {
@@ -128,29 +134,52 @@ impl Session {
         self
     }
 
-    /// True if a prior timeout left the session unusable.
+    /// True if the session is unusable: a timed-out command could not be
+    /// interrupted, or the shell exited.
     pub fn is_poisoned(&self) -> bool {
         self.poisoned
     }
 
     /// Run a command and return a structured [`ExecResult`].
     ///
-    /// On a completion timeout this returns [`Error::StillRunning`] and poisons
-    /// the session (subsequent calls return [`Error::SessionPoisoned`]). If the
+    /// If the command outlives the session timeout, execkit sends Ctrl-C,
+    /// resyncs the shell and returns `Ok` with `timed_out: true` and exit code
+    /// 124; the session (cwd, env) stays usable. Only if the command cannot be
+    /// interrupted does this return [`Error::StillRunning`] and poison the
+    /// session (subsequent calls return [`Error::SessionPoisoned`]). If the
     /// shell itself exits (e.g. the command ran `exit`), it returns
     /// [`Error::ShellExited`] and likewise poisons the session.
     pub fn exec(&mut self, command: &str) -> Result<ExecResult> {
-        let budget = self.output_budget.clone().unwrap_or_default();
-        self.exec_inner(command, &budget)
+        self.exec_with_timeout(command, None, self.timeout)
     }
 
     /// Like [`Session::exec`], but shape this command's output with `budget`
     /// (overrides any session-default budget).
     pub fn exec_budgeted(&mut self, command: &str, budget: &Budget) -> Result<ExecResult> {
-        self.exec_inner(command, budget)
+        self.exec_with_timeout(command, Some(budget), self.timeout)
     }
 
-    fn exec_inner(&mut self, command: &str, budget: &Budget) -> Result<ExecResult> {
+    /// Like [`Session::exec`], with an explicit `timeout` for this call only
+    /// and an optional `budget` (`None` uses the session-default budget).
+    pub fn exec_with_timeout(
+        &mut self,
+        command: &str,
+        budget: Option<&Budget>,
+        timeout: Duration,
+    ) -> Result<ExecResult> {
+        let budget = match budget {
+            Some(b) => b.clone(),
+            None => self.output_budget.clone().unwrap_or_default(),
+        };
+        self.exec_inner(command, &budget, timeout)
+    }
+
+    fn exec_inner(
+        &mut self,
+        command: &str,
+        budget: &Budget,
+        timeout: Duration,
+    ) -> Result<ExecResult> {
         if self.poisoned {
             return Err(Error::SessionPoisoned);
         }
@@ -170,7 +199,7 @@ impl Session {
             return Err(Error::SessionPoisoned);
         }
         let started = Instant::now();
-        let f = self.run_framed(command)?;
+        let f = self.run_framed_for(command, timeout)?;
         let (stdout, rep_out, cap_out) =
             budget::apply(&redact(&f.stdout), budget, self.max_output)?;
         let (stderr, rep_err, cap_err) =
@@ -196,6 +225,7 @@ impl Session {
                 || rep_err.lines_kept < rep_err.lines_total
                 || f.overflowed,
             budget: report,
+            timed_out: f.timed_out,
         };
         if let Some(a) = &self.audit {
             if let Err(e) = a.record(&result) {
@@ -464,10 +494,26 @@ impl Session {
         Ok(())
     }
 
+    /// [`Session::run_framed_for`] with the session timeout, for execkit's own
+    /// commands (checkpoints, probes). A timeout is an error here: partial
+    /// output from an interrupted internal command must not be parsed as a
+    /// result. The session itself stays usable.
+    fn run_framed(&mut self, command: &str) -> Result<Framed> {
+        let f = self.run_framed_for(command, self.timeout)?;
+        if f.timed_out {
+            return Err(Error::Transport(format!(
+                "internal command timed out after {}s and was interrupted",
+                self.timeout.as_secs_f64()
+            )));
+        }
+        Ok(f)
+    }
+
     /// Run one command through the sentinel framing; return raw cleaned output.
     /// No policy, redaction, bounding, audit, or auto-snapshot - callers add what
-    /// they need. Poisons the session on timeout.
-    fn run_framed(&mut self, command: &str) -> Result<Framed> {
+    /// they need. On timeout it interrupts and resyncs (see [`Session::exec`]);
+    /// it poisons the session only if that fails or the shell exits.
+    fn run_framed_for(&mut self, command: &str, timeout: Duration) -> Result<Framed> {
         // SEC: a fresh token per command, so a marker seen (or guessed) during
         // one command is useless for forging the next one's result.
         let token = framing::new_token();
@@ -478,28 +524,25 @@ impl Session {
         let max_acc = self.max_output.saturating_mul(2).max(65_536);
         let mut acc: Vec<u8> = Vec::new();
         let mut overflowed = false;
-        let deadline = Instant::now() + self.timeout;
+        let deadline = Instant::now() + timeout;
 
         loop {
-            let now = Instant::now();
-            if now >= deadline {
-                self.poisoned = true;
-                return Err(Error::StillRunning);
+            let remaining = deadline.saturating_duration_since(Instant::now());
+            if remaining.is_zero() {
+                return self.interrupt(acc, &markers, overflowed, timeout);
             }
-            let chunk = match self.io.recv_timeout(deadline - now) {
+            let chunk = match self.io.recv_timeout(remaining) {
                 Some(c) => c,
+                // None at the deadline is a plain timeout.
+                None if Instant::now() >= deadline => {
+                    return self.interrupt(acc, &markers, overflowed, timeout);
+                }
                 None => {
-                    self.poisoned = true;
                     // None with time still on the clock means the channel closed
                     // (the shell exited - e.g. the command ran `exit`), which is a
-                    // distinct, immediately-clear failure from a real timeout. A
-                    // disconnect that races the deadline ties to StillRunning; both
-                    // poison the session, so the tie-break is harmless.
-                    return Err(if Instant::now() >= deadline {
-                        Error::StillRunning
-                    } else {
-                        Error::ShellExited
-                    });
+                    // distinct, immediately-clear failure from a timeout.
+                    self.poisoned = true;
+                    return Err(Error::ShellExited);
                 }
             };
             acc.extend_from_slice(&chunk);
@@ -519,7 +562,89 @@ impl Session {
                     exit_code: p.exit_code,
                     cwd: p.cwd,
                     overflowed,
+                    timed_out: false,
                 });
+            }
+        }
+    }
+
+    /// The deadline passed: send Ctrl-C, resync the shell, and report the
+    /// output captured so far as a timed-out result. If the shell does not
+    /// come back, poison the session and return [`Error::StillRunning`].
+    ///
+    /// `shell_init` turned job control off (`set +m`), so the command runs in
+    /// the shell's process group: the `\x03` sends SIGINT to it, and the shell
+    /// abandons the rest of the run line (the trailer never prints). The
+    /// resync removes the stderr temp file that trailer would have removed.
+    fn interrupt(
+        &mut self,
+        acc: Vec<u8>,
+        markers: &Markers,
+        overflowed: bool,
+        timeout: Duration,
+    ) -> Result<Framed> {
+        let Ok(cwd) = self.resync() else {
+            self.poisoned = true;
+            return Err(Error::StillRunning);
+        };
+        // The command may have finished just as the deadline hit, leaving a
+        // partial trailer in `acc`: keep only what precedes it.
+        let out = match acc
+            .windows(markers.start.len())
+            .position(|w| w == markers.start.as_bytes())
+        {
+            Some(i) => &acc[..i],
+            None => &acc[..],
+        };
+        Ok(Framed {
+            stdout: crate::output::clean(&String::from_utf8_lossy(out)),
+            stderr: format!(
+                "execkit: timed out after {}s; sent Ctrl-C. The shell session is intact \
+                 (cwd/env kept). For long jobs run them in the background: \
+                 nohup CMD > /tmp/job.log 2>&1 & then poll the log.",
+                timeout.as_secs_f64()
+            ),
+            exit_code: 124,
+            cwd,
+            overflowed,
+            timed_out: true,
+        })
+    }
+
+    /// Write Ctrl-C, then run a cleanup command under a fresh token and wait
+    /// up to 5 s for its end marker. Everything before it (the interrupted
+    /// command's late output, a `^C` echo) is discarded. Returns the cwd.
+    ///
+    /// The interrupted run line left its stderr temp file behind (its trailer
+    /// never ran). Its path is still in `$__ek_f`, but the resync's own run
+    /// line reassigns `__ek_f` before the cleanup command runs, so the path is
+    /// saved to `__ek_x` on a line of its own first.
+    fn resync(&mut self) -> Result<String> {
+        const SAVE: &[u8] = b"{ __ek_x=$__ek_f; } 2>/dev/null\n";
+        const RESYNC: &str = "rm -f \"$__ek_x\" 2>/dev/null; unset __ek_x __ek_c __ek_f";
+        const CAP: usize = 65_536;
+        self.io.write_all(b"\x03")?;
+        self.io.write_all(SAVE)?;
+        let token = framing::new_token();
+        let markers = Markers::new(&token);
+        self.io
+            .write_all(framing::build_payload(RESYNC, &token).as_bytes())?;
+        let deadline = Instant::now() + Duration::from_secs(5);
+        let mut acc: Vec<u8> = Vec::new();
+        loop {
+            let remaining = deadline.saturating_duration_since(Instant::now());
+            if remaining.is_zero() {
+                return Err(Error::StillRunning);
+            }
+            let chunk = self.io.recv_timeout(remaining).ok_or(Error::StillRunning)?;
+            acc.extend_from_slice(&chunk);
+            // A still-flooding command must not grow this without bound; the
+            // resync block is small and always at the tail.
+            if acc.len() > CAP {
+                acc.drain(..acc.len() - CAP / 2);
+            }
+            if let Some(p) = framing::parse(&acc, &markers) {
+                return Ok(p.cwd);
             }
         }
     }
@@ -532,6 +657,7 @@ struct Framed {
     exit_code: i32,
     cwd: String,
     overflowed: bool,
+    timed_out: bool,
 }
 
 /// Docker container names/ids: first char alphanumeric, then `[A-Za-z0-9_.-]`.

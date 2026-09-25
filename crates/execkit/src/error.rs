@@ -18,22 +18,22 @@ pub enum Error {
     #[error("pty/transport error: {0}")]
     Transport(String),
 
-    /// Command did not finish before the session timeout (still running, or
-    /// waiting for input). The session is poisoned afterward (see below) - the
-    /// pending command would corrupt subsequent reads.
-    #[error("command still running (timed out before completion)")]
+    /// A command outlived its timeout and could not be interrupted (Ctrl-C and
+    /// a resync did not bring the shell back). The session is poisoned and
+    /// closed to further commands. (An interruptible timeout is not an error:
+    /// it returns `Ok` with `ExecResult::timed_out` set.)
+    #[error("command timed out and could not be interrupted; the session was closed - create a new session")]
     StillRunning,
 
     /// The shell process exited and closed the session's channel (for example the
     /// command ran `exit`). Distinct from a timeout: it surfaces immediately. The
     /// session is unusable; create a new one.
-    #[error("shell exited and closed the session; create a new session")]
+    #[error("shell exited and closed the session; create a new session (a command ran 'exit', or 'set -e' hit a failing command)")]
     ShellExited,
 
-    /// The session is unusable: a prior command timed out while still running,
-    /// so its later output would desync framing. Create a new session.
-    /// (v0.x will replace poisoning with interrupt + resync.)
-    #[error("session poisoned by a prior timeout; create a new session")]
+    /// The session is unusable: a prior command could not be interrupted after
+    /// a timeout, or the shell exited. Create a new session.
+    #[error("session is no longer usable (a command could not be interrupted, or the shell exited); create a new session")]
     SessionPoisoned,
 
     /// Blocked by the advisory policy before reaching the shell.

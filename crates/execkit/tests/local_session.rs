@@ -50,21 +50,17 @@ fn policy_blocks_before_execution() {
 }
 
 #[test]
-fn session_is_poisoned_after_timeout() {
+fn timeout_is_interrupted_not_poisoned() {
     let mut s = Session::local()
         .unwrap()
         .with_timeout(Duration::from_millis(400));
-    // A command that outlives the timeout returns StillRunning...
-    assert!(matches!(
-        s.exec("sleep 3").unwrap_err(),
-        execkit::Error::StillRunning
-    ));
-    // ...and the session refuses further work instead of silently corrupting.
-    assert!(s.is_poisoned());
-    assert!(matches!(
-        s.exec("echo hi").unwrap_err(),
-        execkit::Error::SessionPoisoned
-    ));
+    // A command that outlives the timeout is interrupted and reported...
+    let r = s.exec("sleep 3").unwrap();
+    assert!(r.timed_out);
+    assert_eq!(r.exit_code, 124);
+    // ...and the session keeps working.
+    assert!(!s.is_poisoned());
+    assert_eq!(s.exec("echo hi").unwrap().stdout, "hi");
 }
 
 #[test]

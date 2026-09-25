@@ -38,7 +38,26 @@ fn docker_exec_roundtrip() {
     assert!(r.stdout.contains("[REDACTED]"), "stdout was {:?}", r.stdout);
 }
 
-/// Dropping a docker session (here after a timeout) must reap the in-container
+/// A timeout in busybox sh inside the container sends Ctrl-C and resyncs;
+/// the session keeps working.
+#[test]
+fn docker_timeout_interrupts_and_keeps_session() {
+    let Ok(container) = std::env::var("EXECKIT_TEST_DOCKER") else {
+        eprintln!("skip: set EXECKIT_TEST_DOCKER=<container> to run");
+        return;
+    };
+    let mut s = Session::docker(&container)
+        .expect("docker session")
+        .with_timeout(std::time::Duration::from_secs(1));
+    s.exec("cd /tmp").unwrap();
+    let r = s.exec("sleep 30").expect("timeout is not an error");
+    assert!(r.timed_out, "{r:?}");
+    assert_eq!(r.exit_code, 124);
+    let r = s.exec("echo ok").expect("session survives");
+    assert_eq!((r.stdout.as_str(), r.cwd.as_str()), ("ok", "/tmp"));
+}
+
+/// Dropping a docker session (here after an uninterruptible timeout) must reap the in-container
 /// shell + the still-running command - killing only the local `docker exec`
 /// client would leave them alive in the container.
 #[test]
@@ -51,9 +70,12 @@ fn docker_drop_reaps_in_container_processes() {
         let mut s = Session::docker(&container)
             .expect("docker session")
             .with_timeout(std::time::Duration::from_millis(400));
-        // Foreground command that outlives the timeout: the session poisons with
-        // this still running in the container.
-        assert!(s.exec("sleep 31459").is_err(), "expected a timeout");
+        // Foreground command that outlives the timeout and ignores Ctrl-C: the
+        // session poisons with this still running in the container.
+        assert!(
+            s.exec("sh -c 'trap \"\" INT; sleep 31459'").is_err(),
+            "expected an uninterruptible timeout"
+        );
     } // drop -> best-effort cleanup kills the in-container tree
     std::thread::sleep(std::time::Duration::from_millis(900));
     // Count survivors via /proc (busybox-safe); `[3]1459` avoids matching the probe.
