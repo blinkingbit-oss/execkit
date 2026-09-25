@@ -163,17 +163,27 @@ fn web_viewer_emits_url_and_streams_sse() {
         .split_once("/events?t=")
         .map(|(h, t)| (h.trim_start_matches("http://"), t))
         .unwrap();
-    let mut found = false;
+    let mut found = None;
     for _ in 0..40 {
         if let Ok(body) = sse_read(host_port, token, Duration::from_millis(500)) {
             if body.contains("echo sse-demo") {
-                found = true;
+                found = Some(body);
                 break;
             }
         }
         std::thread::sleep(Duration::from_millis(100));
     }
-    assert!(found, "expected the exec to stream over SSE");
+    let body = found.expect("expected the exec to stream over SSE");
+    // Every streamed line carries its display time (unix ms) for the viewer's
+    // per-command timestamps.
+    let prompt = body
+        .lines()
+        .filter_map(|l| l.strip_prefix("data: "))
+        .filter_map(|d| serde_json::from_str::<Value>(d).ok())
+        .find(|v| v["kind"] == json!("prompt"))
+        .expect("a prompt line over SSE");
+    let ts = prompt["ts"].as_u64().expect("prompt line has a numeric ts");
+    assert!(ts > 1_600_000_000_000, "ts should be unix ms: {ts}");
 
     let _ = std::fs::remove_file(&audit);
 }

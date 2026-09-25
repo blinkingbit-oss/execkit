@@ -59,9 +59,20 @@ session, a command, or your files. What you get:
 
 ![The browser viewer: sessions grouped by transport on the left, a colored shell transcript on the right, and a status bar with the selected session's details](./assets/demo-1-main.png)
 
-- **Sidebar** grouped by transport (`local` / `ssh` / `docker`); a group header
-  shows its session count, a session row shows its command count, and the active
-  session is highlighted.
+- **Sidebar** grouped by transport (`local` / `ssh` / `docker`), then by host or
+  target inside each transport (the ssh host or alias such as `etlstage`, the
+  docker container, or `local`). Each group header shows its session count.
+  Every session gets its own row: start time (with the date when it is not
+  today), `#<n>`, the `user@host` label or your alias, the command count, and a
+  green (live) or grey (closed) dot. The History list uses the same grouping.
+- **Timestamps**: each command line starts with the local time it started, for
+  example `[19:19:22] /tmp $ echo hi`; hover it for the full date, time and
+  timezone offset. The audit log records an exec event when the command
+  finishes, so the viewer shows `ts - duration_ms`. The opened, closed and
+  blocked lines show their event time. A `-- YYYY-MM-DD --` line marks a date
+  change, and the first one also appears at the top when a session did not start
+  today. Exports and screenshots include the same times (JSON exports keep the
+  raw `ts` in unix milliseconds plus the local time).
 - **Colored transcript** with a header legend (`cmd` / `out` / `err` / `ok`).
   Click a legend item to show or hide that line type.
 - **Search**: press `/` to find within the transcript, step matches with `Enter`

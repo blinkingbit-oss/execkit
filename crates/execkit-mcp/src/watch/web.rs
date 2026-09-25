@@ -14,6 +14,7 @@ use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::broadcast;
 
+use crate::audit::AuditEvent;
 use crate::watch::meta;
 use crate::watch::render::{render_event, LineKind, StyledLine};
 use crate::watch::source::Source;
@@ -92,14 +93,35 @@ fn kind_str(k: LineKind) -> &'static str {
     }
 }
 
-/// One SSE message: a rendered line tagged with its session id.
-fn wire_json(session: &str, line: &StyledLine) -> String {
+/// The time (unix ms) the viewer shows for an event's lines. An exec event's
+/// `ts` is written when the result is recorded, i.e. after the command
+/// finished, so the command's start time is `ts - duration_ms`; every other
+/// event uses its own `ts`.
+fn display_ts(ev: &AuditEvent) -> u64 {
+    match ev {
+        AuditEvent::Exec {
+            ts, duration_ms, ..
+        } => ts.saturating_sub(*duration_ms),
+        AuditEvent::Open { ts, .. }
+        | AuditEvent::Close { ts, .. }
+        | AuditEvent::Blocked { ts, .. } => *ts,
+    }
+}
+
+/// One rendered line on the wire (SSE and /session/<key>): the line tagged
+/// with its session id and its event's display time (`ts`, unix ms).
+fn wire_value(session: &str, ts: u64, line: &StyledLine) -> serde_json::Value {
     serde_json::json!({
         "session": session,
         "kind": kind_str(line.kind),
         "text": line.text,
+        "ts": ts,
     })
-    .to_string()
+}
+
+/// One SSE message.
+fn wire_json(session: &str, ts: u64, line: &StyledLine) -> String {
+    wire_value(session, ts, line).to_string()
 }
 
 /// Bind 127.0.0.1 on an ephemeral port, tail `path` through Source, render each
@@ -128,8 +150,9 @@ pub async fn serve(
             loop {
                 for ev in source.poll() {
                     let session = ev.session().to_string();
+                    let ts = display_ts(&ev);
                     for line in render_event(&ev) {
-                        let msg = wire_json(&session, &line);
+                        let msg = wire_json(&session, ts, &line);
                         lock(&backlog).push(msg.clone());
                         let _ = tx.send(msg); // Err only if no subscribers; ignore.
                     }
@@ -385,11 +408,12 @@ fn session_transcript(audit: &Path, key: &str) -> Option<Vec<u8>> {
     let text = std::fs::read_to_string(&file).ok()?;
     let mut lines = Vec::new();
     for l in text.lines() {
-        if let Ok(ev) = serde_json::from_str::<crate::audit::AuditEvent>(l) {
+        if let Ok(ev) = serde_json::from_str::<AuditEvent>(l) {
             let session = ev.session().to_string();
+            let ts = display_ts(&ev);
             for sl in render_event(&ev) {
                 // reuse the same wire shape as live
-                lines.push(serde_json::json!({"session": session, "kind": kind_str(sl.kind), "text": sl.text}));
+                lines.push(wire_value(&session, ts, &sl));
             }
         }
     }
@@ -634,6 +658,9 @@ mod tests {
             ev.contains("\"session\":\"1_local\""),
             "session tag missing: {ev}"
         );
+        // exec ts 2, duration 3: the start time saturates at 0
+        assert!(ev.contains("\"ts\":1"), "open ts missing: {ev}");
+        assert!(ev.contains("\"ts\":0"), "exec start ts missing: {ev}");
 
         let _ = std::fs::remove_file(&path);
     }
@@ -674,10 +701,51 @@ mod tests {
             text: "/tmp $ ls".into(),
             kind: LineKind::Prompt,
         };
-        let v: serde_json::Value = serde_json::from_str(&wire_json("1_local", &line)).unwrap();
+        let v: serde_json::Value =
+            serde_json::from_str(&wire_json("1_local", 1_700_000_000_000, &line)).unwrap();
         assert_eq!(v["session"], "1_local");
         assert_eq!(v["kind"], "prompt");
         assert_eq!(v["text"], "/tmp $ ls");
+        assert_eq!(v["ts"], 1_700_000_000_000u64);
+    }
+
+    #[test]
+    fn display_ts_is_start_time_for_exec_and_event_time_otherwise() {
+        let exec = AuditEvent::Exec {
+            ts: 10_000,
+            session: "1_local".into(),
+            transport: "local".into(),
+            command: "sleep 3".into(),
+            stdout: String::new(),
+            stderr: String::new(),
+            exit_code: 0,
+            duration_ms: 3_000,
+            cwd: "/tmp".into(),
+            truncated: false,
+            timed_out: false,
+        };
+        assert_eq!(display_ts(&exec), 7_000);
+        let open = AuditEvent::Open {
+            ts: 5,
+            session: "1_local".into(),
+            transport: "local".into(),
+        };
+        assert_eq!(display_ts(&open), 5);
+        // a bogus duration larger than ts cannot underflow
+        let odd = AuditEvent::Exec {
+            ts: 1,
+            session: "1_local".into(),
+            transport: "local".into(),
+            command: "x".into(),
+            stdout: String::new(),
+            stderr: String::new(),
+            exit_code: 0,
+            duration_ms: 50,
+            cwd: "/".into(),
+            truncated: false,
+            timed_out: false,
+        };
+        assert_eq!(display_ts(&odd), 0);
     }
 
     #[tokio::test]
@@ -787,6 +855,10 @@ mod tests {
         // resolve by the unique key (stem), not the bare id
         let tr = http_get(addr, &format!("/session/1_local-100?t={token}"), 400).await;
         assert!(tr.contains("/tmp $ echo hi"), "transcript: {tr}");
+        // each line carries its display time: the open marker at its ts, the
+        // exec lines at their start time (ts 101 - duration 3 = 98)
+        assert!(tr.contains("\"ts\":100"), "open ts: {tr}");
+        assert!(tr.contains("\"ts\":98"), "exec start ts: {tr}");
 
         // the bare id (no timestamp) no longer resolves a file -> 404
         let bare = http_get(addr, &format!("/session/1_local?t={token}"), 400).await;

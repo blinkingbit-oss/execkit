@@ -34,8 +34,14 @@
   .srow.sel { background: #243044; color: #fff; }
   .srow.closed { color: #6b7280; }
   .srow .lbl { overflow: hidden; text-overflow: ellipsis; flex: 1; }
-  .srow .dot { width: 7px; height: 7px; border-radius: 50%; background: #98c379; flex-shrink: 0; visibility: hidden; }
-  .srow.sel .dot { visibility: visible; }
+  .srow .stime, .hrow .stime { color: #6b7280; font-size: 11px; flex-shrink: 0; }
+  .srow.sel .stime, .hrow.sel .stime { color: #8a93a3; }
+  /* Level 2 (host) groups sit inside a transport group, one indent deeper. */
+  .grp.host > .ghdr { padding-left: 20px; }
+  .grp.host .srow { padding-left: 34px; }
+  .grp.host .hrow { padding-left: 34px; }
+  .srow .dot { width: 7px; height: 7px; border-radius: 50%; background: #98c379; flex-shrink: 0; }
+  .srow.closed .dot { background: #4b5263; }
   .srow .kept-mark { color: #e5c07b; font-size: 10px; flex-shrink: 0; }
   .srow .pin-mark { color: #61afef; font-size: 10px; flex-shrink: 0; }
   .dots-btn { background: none; border: none; color: #6b7280; cursor: pointer; padding: 0 4px; font-size: 13px; line-height: 1; flex-shrink: 0; display: none; font-family: inherit; }
@@ -51,6 +57,7 @@
   .stderr, .exit_err { color: #e06c75; }
   .exit_ok { color: #98c379; }
   .marker { color: #6b7280; }
+  .tstamp { color: #6b7280; font-weight: normal; }
   /* History section */
   .hist-hdr { padding: 6px 10px 4px; color: #8a93a3; font-size: 11px; display: flex; align-items: center; justify-content: space-between; border-top: 1px solid #222; margin-top: 4px; }
   .hist-hdr .hhdr-label { text-transform: uppercase; letter-spacing: 0.5px; }
@@ -189,9 +196,71 @@
     return n;
   }
 
-  // session id -> { lines:[{kind,text}], closed:bool, transport, label }
+  // --- Timestamps ---
+  // Each line from the server carries `ts` (unix ms), the display time of the
+  // audit event it came from. For a command that is its START time: the audit
+  // `ts` is written when the result is recorded, so the server sends
+  // ts - duration_ms. Open / close / blocked lines use the event's own time.
+  function pad2(n) { return (n < 10 ? "0" : "") + n; }
+  function ymd(d) { return d.getFullYear() + "-" + pad2(d.getMonth() + 1) + "-" + pad2(d.getDate()); }
+  function hms(d) { return pad2(d.getHours()) + ":" + pad2(d.getMinutes()) + ":" + pad2(d.getSeconds()); }
+  function tzOffset(d) {
+    const m = -d.getTimezoneOffset(), a = Math.abs(m);
+    return (m >= 0 ? "+" : "-") + pad2(Math.floor(a / 60)) + ":" + pad2(a % 60);
+  }
+  // Full local date-time with seconds and offset, e.g. "2026-09-26 00:49:22 +05:30".
+  function fullTime(ms) { const d = new Date(ms); return ymd(d) + " " + hms(d) + " " + tzOffset(d); }
+  function dayOf(ms) { return ymd(new Date(ms)); }
+  function today() { return ymd(new Date()); }
+  // Sidebar start time: "HH:MM:SS" today, "MM-DD HH:MM:SS" on another day.
+  function startLabel(ms) {
+    if (!ms) return "";
+    const d = new Date(ms);
+    return ymd(d) === today() ? hms(d) : ymd(d).slice(5) + " " + hms(d);
+  }
+
+  // Lines that get a "[HH:MM:SS] " prefix: command prompts, blocked attempts,
+  // and the opened / closed markers.
+  function stamped(l) {
+    if (typeof l.ts !== "number" || l.ts <= 0) return false;
+    if (l.kind === "prompt") return true;
+    if (l.kind === "marker") return l.text.indexOf("-- opened") === 0 || l.text.indexOf("-- closed") === 0;
+    return l.kind === "exit_err" && l.text.indexOf("! blocked") === 0;
+  }
+
+  // Display rows for one line. `prevDay` is the local date of the previous
+  // stamped line (null if none yet). A "-- YYYY-MM-DD --" separator row goes
+  // before a stamped line whose date differs from prevDay; before the first
+  // one when its date is not today (or always, with `firstDate`, for exports).
+  function lineRows(l, prevDay, firstDate) {
+    if (!stamped(l)) return [{ kind: l.kind, text: l.text }];
+    const day = dayOf(l.ts);
+    const out = [];
+    const brk = prevDay === null ? (firstDate || day !== today()) : day !== prevDay;
+    if (brk) out.push({ kind: "marker", text: "-- " + day + " --", sep: true });
+    out.push({ kind: l.kind, text: l.text, stamp: hms(new Date(l.ts)), full: fullTime(l.ts) });
+    return out;
+  }
+  function displayRows(lines, firstDate) {
+    const rows = [];
+    let prev = null;
+    for (const l of lines) {
+      for (const r of lineRows(l, prev, firstDate)) rows.push(r);
+      if (stamped(l)) prev = dayOf(l.ts);
+    }
+    return rows;
+  }
+  function rowText(r) { return r.stamp ? "[" + r.stamp + "] " + r.text : r.text; }
+
+  // Map of session id to { lines:[{kind,text,ts}], closed:bool, transport, host, label,
+  //                 num, firstTs, lastDay }
   const sessions = new Map();
-  const openGroups = new Set(["local","ssh","docker"]); // groups expanded by default
+  // Expanded sidebar groups, keyed by transport ("ssh") and transport/host
+  // ("ssh/etlstage"); history groups use the same keys prefixed "hist:". A key
+  // gets its default (transport: local/ssh/docker open, other closed; host:
+  // open) the first time it is seen, then keeps whatever the user toggled.
+  const openGroups = new Set();
+  const seenGroups = new Set();
   let selected = null;
 
   // --- Metadata (display-only: alias, pinned, keep, sidebar width) ---
@@ -219,9 +288,10 @@
 
   // --- Screenshot helper ---
   function screenshot(id, label, lines) {
+    lines = displayRows(lines, true);
     const pad = 12, lh = 18, cw = 7.8, font = "13px ui-monospace, Menlo, Consolas, monospace";
     const colors = { prompt: "#56b6c2", stdout: "#c8ccd4", stderr: "#e06c75", exit_ok: "#98c379", exit_err: "#e06c75", marker: "#6b7280" };
-    const maxLen = lines.reduce(function(m, l) { return Math.max(m, l.text.length); }, label.length + 4);
+    const maxLen = lines.reduce(function(m, l) { return Math.max(m, rowText(l).length); }, label.length + 4 + id.length);
     const cv = document.createElement("canvas");
     cv.width = Math.ceil(pad * 2 + maxLen * cw);
     cv.height = pad * 2 + lh * (lines.length + 1);
@@ -229,13 +299,22 @@
     x.fillStyle = "#11141a"; x.fillRect(0, 0, cv.width, cv.height);
     x.font = font; x.textBaseline = "top";
     x.fillStyle = "#e6e9ef"; x.fillText(label + "  (" + id + ")", pad, pad);
-    lines.forEach(function(l, i) { x.fillStyle = colors[l.kind] || "#c8ccd4"; x.fillText(l.text, pad, pad + lh * (i + 1)); });
+    lines.forEach(function(l, i) {
+      const y = pad + lh * (i + 1);
+      let tx = pad;
+      if (l.stamp) {
+        const st = "[" + l.stamp + "] ";
+        x.fillStyle = colors.marker; x.fillText(st, tx, y);
+        tx += x.measureText(st).width;
+      }
+      x.fillStyle = colors[l.kind] || "#c8ccd4"; x.fillText(l.text, tx, y);
+    });
     cv.toBlob(function(b) { if (b) { const fn = safeName(id, "png"); triggerDownload(URL.createObjectURL(b), fn); setStatus("Saved " + fn); } });
   }
 
   // --- Export helpers ---
-  function toMd(label, id, lines) {
-    return "# " + label + " - " + id + "\n\n" + "```text\n" + lines.map(function(l) { return l.text; }).join("\n") + "\n```\n";
+  function toMd(label, id, rows) {
+    return "# " + label + " - " + id + "\n\n" + "```text\n" + rows.map(rowText).join("\n") + "\n```\n";
   }
 
   // Robust download: append to the DOM (Firefox needs the anchor connected) and
@@ -269,13 +348,22 @@
     const parsed = parseId(id);
     const label = md.alias || parsed.label;
     const lines = s.lines;
+    // Text exports carry the same "[HH:MM:SS] " prefixes and date separators as
+    // the transcript, with the date always shown at the top (a file has no
+    // "today"). JSON keeps each line's raw `ts` (unix ms) plus its local time.
+    const rows = displayRows(lines, true);
     const fn = safeName(id, ext);
     if (ext === "txt" || ext === "log") {
-      download(fn, "text/plain", lines.map(function(l) { return l.text; }).join("\n"));
+      download(fn, "text/plain", rows.map(rowText).join("\n"));
     } else if (ext === "md") {
-      download(fn, "text/markdown", toMd(label, id, lines));
+      download(fn, "text/markdown", toMd(label, id, rows));
     } else if (ext === "json") {
-      download(fn, "application/json", JSON.stringify(lines, null, 2));
+      const out = lines.map(function(l) {
+        const o = { kind: l.kind, text: l.text };
+        if (typeof l.ts === "number" && l.ts > 0) { o.ts = l.ts; o.time = fullTime(l.ts); }
+        return o;
+      });
+      download(fn, "application/json", JSON.stringify(out, null, 2));
     }
     setStatus("Exported " + fn);
   }
@@ -492,33 +580,89 @@
       return 0;
     });
 
-    for (const entry of visible) {
-      const md = mds[entry.id] || {};
-      const displayLabel = md.alias || entry.label;
-      const row = document.createElement("div");
-      row.className = "hrow" + (histSelected === "history:" + entry.key ? " sel" : "");
-      row.title = entry.key;
-
-      if (md.pinned) {
-        const pm = document.createElement("span"); pm.className = "hpin"; pm.textContent = "*"; pm.title = "pinned";
-        row.appendChild(pm);
-      }
-      const ll = document.createElement("span"); ll.className = "hlbl"; ll.textContent = displayLabel;
-      row.appendChild(ll);
-      if (md.keep) {
-        const km = document.createElement("span"); km.className = "hkeep"; km.textContent = "K"; km.title = "kept";
-        row.appendChild(km);
-      }
-      const lastMs = entry.last_ms || entry.started_ms;
-      const tm = document.createElement("span"); tm.className = "htime"; tm.textContent = relTime(lastMs);
-      tm.title = "Last activity: " + fmtAbs(lastMs);
-      row.appendChild(tm);
-
-      row.onclick = () => openHistSession(entry);
-      section.appendChild(row);
-    }
-
+    const items = visible.map(function (entry) {
+      const p = parseId(entry.id);
+      return { entry: entry, transport: p.transport, host: p.host, num: p.num, label: entry.label };
+    });
+    renderTree(section, items, "hist:", histRow, null);
     sidebarEl.appendChild(section);
+  }
+
+  // One history row: [pin] start time, #n, label, [K], relative last activity.
+  function histRow(it) {
+    const entry = it.entry;
+    const md = (meta.sessions || {})[entry.id] || {};
+    const row = document.createElement("div");
+    row.className = "hrow" + (histSelected === "history:" + entry.key ? " sel" : "");
+    row.title = entry.key;
+    if (md.pinned) {
+      const pm = document.createElement("span"); pm.className = "hpin"; pm.textContent = "*"; pm.title = "pinned";
+      row.appendChild(pm);
+    }
+    const st = document.createElement("span"); st.className = "stime";
+    st.textContent = startLabel(entry.started_ms);
+    st.title = entry.started_ms ? "Started " + fullTime(entry.started_ms) : "";
+    row.appendChild(st);
+    const ll = document.createElement("span"); ll.className = "hlbl";
+    ll.textContent = "#" + it.num + "  " + (md.alias || entry.label);
+    row.appendChild(ll);
+    if (md.keep) {
+      const km = document.createElement("span"); km.className = "hkeep"; km.textContent = "K"; km.title = "kept";
+      row.appendChild(km);
+    }
+    const lastMs = entry.last_ms || entry.started_ms;
+    const tm = document.createElement("span"); tm.className = "htime"; tm.textContent = relTime(lastMs);
+    tm.title = "Last activity: " + fmtAbs(lastMs);
+    row.appendChild(tm);
+    row.onclick = () => openHistSession(entry);
+    return row;
+  }
+
+  // A collapsible group: header (arrow + text) and a list. Toggling flips the
+  // class in place and records the state in openGroups (no re-render).
+  function groupEl(key, text, defOpen, host) {
+    if (!seenGroups.has(key)) { seenGroups.add(key); if (defOpen) openGroups.add(key); }
+    const grp = document.createElement("div");
+    grp.className = "grp" + (host ? " host" : "") + (openGroups.has(key) ? " open" : "");
+    const hdr = document.createElement("div");
+    hdr.className = "ghdr";
+    const arrow = document.createElement("span"); arrow.className = "arrow";
+    const name = document.createElement("span"); name.textContent = text;
+    hdr.appendChild(arrow); hdr.appendChild(name);
+    hdr.onclick = function () {
+      if (openGroups.has(key)) openGroups.delete(key); else openGroups.add(key);
+      grp.classList.toggle("open", openGroups.has(key));
+    };
+    grp.appendChild(hdr);
+    const list = document.createElement("div"); list.className = "glist";
+    grp.appendChild(list);
+    return { el: grp, list: list };
+  }
+
+  // Sidebar tree: transport, then host, then one row per session (never merged).
+  // `items` carry {transport, host}; groups appear in first-seen order and
+  // `sortFn` (optional) orders the rows inside each host group.
+  function renderTree(parent, items, keyPrefix, rowFn, sortFn) {
+    const tree = new Map();
+    for (const it of items) {
+      if (!tree.has(it.transport)) tree.set(it.transport, new Map());
+      const hosts = tree.get(it.transport);
+      if (!hosts.has(it.host)) hosts.set(it.host, []);
+      hosts.get(it.host).push(it);
+    }
+    for (const [transport, hosts] of tree) {
+      let n = 0;
+      for (const list of hosts.values()) n += list.length;
+      const tkey = keyPrefix + transport;
+      const tg = groupEl(tkey, transport + " (" + n + ")", ["local", "ssh", "docker"].indexOf(transport) >= 0, false);
+      for (const [host, list] of hosts) {
+        const hg = groupEl(tkey + "/" + host, host + " (" + list.length + ")", true, true);
+        const rows = sortFn ? list.slice().sort(sortFn) : list;
+        for (const it of rows) hg.list.appendChild(rowFn(it));
+        tg.list.appendChild(hg.el);
+      }
+      parent.appendChild(tg.el);
+    }
   }
 
   // ---
@@ -530,10 +674,24 @@
     // may still carry pre-run-prefix ids like "1_local", and those must
     // still group by transport instead of falling into "other".
     const m = String(id).match(/^(?:[0-9a-f]{4}-)?(\d+)_([a-z]+)(?:_(.*))?$/);
-    if (!m) return { num: 0, transport: "other", label: id };
+    if (!m) return { num: 0, transport: "other", label: id, host: "other" };
     const transport = m[2];
     const label = transport === "local" ? "local" : (m[3] || transport);
-    return { num: parseInt(m[1], 10), transport, label };
+    return { num: parseInt(m[1], 10), transport, label, host: hostOf(transport, label) };
+  }
+
+  // Sidebar level 2 (host / target) from the id's label. The label's host part
+  // is the same sanitized name as the transport string's ("ssh:etlstage" and
+  // "ssh_ec2-user@etlstage" both give "etlstage"), so ids alone are enough and
+  // old audit files without a host in their transport still group correctly.
+  // ssh: the part after "@", without a ":port" suffix; docker: the container.
+  function hostOf(transport, label) {
+    if (transport === "local") return "local";
+    if (transport === "ssh") {
+      const at = label.lastIndexOf("@");
+      return (at >= 0 ? label.slice(at + 1) : label).replace(/:\d+$/, "") || "ssh";
+    }
+    return label || transport;
   }
 
   function setTitle() {
@@ -545,137 +703,128 @@
     titleEl.textContent = displayLabel + (s.closed ? "  (closed)" : "  (active)");
   }
 
+  // One live session row: dot (live / closed), start time, #n, label or alias,
+  // command count, pin / keep marks, and the 3-dots menu button.
+  function liveRow(id) {
+    const s = sessions.get(id);
+    const md = (meta.sessions || {})[id] || {};
+    const displayLabel = md.alias || s.label;
+
+    const row = document.createElement("div");
+    row.className = "srow" + (id === selected ? " sel" : "") + (s.closed ? " closed" : "");
+    row.title = id;
+
+    const dot = document.createElement("span"); dot.className = "dot";
+    dot.title = s.closed ? "closed" : "live";
+
+    if (id === editingId) {
+      // Inline rename input
+      const input = document.createElement("input");
+      input.type = "text";
+      input.className = "rename-input";
+      input.value = md.alias || s.label;
+      input.addEventListener("mousedown", (e) => e.stopPropagation());
+      input.addEventListener("click", (e) => e.stopPropagation());
+      let committed = false;
+      function commitRename() {
+        if (committed) return;
+        committed = true;
+        const trimmed = input.value.trim();
+        if (!meta.sessions[id]) meta.sessions[id] = {};
+        if (trimmed === "") {
+          delete meta.sessions[id].alias;
+        } else {
+          meta.sessions[id].alias = trimmed;
+        }
+        editingId = null;
+        saveMeta();
+        setStatus(trimmed === "" ? "Name cleared" : "Renamed to " + trimmed);
+        renderSidebar();
+      }
+      function cancelRename() {
+        if (committed) return;
+        committed = true;
+        editingId = null;
+        renderSidebar();
+      }
+      input.addEventListener("keydown", (e) => {
+        if (e.key === "Enter") { e.preventDefault(); commitRename(); }
+        else if (e.key === "Escape") { e.preventDefault(); cancelRename(); }
+      });
+      input.addEventListener("blur", () => commitRename());
+      row.appendChild(dot);
+      row.appendChild(input);
+      // Pin marker still shown during edit
+      if (md.pinned) {
+        const pm = document.createElement("span");
+        pm.className = "pin-mark";
+        pm.textContent = "*";
+        pm.title = "pinned";
+        row.appendChild(pm);
+      }
+      // Focus+select after DOM is painted
+      requestAnimationFrame(() => { input.focus(); input.select(); });
+    } else {
+      const st = document.createElement("span");
+      st.className = "stime";
+      st.textContent = startLabel(s.firstTs);
+      st.title = s.firstTs ? "Started " + fullTime(s.firstTs) : "";
+      const lbl = document.createElement("span");
+      lbl.className = "lbl";
+      const cc = cmdCount(s.lines);
+      lbl.textContent = "#" + s.num + "  " + displayLabel + " (" + cc + (cc === 1 ? " cmd)" : " cmds)");
+      lbl.title = cc + (cc === 1 ? " command" : " commands");
+
+      // Pin marker
+      if (md.pinned) {
+        const pm = document.createElement("span");
+        pm.className = "pin-mark";
+        pm.textContent = "*";
+        pm.title = "pinned";
+        row.appendChild(dot); row.appendChild(st); row.appendChild(lbl); row.appendChild(pm);
+      } else {
+        row.appendChild(dot); row.appendChild(st); row.appendChild(lbl);
+      }
+    }
+
+    // Keep marker
+    if (md.keep) {
+      const km = document.createElement("span");
+      km.className = "kept-mark";
+      km.textContent = "K";
+      km.title = "kept";
+      row.appendChild(km);
+    }
+
+    // 3-dots overflow button
+    const dotsBtn = document.createElement("button");
+    dotsBtn.className = "dots-btn";
+    dotsBtn.title = "Session options";
+    dotsBtn.onclick = (e) => { e.stopPropagation(); openMenu(id, dotsBtn); };
+    row.appendChild(dotsBtn);
+
+    row.onclick = (e) => { if (e.target === dotsBtn) return; selected = id; histSelected = null; renderAll(); refreshSelectionStatus(); };
+    return row;
+  }
+
   function renderSidebar() {
     closeMenu();
-    // group sessions by transport, preserving insertion order within a group
-    const groups = new Map();
-    for (const [id, s] of sessions) {
-      if (!groups.has(s.transport)) groups.set(s.transport, []);
-      groups.get(s.transport).push(id);
+    const mds = meta.sessions || {};
+    const items = [];
+    for (const [id, s] of sessions) items.push({ id: id, transport: s.transport, host: s.host });
+    // Inside a host group: pinned first, then by start time (insertion order
+    // when a start time is missing).
+    function liveSort(a, b) {
+      const pa = !!(mds[a.id] || {}).pinned, pb = !!(mds[b.id] || {}).pinned;
+      if (pa !== pb) return pa ? -1 : 1;
+      const ta = sessions.get(a.id).firstTs, tb = sessions.get(b.id).firstTs;
+      return (ta && tb) ? ta - tb : 0;
     }
     // Detach history section before clearing so we can reattach it cheaply.
     const histNode = document.getElementById("hist-section");
     if (histNode) histNode.remove();
     sidebarEl.textContent = "";
-    for (const [transport, ids] of groups) {
-      // Sort: pinned first, then by original insertion order
-      const sorted = [...ids].sort((a, b) => {
-        const pa = !!((meta.sessions || {})[a] || {}).pinned;
-        const pb = !!((meta.sessions || {})[b] || {}).pinned;
-        if (pa && !pb) return -1;
-        if (!pa && pb) return 1;
-        return 0; // preserve original order
-      });
-
-      const grp = document.createElement("div");
-      grp.className = "grp" + (openGroups.has(transport) ? " open" : "");
-      const hdr = document.createElement("div");
-      hdr.className = "ghdr";
-      const arrow = document.createElement("span"); arrow.className = "arrow";
-      const name = document.createElement("span"); name.textContent = transport + " (" + ids.length + ")";
-      hdr.appendChild(arrow); hdr.appendChild(name);
-      hdr.onclick = () => { if (openGroups.has(transport)) openGroups.delete(transport); else openGroups.add(transport); renderSidebar(); };
-      grp.appendChild(hdr);
-      const list = document.createElement("div"); list.className = "glist";
-      for (const id of sorted) {
-        const s = sessions.get(id);
-        const md = (meta.sessions || {})[id] || {};
-        const displayLabel = md.alias || s.label;
-
-        const row = document.createElement("div");
-        row.className = "srow" + (id === selected ? " sel" : "") + (s.closed ? " closed" : "");
-        row.title = id;
-
-        const dot = document.createElement("span"); dot.className = "dot";
-
-        if (id === editingId) {
-          // Inline rename input
-          const input = document.createElement("input");
-          input.type = "text";
-          input.className = "rename-input";
-          input.value = md.alias || s.label;
-          input.addEventListener("mousedown", (e) => e.stopPropagation());
-          input.addEventListener("click", (e) => e.stopPropagation());
-          let committed = false;
-          function commitRename() {
-            if (committed) return;
-            committed = true;
-            const trimmed = input.value.trim();
-            if (!meta.sessions[id]) meta.sessions[id] = {};
-            if (trimmed === "") {
-              delete meta.sessions[id].alias;
-            } else {
-              meta.sessions[id].alias = trimmed;
-            }
-            editingId = null;
-            saveMeta();
-            setStatus(trimmed === "" ? "Name cleared" : "Renamed to " + trimmed);
-            renderSidebar();
-          }
-          function cancelRename() {
-            if (committed) return;
-            committed = true;
-            editingId = null;
-            renderSidebar();
-          }
-          input.addEventListener("keydown", (e) => {
-            if (e.key === "Enter") { e.preventDefault(); commitRename(); }
-            else if (e.key === "Escape") { e.preventDefault(); cancelRename(); }
-          });
-          input.addEventListener("blur", () => commitRename());
-          row.appendChild(dot);
-          row.appendChild(input);
-          // Pin marker still shown during edit
-          if (md.pinned) {
-            const pm = document.createElement("span");
-            pm.className = "pin-mark";
-            pm.textContent = "*";
-            pm.title = "pinned";
-            row.appendChild(pm);
-          }
-          // Focus+select after DOM is painted
-          requestAnimationFrame(() => { input.focus(); input.select(); });
-        } else {
-          const lbl = document.createElement("span");
-          lbl.className = "lbl";
-          const cc = cmdCount(s.lines);
-          lbl.textContent = displayLabel + " (" + cc + ")";
-          lbl.title = cc + (cc === 1 ? " command" : " commands");
-
-          // Pin marker
-          if (md.pinned) {
-            const pm = document.createElement("span");
-            pm.className = "pin-mark";
-            pm.textContent = "*";
-            pm.title = "pinned";
-            row.appendChild(dot); row.appendChild(lbl); row.appendChild(pm);
-          } else {
-            row.appendChild(dot); row.appendChild(lbl);
-          }
-        }
-
-        // Keep marker
-        if (md.keep) {
-          const km = document.createElement("span");
-          km.className = "kept-mark";
-          km.textContent = "K";
-          km.title = "kept";
-          row.appendChild(km);
-        }
-
-        // 3-dots overflow button
-        const dotsBtn = document.createElement("button");
-        dotsBtn.className = "dots-btn";
-        dotsBtn.title = "Session options";
-        dotsBtn.onclick = (e) => { e.stopPropagation(); openMenu(id, dotsBtn); };
-        row.appendChild(dotsBtn);
-
-        row.onclick = (e) => { if (e.target === dotsBtn) return; selected = id; histSelected = null; renderAll(); refreshSelectionStatus(); };
-        list.appendChild(row);
-      }
-      grp.appendChild(list);
-      sidebarEl.appendChild(grp);
-    }
+    renderTree(sidebarEl, items, "", function (it) { return liveRow(it.id); }, liveSort);
     // Reattach history section (detached above to survive the textContent clear).
     // If it exists, just re-append it; otherwise do a full render.
     if (histNode) { sidebarEl.appendChild(histNode); } else { renderHistory(); }
@@ -719,10 +868,19 @@
     if (from < text.length) span.appendChild(document.createTextNode(text.slice(from)));
   }
 
-  function appendLineSpan(l) {
+  // Append one display row (see lineRows). The time prefix is its own dim span
+  // with the full local date-time as a tooltip, kept out of search matching.
+  function appendLineSpan(r) {
     const span = document.createElement("span");
-    span.className = "ln " + l.kind;
-    appendText(span, l.text);
+    span.className = "ln " + r.kind + (r.sep ? " daysep" : "");
+    if (r.stamp) {
+      const t = document.createElement("span");
+      t.className = "tstamp";
+      t.textContent = "[" + r.stamp + "] ";
+      t.title = r.full;
+      span.appendChild(t);
+    }
+    appendText(span, r.text);
     transcriptEl.appendChild(span);
   }
 
@@ -745,10 +903,10 @@
       return;
     }
     let anyVisible = false;
-    for (const l of lines) {
-      if (!lineVisible(l.kind)) continue;
-      anyVisible = true;
-      appendLineSpan(l);
+    for (const r of displayRows(lines, false)) {
+      if (!lineVisible(r.kind)) continue;
+      if (!r.sep) anyVisible = true;
+      appendLineSpan(r);
     }
     if (!anyVisible) placeholder("No lines match the current filter.", false);
     if (searchQuery) {
@@ -769,11 +927,15 @@
   function ingest(m) {
     let s = sessions.get(m.session);
     let firstSelect = false;
-    if (!s) { const p = parseId(m.session); s = { lines: [], closed: false, transport: p.transport, label: p.label, firstSeen: Date.now(), lastSeen: Date.now() }; sessions.set(m.session, s); if (!selected && !histSelected) { selected = m.session; firstSelect = true; } }
+    if (!s) { const p = parseId(m.session); s = { lines: [], closed: false, transport: p.transport, host: p.host, label: p.label, num: p.num, firstTs: 0, lastDay: null, firstSeen: Date.now(), lastSeen: Date.now() }; sessions.set(m.session, s); if (!selected && !histSelected) { selected = m.session; firstSelect = true; } }
     s.lastSeen = Date.now();
     if (m.kind === "marker" && m.text.startsWith("-- closed")) s.closed = true;
     if (m.kind === "marker" && m.text.startsWith("-- opened")) s.closed = false;
-    s.lines.push({ kind: m.kind, text: m.text });
+    const line = { kind: m.kind, text: m.text, ts: typeof m.ts === "number" ? m.ts : 0 };
+    if (!s.firstTs && line.ts > 0) s.firstTs = line.ts;
+    const prevDay = s.lastDay;
+    if (stamped(line)) s.lastDay = dayOf(line.ts);
+    s.lines.push(line);
     if (m.session === selected && !histSelected) {
       setTitle();
       // Fast path: append in place when no filter/search is active. Otherwise a
@@ -782,7 +944,7 @@
         const stick = atBottom();
         const ph = transcriptEl.querySelector(".placeholder");
         if (ph) transcriptEl.textContent = "";
-        if (lineVisible(m.kind)) appendLineSpan({ kind: m.kind, text: m.text });
+        for (const r of lineRows(line, prevDay, false)) { if (lineVisible(r.kind)) appendLineSpan(r); }
         if (stick) transcriptEl.scrollTop = transcriptEl.scrollHeight;
       } else {
         // Filter/search active: re-render the whole pane (O(n) per line, fine for
