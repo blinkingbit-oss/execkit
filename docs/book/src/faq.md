@@ -96,7 +96,8 @@ client-specific; how the agent chooses a tool is the same everywhere.
 
 No. A command that runs past its timeout (120 seconds by default over MCP, or
 `timeout_secs` on the call) is interrupted with Ctrl-C and returned with
-`timed_out: true` and exit code 124. The session keeps its cwd and env. For jobs
+`timed_out: true` and exit code 124. Its output so far comes back (stderr keeps
+the last 16 KiB, followed by a timeout note). The session keeps its cwd and env. For jobs
 that take longer, start them in the background and poll the log:
 
 ```bash
