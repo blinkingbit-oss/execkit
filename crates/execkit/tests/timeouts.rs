@@ -154,3 +154,24 @@ fn timeout_with_huge_stderr_keeps_the_tail() {
     assert!(r.stderr.contains("execkit: timed out"));
     assert_eq!(s.exec("echo ok").unwrap().stdout, "ok");
 }
+
+/// A stderr tail cut at 16 KiB starts mid-line (possibly mid-secret or
+/// mid-UTF-8 character): that partial first line is dropped. Lines are 11
+/// bytes and the file ends in a 7-byte line, so the cut lands 2 bytes into
+/// a line.
+#[test]
+fn truncated_stderr_tail_starts_at_a_line_boundary() {
+    let mut s = Session::local()
+        .unwrap()
+        .with_timeout(Duration::from_secs(1));
+    let r = s
+        .exec("i=0; while [ $i -lt 3000 ]; do printf 'line %05d\\n' $i >&2; i=$((i+1)); done; echo 'LAST!!' >&2; sleep 30")
+        .unwrap();
+    assert!(r.timed_out, "{r:?}");
+    let first = r.stderr.lines().next().unwrap();
+    assert!(
+        first.starts_with("line "),
+        "partial first line kept: {first:?}"
+    );
+    assert!(r.stderr.contains("LAST!!\n"));
+}

@@ -670,10 +670,16 @@ impl Session {
     /// so the resync block always survives the drain below intact.
     /// It must not unset `__ek_f`: that now names the resync's OWN stderr
     /// file, which its trailer still has to print and remove.
+    ///
+    /// After the tail it prints `\n<file size>#`, so [`stderr_tail`] can tell
+    /// whether the tail was cut (the size is the raw byte count; the framed
+    /// text itself has been cleaned, so its length says nothing).
     fn resync(&mut self) -> Result<(String, String)> {
         const SAVE: &[u8] = b"{ __ek_x=$__ek_f; } 2>/dev/null\n";
-        const RESYNC: &str = "tail -c 16384 \"$__ek_x\" >&2 2>/dev/null; \
-                              rm -f \"$__ek_x\" 2>/dev/null; unset __ek_x";
+        const RESYNC: &str = "__ek_n=$(wc -c 2>/dev/null <\"$__ek_x\"); \
+                              tail -c 16384 \"$__ek_x\" >&2 2>/dev/null; \
+                              printf '\\n%s#' \"$__ek_n\" >&2; \
+                              rm -f \"$__ek_x\" 2>/dev/null; unset __ek_x __ek_n";
         const CAP: usize = 65_536;
         self.io.write_all(b"\x03")?;
         self.io.write_all(SAVE)?;
@@ -696,10 +702,28 @@ impl Session {
                 acc.drain(..acc.len() - CAP / 2);
             }
             if let Some(p) = framing::parse(&acc, &markers) {
-                return Ok((p.cwd, p.stderr));
+                return Ok((p.cwd, stderr_tail(&p.stderr, 16_384)));
             }
         }
     }
+}
+
+/// Split the resync's stderr (`<tail>\n<size>#`) and, when the file was
+/// larger than the `cap` bytes `tail` kept, drop everything up to and
+/// including the first `\n`: the cut can land mid-line, mid-secret (which
+/// redaction would then miss) or mid-UTF-8 character.
+fn stderr_tail(framed: &str, cap: u64) -> String {
+    let Some(body) = framed.strip_suffix('#') else {
+        return framed.to_string();
+    };
+    let (tail, size) = body.rsplit_once('\n').unwrap_or(("", body));
+    let cut = size.trim().parse::<u64>().is_ok_and(|n| n > cap);
+    if !cut {
+        return tail.to_string();
+    }
+    tail.split_once('\n')
+        .map_or("", |(_, rest)| rest)
+        .to_string()
 }
 
 /// Best-effort shadow-repo cleanup: for a remote session whose checkpointer
@@ -789,7 +813,19 @@ mod checkpoint_api_tests {
 
 #[cfg(test)]
 mod tests {
-    use super::{is_valid_checkpoint_id, is_valid_container_ref};
+    use super::{is_valid_checkpoint_id, is_valid_container_ref, stderr_tail};
+
+    #[test]
+    fn stderr_tail_drops_the_partial_first_line_only_when_cut() {
+        assert_eq!(stderr_tail("boom\n\n5#", 16), "boom\n");
+        assert_eq!(stderr_tail("0#", 16), "");
+        assert_eq!(stderr_tail("ret=abc\nline 2\n\n  40#", 16), "line 2\n");
+        assert_eq!(stderr_tail("no newline at all\n40#", 16), "");
+        // Size unknown (wc failed): keep everything.
+        assert_eq!(stderr_tail("ret=abc\nline 2\n\n#", 16), "ret=abc\nline 2\n");
+        // No trailer at all: returned as is.
+        assert_eq!(stderr_tail("odd", 16), "odd");
+    }
 
     #[test]
     fn checkpoint_id_validation() {
