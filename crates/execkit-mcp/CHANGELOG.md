@@ -7,6 +7,34 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.9.0](https://github.com/blinkingbit-oss/execkit/compare/v0.8.0...v0.9.0) - 2026-09-25
+
+### Added
+
+- *(cli)* setup for codex/vscode/windsurf, fuller help, unique session ids, constant-time viewer token
+- *(mcp)* per-call timeout, session_list, enum schemas, tool annotations, clearer descriptions
+- *(mcp)* resolve ssh host aliases, users, ports and keys from ~/.ssh/config
+- [**breaking**] interrupt and resync on timeout instead of poisoning the session
+
+### Fixed
+
+- *(mcp)* touch a session's last_used when its exec finishes
+- *(mcp)* redact operator-policy-blocked commands in audit and notifications
+- *(cli,viewer)* escape setup snippet paths, make live-viewer run-prefix optional
+- *(mcp)* key session_exec truncation hint on the effective budget
+- *(mcp)* close Host scope on Match, resolve relative IdentityFile against home
+- *(ssh)* [**breaking**] execkit-managed known_hosts with host:port keys; connect timeout
+- *(mcp)* close dead sessions, actionable errors for unknown sessions, transports and containers
+
+### Other
+
+- *(mcp)* note the last_used/session lock-order invariant at both sites
+- port-keyed pin migration, portable mkdir, restore needs git 2.22, absolute execkit link
+- *(redact)* Bearer coverage, code-shaped values, and that redacted output is not file-accurate
+- *(mcp)* say only the first existing SSH key is used, with no fallback
+- *(dist)* MCP registry server.json and publish job, crate metadata, npm pointer README
+- README hero and positioning, pip/uvx quickstart, v0.9 behaviour
+
 ## [0.8.0](https://github.com/blinkingbit-oss/execkit/compare/v0.7.2...v0.8.0) - 2026-06-25
 
 ### Added

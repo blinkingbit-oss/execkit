@@ -7,6 +7,49 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.9.0](https://github.com/blinkingbit-oss/execkit/compare/execkit-v0.8.0...execkit-v0.9.0) - 2026-09-25
+
+### Added
+
+- [**breaking**] interrupt and resync on timeout instead of poisoning the session
+
+### Fixed
+
+- *(redact)* redact unterminated and mixed-quote values; tighten dotted code shape
+- *(redact)* only skip narrow code shapes so bracketed human passwords redact
+- *(session)* drop the partial first line of a cut timeout stderr tail
+- *(redact)* redact bracketed passwords again; skip only code shapes
+- *(redact)* a comma no longer ends a redacted key/value secret
+- *(session)* return a timed-out command's stderr instead of discarding it
+- *(redact)* stop key/value redaction from eating source code; redact Bearer tokens
+- never compact away the start marker when stdout and stderr are both large
+- *(redact)* stop auth matching AUTHOR, and stop values at shell operators
+- *(ssh)* surface known_hosts verification errors instead of generic reject
+- *(mcp)* redact operator-policy-blocked commands in audit and notifications
+- *(session)* export PAGER=cat defaults so git/man/systemctl never open less
+- *(checkpoint)* no-overlay restore, ignore .env/keys, remove shadow repo on drop
+- *(ssh)* [**breaking**] cover auth in connect_timeout; harden known_hosts dir perms
+- *(redact)* restrict PEM header allowance to Proc-Type/DEK-Info only
+- *(ssh)* [**breaking**] execkit-managed known_hosts with host:port keys; connect timeout
+- *(redact)* drop pwd keyword, catch underscore-prefixed kv names, bound unterminated PEM redaction to PEM-looking lines
+- *(redact)* full PEM blocks, more token shapes, URL/kv secrets, session-learned values; redact the command field
+- *(mcp)* close dead sessions, actionable errors for unknown sessions, transports and containers
+- budgets see full output up to 8 MiB; elision marker at compaction; saturating grep context
+- *(framing)* survive IFS/PATH changes, noclobber and verbose mode
+- [**breaking**] base64+eval framing with per-command tokens and closed stdin
+
+### Other
+
+- *(ssh)* make the drop-after-timeout command ignore SIGINT
+- *(redact)* say precisely why method calls and generics survive
+- port-keyed pin migration, portable mkdir, restore needs git 2.22, absolute execkit link
+- *(transport)* set +m hides later Done notices, not bash's [1] pid line
+- *(budget)* lines_total counts only the retained window for huge output
+- known_hosts migration and an Upgrading to 0.9 page
+- *(session)* linear-time output accumulation for large budgeted output
+- README hero and positioning, pip/uvx quickstart, v0.9 behaviour
+- cover non-zero-index overflow in grep_keep_indices context clamp
+
 ## [0.8.0](https://github.com/blinkingbit-oss/execkit/compare/execkit-v0.7.2...execkit-v0.8.0) - 2026-06-25
 
 ### Other
