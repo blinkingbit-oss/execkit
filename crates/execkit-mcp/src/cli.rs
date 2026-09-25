@@ -82,7 +82,16 @@ fn binary_path() -> String {
         .unwrap_or_else(|| "execkit-mcp".to_string())
 }
 
+/// Escape `\` and `"` so `s` can be dropped into a JSON or TOML basic
+/// (double-quoted) string literal without breaking out of it. Order matters:
+/// backslashes must be doubled first, so the quote-escaping pass doesn't
+/// touch the backslashes it just introduced.
+fn escape_quoted(s: &str) -> String {
+    s.replace('\\', "\\\\").replace('"', "\\\"")
+}
+
 fn config_block(bin: &str) -> String {
+    let bin = escape_quoted(bin);
     format!(
         "{{
   \"mcpServers\": {{
@@ -94,11 +103,15 @@ fn config_block(bin: &str) -> String {
 
 /// TOML snippet for Codex CLI's `~/.codex/config.toml`.
 fn codex_block(bin: &str) -> String {
-    format!("[mcp_servers.execkit]\ncommand = \"{bin}\"")
+    format!(
+        "[mcp_servers.execkit]\ncommand = \"{}\"",
+        escape_quoted(bin)
+    )
 }
 
 /// JSON snippet for VS Code's workspace `.vscode/mcp.json`.
 fn vscode_block(bin: &str) -> String {
+    let bin = escape_quoted(bin);
     format!(
         "{{
   \"servers\": {{
@@ -353,6 +366,47 @@ mod tests {
         assert!(b.contains("\"execkit\""));
         assert!(b.contains("/usr/local/bin/execkit-mcp"));
         assert!(b.contains("mcpServers"));
+    }
+
+    /// A path containing a space, a backslash and a quote - the three
+    /// characters that can appear in a real filesystem path and would
+    /// otherwise break a JSON/TOML quoted string if pasted in raw.
+    const TRICKY_PATH: &str = "/opt/weird path/exec\"kit\\bin/execkit-mcp";
+
+    #[test]
+    fn escape_quoted_escapes_backslash_and_quote_leaves_space_alone() {
+        assert_eq!(
+            escape_quoted(TRICKY_PATH),
+            "/opt/weird path/exec\\\"kit\\\\bin/execkit-mcp"
+        );
+    }
+
+    #[test]
+    fn config_block_escapes_the_path_into_valid_json() {
+        let block = config_block(TRICKY_PATH);
+        let v: serde_json::Value = serde_json::from_str(&block).expect("valid json");
+        assert_eq!(v["mcpServers"]["execkit"]["command"], TRICKY_PATH);
+    }
+
+    #[test]
+    fn vscode_block_escapes_the_path_into_valid_json() {
+        let block = vscode_block(TRICKY_PATH);
+        let v: serde_json::Value = serde_json::from_str(&block).expect("valid json");
+        assert_eq!(v["servers"]["execkit"]["command"], TRICKY_PATH);
+    }
+
+    #[test]
+    fn codex_block_escapes_the_path_in_the_toml_string() {
+        let block = codex_block(TRICKY_PATH);
+        assert!(
+            block.contains(&format!("command = \"{}\"", escape_quoted(TRICKY_PATH))),
+            "got {block:?}"
+        );
+        // the raw (unescaped) backslash+quote sequence must not appear bare
+        assert!(
+            !block.contains("kit\\bin"),
+            "unescaped backslash leaked into {block:?}"
+        );
     }
 
     #[test]

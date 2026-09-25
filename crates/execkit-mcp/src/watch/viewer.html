@@ -525,8 +525,11 @@
 
   function parseId(id) {
     // {run}-{num}_{transport}_{detail} ; run is a 4-hex-char per-server-run
-    // prefix (so ids never collide across runs); local has no detail.
-    const m = String(id).match(/^[0-9a-f]{4}-(\d+)_([a-z]+)(?:_(.*))?$/);
+    // prefix (so ids never collide across runs); local has no detail. The
+    // run prefix is OPTIONAL: a replayed backlog from an older audit file
+    // may still carry pre-run-prefix ids like "1_local", and those must
+    // still group by transport instead of falling into "other".
+    const m = String(id).match(/^(?:[0-9a-f]{4}-)?(\d+)_([a-z]+)(?:_(.*))?$/);
     if (!m) return { num: 0, transport: "other", label: id };
     const transport = m[2];
     const label = transport === "local" ? "local" : (m[3] || transport);
