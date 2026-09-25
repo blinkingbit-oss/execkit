@@ -25,6 +25,9 @@ pub struct SessionMeta {
 pub struct UiPrefs {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub sidebar_width: Option<u32>,
+    /// Whether the sidebar's History section is expanded (collapsed by default).
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub history_open: bool,
 }
 
 // NOTE: do NOT use `#[serde(flatten)]` for `sessions` - flatten is incompatible
@@ -122,6 +125,18 @@ mod tests {
         assert_eq!(st.sessions["1_local"].alias.as_deref(), Some("build"));
         assert!(st.sessions["1_local"].pinned);
         assert_eq!(st.ui.sidebar_width, Some(320));
+    }
+
+    #[test]
+    fn history_open_round_trips_and_defaults_to_collapsed() {
+        let st = parse_validated(br#"{"ui":{"history_open":true}}"#).unwrap();
+        assert!(st.ui.history_open);
+        let back = serde_json::to_string(&st).unwrap();
+        assert!(back.contains("\"history_open\":true"), "{back}");
+        // absent means collapsed, and a collapsed state is not written out
+        let st = parse_validated(br#"{"ui":{"sidebar_width":300}}"#).unwrap();
+        assert!(!st.ui.history_open);
+        assert!(!serde_json::to_string(&st).unwrap().contains("history_open"));
     }
 
     #[test]

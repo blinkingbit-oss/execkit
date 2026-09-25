@@ -57,7 +57,7 @@ The page is read-only and local by construction: it binds loopback only, every
 request needs the URL token, and it can read the audit stream but never touch a
 session, a command, or your files. What you get:
 
-![The browser viewer: sessions grouped by transport on the left, a colored shell transcript on the right, and a status bar with the selected session's details](./assets/demo-1-main.png)
+![The browser viewer: sessions grouped by transport and host with start times on the left, a timestamped, colored shell transcript on the right, and a status bar with the selected session's details](./assets/demo-1-main.png)
 
 - **Sidebar** grouped by transport (`local` / `ssh` / `docker`), then by host or
   target inside each transport (the ssh host or alias such as `etlstage`, the
@@ -78,7 +78,9 @@ session, a command, or your files. What you get:
 - **Search**: press `/` to find within the transcript, step matches with `Enter`
   / `Shift+Enter`, and press `e` to jump to the next error or blocked line.
 - **History** of past sessions (newest first, with relative times) when
-  `EXECKIT_MCP_AUDIT_DIR` is set; click one to read its transcript. With a single
+  `EXECKIT_MCP_AUDIT_DIR` is set. It sits at the bottom of the sidebar, collapsed
+  to a `History (N)` header; click the header to expand it (the viewer remembers
+  your choice), then click a session to read its transcript. With a single
   `EXECKIT_MCP_AUDIT` file there is no per-session history.
 - **Per-session actions** from a 3-dots menu: rename (a display alias), pin, keep,
   export to `.txt` / `.log` / `.md` / `.json`, and screenshot to `.png`.

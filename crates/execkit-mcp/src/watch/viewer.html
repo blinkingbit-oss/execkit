@@ -59,8 +59,14 @@
   .marker { color: #6b7280; }
   .tstamp { color: #6b7280; font-weight: normal; }
   /* History section */
-  .hist-hdr { padding: 6px 10px 4px; color: #8a93a3; font-size: 11px; display: flex; align-items: center; justify-content: space-between; border-top: 1px solid #222; margin-top: 4px; }
-  .hist-hdr .hhdr-label { text-transform: uppercase; letter-spacing: 0.5px; }
+  #sidebar { display: flex; flex-direction: column; }
+  #sidebar > * { flex-shrink: 0; }
+  #hist-section { margin-top: auto; border-top: 1px solid #222; }
+  #hist-section:not(.open) > .hist-body { display: none; }
+  #hist-section.open > .hist-hdr .arrow { transform: rotate(90deg); }
+  .hist-hdr { padding: 5px 10px; color: #8a93a3; display: flex; align-items: center; gap: 6px; cursor: pointer; user-select: none; }
+  .hist-hdr:hover { background: #1a1f29; }
+  .hist-hdr .hhdr-label { flex: 1; }
   .hist-refresh { background: none; border: 1px solid #333; color: #6b7280; cursor: pointer; font: 11px ui-monospace, Menlo, Consolas, monospace; padding: 1px 5px; border-radius: 3px; }
   .hist-refresh:hover { color: #c8ccd4; border-color: #555; }
   .hist-empty { padding: 5px 12px 8px; color: #6b7280; font-size: 11px; }
@@ -535,32 +541,49 @@
     finally { histLoading = false; }
   }
 
+  function historyOpen() { return !!(meta.ui && meta.ui.history_open); }
+
   function renderHistory() {
     // Remove existing history DOM if present
     const existing = document.getElementById("hist-section");
     if (existing) existing.remove();
 
+    // The section sits at the bottom of the sidebar, collapsed by default:
+    // only a "History (N)" header until clicked. The open state is kept in
+    // meta.ui.history_open, so it survives re-renders and reloads. Collapsing
+    // never touches the selection, so an open history transcript stays shown.
     const section = document.createElement("div");
     section.id = "hist-section";
+    if (historyOpen()) section.className = "open";
 
     const hdr = document.createElement("div");
     hdr.className = "hist-hdr";
+    const arrow = document.createElement("span"); arrow.className = "arrow";
     const lbl = document.createElement("span");
     lbl.className = "hhdr-label";
-    lbl.textContent = "History";
+    lbl.textContent = "History (" + (histSessions ? histSessions.length : 0) + ")";
     const refreshBtn = document.createElement("button");
     refreshBtn.className = "hist-refresh";
     refreshBtn.textContent = "refresh";
-    refreshBtn.onclick = () => loadHistory();
+    refreshBtn.onclick = (e) => { e.stopPropagation(); loadHistory(); };
+    hdr.appendChild(arrow);
     hdr.appendChild(lbl);
     hdr.appendChild(refreshBtn);
+    hdr.onclick = function () {
+      meta.ui.history_open = !historyOpen();
+      section.classList.toggle("open", meta.ui.history_open);
+      saveMeta();
+    };
     section.appendChild(hdr);
+    const body = document.createElement("div");
+    body.className = "hist-body";
+    section.appendChild(body);
 
     if (!histSessions || histSessions.length === 0) {
       const note = document.createElement("div");
       note.className = "hist-empty";
       note.textContent = "no session history (set EXECKIT_MCP_AUDIT_DIR)";
-      section.appendChild(note);
+      body.appendChild(note);
       sidebarEl.appendChild(section);
       return;
     }
@@ -584,7 +607,7 @@
       const p = parseId(entry.id);
       return { entry: entry, transport: p.transport, host: p.host, num: p.num, label: entry.label };
     });
-    renderTree(section, items, "hist:", histRow, null);
+    renderTree(body, items, "hist:", histRow, null);
     sidebarEl.appendChild(section);
   }
 
@@ -1030,7 +1053,7 @@
     else if (e.key === "e") { e.preventDefault(); jumpNextErr(); }
   });
 
-  // --- Legend click -> show/hide that line category ---
+  // --- Legend click: show or hide that line category ---
   Array.prototype.forEach.call(document.querySelectorAll(".legend span[data-cat]"), function (el) {
     el.addEventListener("click", function () {
       const cat = el.getAttribute("data-cat");
@@ -1079,7 +1102,7 @@
       dragging = false;
       document.body.style.userSelect = "";
       const w = Math.max(140, Math.min(e.clientX, window.innerWidth * 0.7));
-      meta.ui = { sidebar_width: w };
+      meta.ui.sidebar_width = w;
       saveMeta();
     });
   })();
