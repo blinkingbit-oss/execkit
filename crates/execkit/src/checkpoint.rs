@@ -92,7 +92,20 @@ const BUILD_IGNORES: &[&str] = &[
 /// `git add` would walk into the live shadow git-dir and corrupt the index.
 /// A user `!.execkit` negation CANNOT re-enable self-capture because SECRET_IGNORES
 /// trails all user patterns.
-const SECRET_IGNORES: &[&str] = &[".cache", ".ssh", ".gnupg", ".aws", ".netrc", ".execkit"];
+const SECRET_IGNORES: &[&str] = &[
+    ".cache",
+    ".ssh",
+    ".gnupg",
+    ".aws",
+    ".netrc",
+    ".execkit",
+    ".env",
+    ".env.*",
+    "*.pem",
+    "*.key",
+    "id_rsa*",
+    "id_ed25519*",
+];
 
 /// Single-quote a value for safe use in a `/bin/sh` command.
 pub(crate) fn shq(s: &str) -> String {
@@ -143,6 +156,12 @@ impl Checkpointer {
     fn git_dir(&self) -> String {
         // $HOME expands on the remote; token is hex-safe so the rest is literal.
         format!("\"$HOME/.execkit/ckpt-{}.git\"", self.token)
+    }
+
+    /// The shadow repo's basename under `~/.execkit` (`ckpt-<token>.git`). Lets
+    /// callers (test hooks) target the repo directly without the private token.
+    pub(crate) fn shadow_repo_name(&self) -> String {
+        format!("ckpt-{}.git", self.token)
     }
 
     fn pathspec(&self) -> String {
@@ -204,9 +223,15 @@ impl Checkpointer {
     pub fn restore_cmd(&self, root: &str, id: &str) -> String {
         // id is agent-controlled (untrusted): single-quote it so a malicious value
         // becomes a harmless literal ref (git just fails to find it).
+        //
+        // --no-overlay: a plain `checkout <id> -- <paths>` only writes files
+        // present in <id>; a file that didn't exist at <id> but was tracked by a
+        // LATER checkpoint (and never untracked-removed by `clean`, since it IS
+        // tracked) would survive a restore to the earlier id. --no-overlay makes
+        // checkout also remove tracked files that are absent from <id>.
         let g = self.git(root);
         format!(
-            "{g} checkout {id} -- {paths} && {g} clean -fdq -- {paths}",
+            "{g} checkout --no-overlay {id} -- {paths} && {g} clean -fdq -- {paths}",
             id = shq(id),
             paths = self.pathspec(),
         )
@@ -225,6 +250,13 @@ impl Checkpointer {
 
     pub fn set_paths(&mut self, paths: Vec<String>) {
         self.paths = paths;
+    }
+
+    /// Remove this session's shadow repo entirely. Run (best-effort) on
+    /// `Session` drop so `~/.execkit` doesn't accumulate one directory per
+    /// session ever opened against the remote host.
+    pub fn cleanup_cmd(&self) -> String {
+        format!("rm -rf {}", self.git_dir())
     }
 
     /// Count files differing from `id` within the checkpoint paths.
@@ -290,8 +322,23 @@ mod builder_tests {
         assert!(snap.contains("commit -q --allow-empty"));
 
         let restore = c.restore_cmd(root, "deadbeef");
-        assert!(restore.contains("checkout 'deadbeef' -- '.'"));
+        assert!(restore.contains("checkout --no-overlay 'deadbeef' -- '.'"));
         assert!(restore.contains("clean -fdq -- '.'"));
+    }
+
+    #[test]
+    fn cleanup_cmd_removes_shadow_repo() {
+        let c = cp();
+        assert_eq!(c.cleanup_cmd(), "rm -rf \"$HOME/.execkit/ckpt-abc123.git\"");
+    }
+
+    #[test]
+    fn init_cmd_excludes_env_and_key_files() {
+        let cp = Checkpointer::new("abc123", true, Some("/srv/app".into()), vec![".".into()]);
+        let cmd = cp.init_cmd("/srv/app");
+        for pat in [".env", ".env.*", "*.pem", "*.key", "id_rsa*", "id_ed25519*"] {
+            assert!(cmd.contains(pat), "missing secret ignore pattern: {pat}");
+        }
     }
 
     #[test]

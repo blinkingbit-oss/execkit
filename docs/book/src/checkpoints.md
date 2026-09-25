@@ -36,11 +36,28 @@ Control it via `session_create`:
 - `auto_snapshot` (default true; effective only with a workspace)
 - `paths` (sub-directories under the root to track)
 - `checkpoint_ignores` (extra gitignore-style patterns, added to the built-in
-  defaults: `.git`, `node_modules`, build dirs, caches, `.ssh`, `.aws`, ...)
+  defaults: `.git`, `node_modules`, build dirs, caches, `.ssh`, `.aws`, `.env`,
+  `.env.*`, `*.pem`, `*.key`, `id_rsa*`, `id_ed25519*`, ...)
+
+Credential-shaped files (`.env`, `.env.*`, `*.pem`, `*.key`, `id_rsa*`,
+`id_ed25519*`, plus `.ssh`, `.gnupg`, `.aws`, `.netrc`) are never snapshotted,
+regardless of `checkpoint_ignores` - these rules always apply last and cannot
+be overridden by a negation pattern.
 
 ## Restore is destructive
 
-> **Warning.** `session_restore` reverts tracked files **and deletes all
-> untracked files and directories** anywhere under the workspace (via `git
-> clean`), not only files created since the checkpoint. Do not restore if
-> untracked files in the workspace must be preserved.
+> **Warning.** `session_restore` reverts tracked files to their state at the
+> checkpoint **and deletes all untracked files and directories** anywhere
+> under the workspace (via `git clean`). This includes files created and
+> tracked by a *later* checkpoint than the one you're restoring to - restore
+> always leaves the workspace matching the target checkpoint exactly, not a
+> merge of it with whatever came after. Do not restore if untracked files in
+> the workspace must be preserved.
+
+## Shadow repo cleanup
+
+Each session's checkpoints live in a private shadow git repo under
+`~/.execkit/ckpt-<token>.git` on the remote host. execkit removes it
+automatically when the session ends (on `Session` drop / `session_destroy`),
+so no state persists between sessions and no per-session directories
+accumulate on the remote host over time.

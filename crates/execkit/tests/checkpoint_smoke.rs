@@ -264,3 +264,132 @@ fn restore_before_any_checkpoint_errors_cleanly() {
         "got {err:?}"
     );
 }
+
+/// BUG: a plain `git checkout <id> -- <paths>` only updates files present in
+/// `<id>`; a file created and tracked by a LATER checkpoint stays on disk after
+/// restoring to an earlier one. `restore_cmd` must use `checkout --no-overlay`
+/// so files tracked in a later snapshot but absent from `id` are removed too.
+#[test]
+fn restore_removes_files_added_after_checkpoint() {
+    let Ok(c) = std::env::var("EXECKIT_TEST_DOCKER") else {
+        eprintln!("skip: set EXECKIT_TEST_DOCKER=<container> (needs git) to run");
+        return;
+    };
+    let ws = "/root/ck_no_overlay";
+    let mut s = session(&c, ws).with_auto_snapshot(false);
+    s.exec(&format!(
+        "rm -rf {ws} && mkdir -p {ws} && printf a > {ws}/a.txt"
+    ))
+    .unwrap();
+    let id = s.checkpoint(Some("first")).expect("checkpoint");
+
+    s.exec(&format!("touch {ws}/y.txt")).unwrap();
+    s.checkpoint(Some("later")).expect("checkpoint later");
+
+    s.restore(&id).expect("restore");
+
+    let out = s.exec(&format!("ls {ws}")).unwrap().stdout;
+    assert_eq!(
+        out.trim(),
+        "a.txt",
+        "restore must remove files tracked only in a later checkpoint, got: {out:?}"
+    );
+}
+
+/// BUG: `.env` (and other credential-shaped files) were snapshotted into the
+/// shadow git repo, meaning `session_checkpoint` could exfiltrate secrets into
+/// `~/.execkit`. SECRET_IGNORES must cover `.env`/`.env.*`/`*.pem`/`*.key`/
+/// `id_rsa*`/`id_ed25519*`.
+#[test]
+fn env_files_not_snapshotted() {
+    let Ok(c) = std::env::var("EXECKIT_TEST_DOCKER") else {
+        eprintln!("skip: set EXECKIT_TEST_DOCKER=<container> (needs git) to run");
+        return;
+    };
+    let ws = "/root/ck_secrets";
+    let mut s = session(&c, ws).with_auto_snapshot(false);
+    s.exec(&format!(
+        "rm -rf {ws} && mkdir -p {ws} && \
+         printf 'v1' > {ws}/keep.txt && \
+         printf 'SECRET' > {ws}/.env && \
+         printf 'SECRET' > {ws}/id_rsa"
+    ))
+    .unwrap();
+
+    let id = s.checkpoint(Some("base")).expect("checkpoint");
+    let repo = s
+        .checkpoint_shadow_repo_name()
+        .expect("remote session has a checkpointer");
+
+    let ls = s
+        .exec(&format!(
+            "git --git-dir=\"$HOME/.execkit/{repo}\" --work-tree={ws} ls-tree -r {} --name-only",
+            id.0
+        ))
+        .unwrap()
+        .stdout;
+    assert!(
+        ls.lines().any(|l| l == "keep.txt"),
+        "keep.txt must be tracked, got tree: {ls:?}"
+    );
+    assert!(
+        !ls.contains(".env"),
+        ".env must never be snapshotted, got tree: {ls:?}"
+    );
+    assert!(
+        !ls.contains("id_rsa"),
+        "id_rsa must never be snapshotted, got tree: {ls:?}"
+    );
+}
+
+/// BUG: the shadow git repo (`~/.execkit/ckpt-<token>.git`) was never deleted,
+/// so every session leaked a directory for the life of the remote host. Once a
+/// session's checkpointer was initialized (i.e. a shadow repo actually exists)
+/// and the session isn't poisoned, dropping the session must remove it.
+///
+/// Checks the session's OWN shadow-repo path specifically (via the
+/// `checkpoint_shadow_repo_name` test hook), not a directory-wide count: other
+/// docker-gated tests run concurrently in this binary and create/remove their
+/// own `ckpt-*.git` dirs throughout, so a global count is racy.
+#[test]
+fn shadow_repo_removed_on_drop() {
+    let Ok(c) = std::env::var("EXECKIT_TEST_DOCKER") else {
+        eprintln!("skip: set EXECKIT_TEST_DOCKER=<container> (needs git) to run");
+        return;
+    };
+
+    fn shadow_repo_exists(container: &str, repo: &str) -> bool {
+        let mut probe = Session::docker(container).expect("docker session");
+        probe
+            .exec(&format!(
+                "test -d \"$HOME/.execkit/{repo}\" && echo yes || echo no"
+            ))
+            .unwrap()
+            .stdout
+            .trim()
+            == "yes"
+    }
+
+    let ws = "/root/ck_drop";
+    let repo = {
+        let mut s = session(&c, ws).with_auto_snapshot(false);
+        s.exec(&format!(
+            "rm -rf {ws} && mkdir -p {ws} && printf v > {ws}/a.txt"
+        ))
+        .unwrap();
+        s.checkpoint(Some("base")).expect("checkpoint");
+        let repo = s
+            .checkpoint_shadow_repo_name()
+            .expect("remote session has a checkpointer");
+        assert!(
+            shadow_repo_exists(&c, &repo),
+            "shadow repo must exist right after a checkpoint"
+        );
+        repo
+        // `s` drops here, at the end of this block.
+    };
+    assert!(
+        !shadow_repo_exists(&c, &repo),
+        "shadow repo must be removed when the session drops"
+    );
+}

@@ -145,6 +145,16 @@ impl Session {
         self.poisoned
     }
 
+    /// The shadow repo's basename (`ckpt-<token>.git`) for this session's
+    /// checkpoints, if it has one (remote sessions only). Test hook; not part
+    /// of the supported API.
+    #[doc(hidden)]
+    pub fn checkpoint_shadow_repo_name(&self) -> Option<String> {
+        self.checkpointer
+            .as_ref()
+            .map(Checkpointer::shadow_repo_name)
+    }
+
     /// Run a command and return a structured [`ExecResult`].
     ///
     /// If the command outlives the session timeout, execkit sends Ctrl-C,
@@ -679,6 +689,34 @@ impl Session {
                 return Ok(p.cwd);
             }
         }
+    }
+}
+
+/// Best-effort shadow-repo cleanup: for a remote session whose checkpointer
+/// was initialized (i.e. a shadow repo actually exists at
+/// `~/.execkit/ckpt-<token>.git`) and the session is not poisoned, remove it.
+///
+/// This is a `Drop` on `Session` itself (not on the transport) so it runs
+/// BEFORE `io` is torn down: Rust calls a type's own `Drop::drop` before
+/// dropping its fields, so the transport is still alive here and can carry
+/// the cleanup command. A poisoned session's framing is desynced, so no
+/// command is safe to send - skip it. Any failure (timeout, transport error)
+/// is ignored: cleanup is best-effort and must never panic or block drop.
+impl Drop for Session {
+    fn drop(&mut self) {
+        if self.poisoned {
+            return;
+        }
+        let Some(cmd) = self
+            .checkpointer
+            .as_ref()
+            .filter(|cp| cp.initialized)
+            .map(Checkpointer::cleanup_cmd)
+        else {
+            return;
+        };
+        let acc_cap = self.default_acc_cap();
+        let _ = self.run_framed_for(&cmd, Duration::from_secs(5), acc_cap);
     }
 }
 
