@@ -188,6 +188,7 @@ mod tests {
             duration_ms: 3,
             cwd: "/tmp".into(),
             truncated: false,
+            timed_out: false,
         });
         let backend = TestBackend::new(80, 12);
         let mut term = Terminal::new(backend).unwrap();

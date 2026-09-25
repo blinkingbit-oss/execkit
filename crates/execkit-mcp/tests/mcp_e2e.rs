@@ -399,6 +399,128 @@ fn active_session_is_not_reaped() {
 }
 
 #[test]
+fn shell_exit_closes_session_and_next_exec_is_unknown() {
+    // A command that exits the shell (Err::ShellExited) must close the dead
+    // session (remove it from the map) rather than leaving it registered but
+    // unusable, and the error text must say so.
+    let mut m = Mcp::start(&[]);
+    let created = m.call(2, "session_create", json!({"transport":"local"}));
+    let sid = result_json(&created)["session_id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+
+    let e = m.call(
+        3,
+        "session_exec",
+        json!({"session_id": sid, "command": "exit 3"}),
+    );
+    assert!(is_error(&e), "{e:?}");
+    let t = result_text(&e);
+    assert!(t.contains(&format!("(session {sid} was closed)")), "{t}");
+
+    let e2 = m.call(
+        4,
+        "session_exec",
+        json!({"session_id": sid, "command": "echo hi"}),
+    );
+    assert!(is_error(&e2), "{e2:?}");
+    assert!(
+        result_text(&e2).contains("unknown session_id"),
+        "{}",
+        result_text(&e2)
+    );
+}
+
+#[test]
+fn exec_on_unknown_session_is_a_tool_error_not_a_protocol_error() {
+    let mut m = Mcp::start(&[]);
+    let r = m.call(
+        2,
+        "session_exec",
+        json!({"session_id":"nope","command":"echo hi"}),
+    );
+    assert!(
+        r.get("error").is_none(),
+        "must not be a JSON-RPC protocol error: {r:?}"
+    );
+    assert!(is_error(&r), "{r:?}");
+    let t = result_text(&r);
+    assert!(t.contains("unknown session_id 'nope'"), "{t}");
+    assert!(t.contains("session_list"), "{t}");
+}
+
+#[test]
+fn unknown_transport_is_rejected_not_silently_local() {
+    let mut m = Mcp::start(&[]);
+    let r = m.call(2, "session_create", json!({"transport":"Local"}));
+    assert!(is_error(&r), "{r:?}");
+    assert!(
+        result_text(&r).contains("transport must be"),
+        "{}",
+        result_text(&r)
+    );
+}
+
+#[test]
+fn dangerous_pattern_denial_names_the_pattern() {
+    let mut m = Mcp::start(&[]);
+    let created = m.call(2, "session_create", json!({"transport":"local"}));
+    let sid = result_json(&created)["session_id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let r = m.call(
+        3,
+        "session_exec",
+        json!({"session_id": sid, "command": "rm -rf /"}),
+    );
+    assert!(is_error(&r), "{r:?}");
+    assert!(result_text(&r).contains("rm -rf"), "{}", result_text(&r));
+}
+
+#[test]
+fn set_e_failure_names_set_e_and_closes_session() {
+    // set -e then a failing command exits the shell (Err::ShellExited). The
+    // error text must mention 'set -e' and the session must be closed - the
+    // NEXT exec sees an unknown session, not a poisoned one
+    // still occupying a slot.
+    let mut m = Mcp::start(&[]);
+    let created = m.call(2, "session_create", json!({"transport":"local"}));
+    let sid = result_json(&created)["session_id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+
+    let set_e = m.call(
+        3,
+        "session_exec",
+        json!({"session_id": sid, "command": "set -e"}),
+    );
+    assert!(!is_error(&set_e), "{set_e:?}");
+
+    let r = m.call(
+        4,
+        "session_exec",
+        json!({"session_id": sid, "command": "false"}),
+    );
+    assert!(is_error(&r), "{r:?}");
+    assert!(result_text(&r).contains("set -e"), "{}", result_text(&r));
+
+    let r2 = m.call(
+        5,
+        "session_exec",
+        json!({"session_id": sid, "command": "echo hi"}),
+    );
+    assert!(is_error(&r2), "{r2:?}");
+    assert!(
+        result_text(&r2).contains("unknown session_id"),
+        "{}",
+        result_text(&r2)
+    );
+}
+
+#[test]
 fn ttl_zero_disables_reaping() {
     // TTL=0 -> reaping disabled: an idle session is never reaped.
     let mut m = Mcp::start(&[("EXECKIT_MCP_SESSION_TTL", "0")]);

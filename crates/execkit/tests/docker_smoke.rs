@@ -57,6 +57,18 @@ fn docker_timeout_interrupts_and_keeps_session() {
     assert_eq!((r.stdout.as_str(), r.cwd.as_str()), ("ok", "/tmp"));
 }
 
+/// A missing/stopped container fails fast with an actionable message instead
+/// of a hung or garbled PTY. Needs the `docker` CLI (not gated behind
+/// EXECKIT_TEST_DOCKER - no running container is required).
+#[test]
+fn docker_missing_container_gives_actionable_error() {
+    let msg = match Session::docker("does-not-exist-ek") {
+        Ok(_) => panic!("nonexistent container must fail to open a session"),
+        Err(e) => e.to_string(),
+    };
+    assert!(msg.contains("not found or not running"), "{msg:?}");
+}
+
 /// Dropping a docker session (here after an uninterruptible timeout) must reap the in-container
 /// shell + the still-running command - killing only the local `docker exec`
 /// client would leave them alive in the container.

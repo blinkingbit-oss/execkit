@@ -12,7 +12,7 @@ use std::time::Duration;
 
 use super::local::LocalPty;
 use super::Transport;
-use crate::error::Result;
+use crate::error::{Error, Result};
 
 pub struct DockerExec {
     inner: LocalPty,
@@ -24,6 +24,7 @@ impl DockerExec {
     /// `marker` is a per-session token; the container shell and every command it
     /// spawns inherit it as `EXECKIT_SID`, so drop-cleanup can find the tree.
     pub fn spawn(container: &str, marker: &str) -> Result<Self> {
+        check_running(container)?;
         let env = format!("EXECKIT_SID={marker}");
         // -t so the container shell line-buffers (a pipe block-buffers and the
         // sentinel markers never flush); -- so a `-`-leading name can't be a flag.
@@ -36,6 +37,32 @@ impl DockerExec {
             container: container.to_string(),
             marker: marker.to_string(),
         })
+    }
+}
+
+/// Fail fast, with an actionable message, instead of leaving the agent to
+/// puzzle out a hung/garbled PTY when the container is missing/stopped or the
+/// `docker` CLI itself is absent.
+fn check_running(container: &str) -> Result<()> {
+    let out = Command::new("docker")
+        .args(["inspect", "-f", "{{.State.Running}}", "--", container])
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .output();
+    match out {
+        Ok(o) if o.status.success() && String::from_utf8_lossy(&o.stdout).trim() == "true" => {
+            Ok(())
+        }
+        Ok(_) => Err(Error::Transport(format!(
+            "docker: container '{container}' not found or not running"
+        ))),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Err(Error::Transport(
+            "docker: 'docker' CLI not found on PATH".into(),
+        )),
+        Err(_) => Err(Error::Transport(format!(
+            "docker: container '{container}' not found or not running"
+        ))),
     }
 }
 

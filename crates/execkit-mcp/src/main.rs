@@ -419,7 +419,10 @@ impl ExeckitServer {
         Parameters(p): Parameters<ExecParams>,
         ctx: RequestContext<RoleServer>,
     ) -> Result<CallToolResult, ErrorData> {
-        let session = self.get(&p.session_id)?;
+        let session = match self.get(&p.session_id) {
+            Ok(s) => s,
+            Err(e) => return Ok(e),
+        };
         let session_id = p.session_id.clone();
         let transport = session.transport.clone();
         let audit = session.audit.clone();
@@ -472,7 +475,38 @@ impl ExeckitServer {
                 let json = serde_json::to_string_pretty(&r).map_err(internal)?;
                 Ok(text(json))
             }
-            Err(e) => Ok(tool_error(e.to_string())),
+            Err(e) => {
+                // StillRunning/ShellExited/SessionPoisoned all mean the session's
+                // framing is desynced (or the shell is gone) - it can never
+                // execute another command correctly, so keeping it registered
+                // would only let the agent retry into the same dead end. Close
+                // it here (release the slot, audit it) so the NEXT call sees a
+                // clean "unknown session_id" instead of a repeat of this error.
+                let dead = matches!(
+                    e,
+                    execkit::Error::StillRunning
+                        | execkit::Error::ShellExited
+                        | execkit::Error::SessionPoisoned
+                );
+                let mut msg = e.to_string();
+                if dead {
+                    if let Some(entry) = lock(&self.sessions).remove(&session_id) {
+                        self.live.fetch_sub(1, Ordering::AcqRel);
+                        let reason = if matches!(e, execkit::Error::ShellExited) {
+                            "shell_exited"
+                        } else {
+                            "timed_out"
+                        };
+                        if let Some(a) = &audit {
+                            a.close(&session_id, reason);
+                        }
+                        // Session::drop is blocking; do it off the async executor.
+                        tokio::task::spawn_blocking(move || drop(entry));
+                        msg = format!("{msg} (session {session_id} was closed)");
+                    }
+                }
+                Ok(tool_error(msg))
+            }
         }
     }
 
@@ -486,7 +520,10 @@ impl ExeckitServer {
         &self,
         Parameters(p): Parameters<CheckpointParams>,
     ) -> Result<CallToolResult, ErrorData> {
-        let session = self.get(&p.session_id)?;
+        let session = match self.get(&p.session_id) {
+            Ok(s) => s,
+            Err(e) => return Ok(e),
+        };
         let label = p.label;
         let outcome = tokio::task::spawn_blocking(move || {
             lock(&session.session).checkpoint(label.as_deref())
@@ -504,7 +541,10 @@ impl ExeckitServer {
         &self,
         Parameters(p): Parameters<SessionIdParams>,
     ) -> Result<CallToolResult, ErrorData> {
-        let session = self.get(&p.session_id)?;
+        let session = match self.get(&p.session_id) {
+            Ok(s) => s,
+            Err(e) => return Ok(e),
+        };
         let outcome = tokio::task::spawn_blocking(move || lock(&session.session).checkpoints())
             .await
             .map_err(internal)?;
@@ -526,7 +566,10 @@ impl ExeckitServer {
         &self,
         Parameters(p): Parameters<RestoreParams>,
     ) -> Result<CallToolResult, ErrorData> {
-        let session = self.get(&p.session_id)?;
+        let session = match self.get(&p.session_id) {
+            Ok(s) => s,
+            Err(e) => return Ok(e),
+        };
         let id = p.checkpoint_id;
         let outcome = tokio::task::spawn_blocking(move || {
             let mut s = lock(&session.session);
@@ -567,11 +610,17 @@ impl ExeckitServer {
 }
 
 impl ExeckitServer {
-    fn get(&self, id: &str) -> Result<SessionRef, ErrorData> {
-        let entry = lock(&self.sessions)
-            .get(id)
-            .cloned()
-            .ok_or_else(|| ErrorData::invalid_params(format!("unknown session_id: {id}"), None))?;
+    /// Looks up a session by id. Unknown ids are NOT a JSON-RPC protocol error
+    /// (`-32602`) - they are routine (a stale id from a closed session, a typo)
+    /// and the agent needs to see and adapt to them, so this returns an
+    /// `isError: true` tool result instead. Callers do
+    /// `match self.get(id) { Ok(s) => s, Err(e) => return Ok(e) }`.
+    fn get(&self, id: &str) -> std::result::Result<SessionRef, CallToolResult> {
+        let entry = lock(&self.sessions).get(id).cloned().ok_or_else(|| {
+            tool_error(format!(
+                "unknown session_id '{id}'; call session_list to see live sessions"
+            ))
+        })?;
         *lock(&entry.last_used) = Instant::now(); // touch on every use
         Ok(entry)
     }
@@ -687,6 +736,7 @@ async fn notify_activity(
         duration_ms: r.duration_ms,
         cwd: r.cwd.clone(),
         truncated: r.truncated,
+        timed_out: r.timed_out,
     };
     let transcript: Vec<String> = watch::render::render_event(&ev)
         .into_iter()
@@ -826,7 +876,12 @@ fn build_session(p: CreateParams, config: &Config) -> Result<Session, execkit::E
                 .ok_or_else(|| execkit::Error::Transport("docker: 'container' required".into()))?;
             Session::docker(&container)?
         }
-        _ => Session::local()?,
+        "local" => Session::local()?,
+        _ => {
+            return Err(execkit::Error::Transport(
+                "transport must be \"local\", \"ssh\" or \"docker\"".into(),
+            ))
+        }
     };
     session = session
         .with_auto_snapshot(p.auto_snapshot)

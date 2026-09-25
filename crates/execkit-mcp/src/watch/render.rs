@@ -49,6 +49,7 @@ pub fn render_event(ev: &AuditEvent) -> Vec<StyledLine> {
             duration_ms,
             cwd,
             truncated,
+            timed_out,
             ..
         } => {
             let mut out = Vec::new();
@@ -74,19 +75,20 @@ pub fn render_event(ev: &AuditEvent) -> Vec<StyledLine> {
                     kind: LineKind::Marker,
                 });
             }
+            let suffix = if *timed_out { "  [timed out]" } else { "" };
             let (mark, kind) = if *exit_code == 0 {
                 ("ok exit 0", LineKind::ExitOk)
             } else {
                 return {
                     out.push(StyledLine {
-                        text: format!("x exit {exit_code}  ({duration_ms}ms)"),
+                        text: format!("x exit {exit_code}  ({duration_ms}ms){suffix}"),
                         kind: LineKind::ExitErr,
                     });
                     out
                 };
             };
             out.push(StyledLine {
-                text: format!("{mark}  ({duration_ms}ms)"),
+                text: format!("{mark}  ({duration_ms}ms){suffix}"),
                 kind,
             });
             out
@@ -111,6 +113,7 @@ mod tests {
             duration_ms: 42,
             cwd: "/tmp".into(),
             truncated,
+            timed_out: false,
         }
     }
 
@@ -155,6 +158,27 @@ mod tests {
         let last = lines.last().unwrap();
         assert_eq!(last.kind, LineKind::ExitErr);
         assert_eq!(last.text, "x exit 1  (42ms)");
+    }
+
+    #[test]
+    fn timed_out_exec_renders_a_marker_suffix() {
+        let ev = AuditEvent::Exec {
+            ts: 1,
+            session: "sess_1".into(),
+            transport: "local".into(),
+            command: "sleep 30".into(),
+            stdout: "".into(),
+            stderr: "".into(),
+            exit_code: 124,
+            duration_ms: 1000,
+            cwd: "/tmp".into(),
+            truncated: false,
+            timed_out: true,
+        };
+        let lines = render_event(&ev);
+        let last = lines.last().unwrap();
+        assert_eq!(last.kind, LineKind::ExitErr);
+        assert!(last.text.contains("timed out"), "{:?}", last.text);
     }
 
     #[test]

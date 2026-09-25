@@ -114,6 +114,7 @@ mod tests {
             duration_ms: 1,
             cwd: "/".into(),
             truncated: false,
+            timed_out: false,
         }
     }
 

@@ -30,6 +30,11 @@ pub enum AuditEvent {
         duration_ms: u64,
         cwd: String,
         truncated: bool,
+        /// True if the command outlived its timeout and was interrupted
+        /// (`exit_code` is then 124). `#[serde(default)]` so older audit
+        /// files/lines without this field still parse.
+        #[serde(default)]
+        timed_out: bool,
     },
     Close {
         ts: u64,
@@ -125,6 +130,7 @@ impl AuditWriter {
             duration_ms: r.duration_ms,
             cwd: r.cwd.clone(),
             truncated: r.truncated,
+            timed_out: r.timed_out,
         });
     }
 
@@ -217,6 +223,34 @@ mod tests {
         assert_eq!(v["command"], "rm -rf /tmp/x");
         assert!(v["reason"].as_str().unwrap().contains("deny pattern"));
         assert!(v["ts"].as_u64().unwrap() > 0);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn exec_event_records_timed_out() {
+        let dir = std::env::temp_dir().join(format!("ek_audit_to_{}", now_ms()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("audit.jsonl");
+        let w = AuditWriter::new(path.clone());
+        w.exec(
+            "sess_1",
+            "local",
+            &execkit::ExecResult {
+                command: "sleep 30".into(),
+                stdout: String::new(),
+                stderr: String::new(),
+                exit_code: 124,
+                duration_ms: 1000,
+                cwd: "/tmp".into(),
+                truncated: false,
+                budget: None,
+                timed_out: true,
+            },
+        );
+        let body = std::fs::read_to_string(&path).unwrap();
+        let v: serde_json::Value = serde_json::from_str(body.lines().next().unwrap()).unwrap();
+        assert_eq!(v["timed_out"], true);
+        assert_eq!(v["exit_code"], 124);
         let _ = std::fs::remove_dir_all(&dir);
     }
 }
