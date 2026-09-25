@@ -69,7 +69,7 @@ being cut in half.
 | Encoded, reversed or split secrets | `base64`, `rev` or `cut` output no longer has the shape |
 | Secrets with no recognisable shape and no secret-named variable | for example a password printed from a file the session never assigned |
 | Values assigned outside the session | a variable set in a login profile or by another process is not learned |
-| Secret-named values that look like code | an unquoted value that is an identifier (3+ characters) immediately followed by a code-shaped `(...)`, `<...>`, `[...]` or `{...}` is left alone so source code stays readable: `token: Option<String>`, `access_key = cfg.get("x")`, `secret = vec[0]`. An unquoted password of that exact shape (such as `Pass[123]`) is missed too; quote it |
+| Secret-named values that look like code | an unquoted value is left alone only in three code shapes, so source code stays readable: a dotted or `::` path ending at a bracket (`access_key = cfg.get("x")`), `<` followed by an uppercase letter (`token: Option<String>`), or `(` followed by a quote (`token = get("abc")`). Other bracketed values, such as `Pass[123]`, `Summer{2024}` or `abc(def)`, are redacted, and so are code lines like `secret = vec[0]` |
 
 Redacted output is not file-accurate. Redaction can also hit ordinary code: a
 secret-named field with a bare identifier as its value, such as TypeScript

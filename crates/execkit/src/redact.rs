@@ -39,44 +39,54 @@ fn templated(re: &str, replacement: &'static str) -> Pattern {
 
 /// Replacement for the key/value pattern: group 1 is the `name=` prefix,
 /// then either a quoted value (groups 2-4: open quote, body, close quote) or
-/// an unquoted one (group 5, plus group 6: a `)` right after it, consumed so
-/// it can be seen here and put back). A quoted value is always redacted,
-/// keeping its quotes. An unquoted value is left alone when it is code.
+/// an unquoted one (group 5, plus group 6: the quote or `)` right after it,
+/// consumed so it can be seen here and put back). A quoted value is always
+/// redacted, keeping its quotes. An unquoted value is left alone when it is
+/// code.
 fn key_value_replace(c: &Captures) -> String {
     let prefix = &c[1];
     if let (Some(open), Some(close)) = (c.get(2), c.get(4)) {
         return format!("{prefix}{}[REDACTED]{}", open.as_str(), close.as_str());
     }
     let value = c.get(5).map_or("", |m| m.as_str());
-    let paren = c.get(6).map_or("", |m| m.as_str());
-    if looks_like_code(value, !paren.is_empty()) {
+    let after = c.get(6).map_or("", |m| m.as_str());
+    if looks_like_code(value, after.chars().next()) {
         return c[0].to_string();
     }
-    format!("{prefix}[REDACTED]{paren}")
+    format!("{prefix}[REDACTED]{after}")
 }
 
-/// An unquoted value is code, not a secret, when it is an identifier path
-/// (letters, digits, `_`, `.`, `::`; 3+ chars, not starting with a digit)
-/// immediately followed by `(`, `<`, `[` or `{`, and what follows the
-/// bracket is itself code-shaped (identifier/bracket/`,` characters only)
-/// and either empty, ending in a closer or `,`, or closed by the `)` right
-/// after the value. So `cfg.get(` (then `"x")`), `Option<String>,`,
-/// `vec[0]`, `load(x` (then `)`) are code, while `Xk9(mQ2!zR`,
-/// `abc[1]def` and `a.b(c` are redacted.
-fn looks_like_code(value: &str, closed_by_paren: bool) -> bool {
+/// An unquoted value is code, not a secret, only in these narrow shapes -
+/// an identifier (letters, digits, `_`, `.`, `::`; 3+ chars, not starting
+/// with a digit) immediately followed by a bracket, and:
+/// - the identifier is a path (has `.` or `::`) and the value ends right at
+///   the bracket (`cfg.get(` then `"x")`, `self.tokens.first(` then `)`);
+/// - the bracket is `<` followed by an uppercase letter (`Option<String>`,
+///   `Map<K,`);
+/// - the bracket is `(` followed by a quote (`get(` then `"abcdef")`).
+///
+/// Everything else is redacted, including real code like `vec[0]` or
+/// `load(x)`: human passwords (`Pass[123]`, `Summer{2024}`, `abc(def)`)
+/// have the same shape, and leaking one is worse. `next` is the character
+/// right after the value (a quote or `)`), if any.
+fn looks_like_code(value: &str, next: Option<char>) -> bool {
     let id_len = value
         .find(|ch: char| !(ch.is_ascii_alphanumeric() || matches!(ch, '_' | '.' | ':')))
         .unwrap_or(value.len());
     let (id, rest) = value.split_at(id_len);
-    let Some(rest) = rest.strip_prefix(['(', '<', '[', '{']) else {
+    let mut rest_chars = rest.chars();
+    let Some(bracket) = rest_chars.next().filter(|b| "(<[{".contains(*b)) else {
         return false;
     };
-    id.len() >= 3
-        && !id.starts_with(|ch: char| ch.is_ascii_digit())
-        && rest
-            .chars()
-            .all(|ch| ch.is_ascii_alphanumeric() || "_.:,<>[]{}(".contains(ch))
-        && (rest.is_empty() || rest.ends_with([')', '>', ']', '}', ',']) || closed_by_paren)
+    if id.len() < 3 || id.starts_with(|ch: char| ch.is_ascii_digit()) {
+        return false;
+    }
+    let after = rest_chars.as_str();
+    let first_after = after.chars().next().or(next);
+    let is_path = id.contains('.') || id.contains("::");
+    (is_path && after.is_empty())
+        || (bracket == '<' && first_after.is_some_and(|ch| ch.is_ascii_uppercase()))
+        || (bracket == '(' && after.is_empty() && matches!(next, Some('"' | '\'')))
 }
 
 fn patterns() -> &'static [Pattern] {
@@ -149,14 +159,14 @@ fn patterns() -> &'static [Pattern] {
             // (losing a trailing `,` after a redacted value is the price).
             // A quoted value runs to the next quote and may hold anything
             // (`"p(ss)word"`). An unquoted value may contain brackets too
-            // (`Xk9(mQ2!zR`); only code shapes - an identifier immediately
-            // followed by `(`, `<`, `[` or `{` (`cfg.get("x")`,
-            // `Option<String>`) - are left alone, decided in
-            // `key_value_replace` since `regex` has no look-around. A bare
+            // (`Xk9(mQ2!zR`); only a few narrow code shapes (`cfg.get("x")`,
+            // `Option<String>`, `get("x")` - see `looks_like_code`) are left
+            // alone, decided in `key_value_replace` since `regex` has no
+            // look-around. A bare
             // identifier value (TS `password: string`) still matches.
             Pattern {
                 re: Regex::new(
-                    r#"(?i)\b((?:[a-z0-9_]*_)?(?:password|passwd|secret[_-]?key|secret|token|api[_-]?key|access[_-]?key|private[_-]?key)["']?\s*[:=]\s*)(?:(["'])([^"'\r\n]{4,})(["'])|([^\s"';&|)]{4,})(\))?)"#,
+                    r#"(?i)\b((?:[a-z0-9_]*_)?(?:password|passwd|secret[_-]?key|secret|token|api[_-]?key|access[_-]?key|private[_-]?key)["']?\s*[:=]\s*)(?:(["'])([^"'\r\n]{4,})(["'])|([^\s"';&|)]{4,})(["')])?)"#,
                 )
                 .unwrap(),
                 replacement: Replacement::Func(key_value_replace),
@@ -647,10 +657,8 @@ mod tests {
         for line in [
             "pub token: Option<String>,",
             r#"let access_key = cfg.get("x");"#,
-            "let secret = vec[0];",
             "password: Map<K, V>",
             "token: self.tokens.first()",
-            "api_key = build{x}",
         ] {
             assert_eq!(redact(line), line, "source line must survive");
             assert_eq!(redact_command(line), line, "source line must survive");
@@ -735,14 +743,48 @@ mod tests {
             "pub token: Option<String>,",
             r#"let access_key = cfg.get("x");"#,
             r#"let token = get("abcdef");"#,
-            "let secret = vec[0];",
-            "token = load(x);",
             "password: Map<K, V>",
             "token: self.tokens.first()",
-            "api_key = build{x}",
             "let token = std::env::var(\"T\");",
+            "token = std::env::var('T')",
         ] {
             assert_eq!(redact(line), line);
+        }
+    }
+
+    /// Only the narrow code shapes survive; bracket shapes that also look
+    /// like human passwords are redacted, even when they are really code.
+    #[test]
+    fn ambiguous_bracket_values_are_redacted() {
+        for (input, want) in [
+            ("let secret = vec[0];", "let secret = [REDACTED];"),
+            ("token = load(x);", "token = [REDACTED]);"),
+            ("api_key = build{x}", "api_key = [REDACTED]"),
+        ] {
+            assert_eq!(redact(input), want);
+        }
+    }
+
+    #[test]
+    fn human_passwords_with_brackets_are_redacted_in_output() {
+        for (input, secret) in [
+            ("password=abc(def)", "abc(def"),
+            ("DB_PASSWORD=Pass[123]", "Pass[123]"),
+            ("password=Hunter[2024]", "Hunter[2024]"),
+            ("password=Summer{2024}", "Summer{2024}"),
+            ("password=Pass(word)!", "Pass(word"),
+            ("password=Passw0rd(", "Passw0rd("),
+            ("token=abc<def>", "abc<def>"),
+            ("SECRET=Tr0ub4dor[3]", "Tr0ub4dor[3]"),
+            ("secret: s3cr3t(1)", "s3cr3t(1"),
+            ("token: Abc123(def)", "Abc123(def"),
+            ("password=a.b(c", "a.b(c"),
+        ] {
+            // Output path (a `cat .env`), not only the command path.
+            let r = redact(input);
+            assert!(!r.contains(secret), "{input} -> {r}");
+            let key = &input[..input.find(secret).unwrap()];
+            assert!(r.starts_with(&format!("{key}[REDACTED]")), "{input} -> {r}");
         }
     }
 
