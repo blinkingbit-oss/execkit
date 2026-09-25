@@ -60,7 +60,7 @@ being cut in half.
 | PEM private keys | the whole `-----BEGIN ... PRIVATE KEY-----` block, not just the header |
 | Passwords in URLs | `postgres://user:[REDACTED]@db` (user and host are kept) |
 | Bearer tokens | `Authorization: Bearer [REDACTED]` (the word `Bearer` is kept; tokens of 16+ characters) |
-| Secret-named `key=value` / `key: value` pairs | `password`, `passwd`, `secret`, `token`, `api_key`, `access_key`, `private_key`, including prefixed names like `DB_PASSWORD` or `AWS_SECRET_ACCESS_KEY` (values of 4+ characters that end at whitespace, a quote, the end of the line or one of `;&\|,)`) |
+| Secret-named `key=value` / `key: value` pairs | `password`, `passwd`, `secret`, `token`, `api_key`, `access_key`, `private_key`, including prefixed names like `DB_PASSWORD` or `AWS_SECRET_ACCESS_KEY` (values of 4+ characters that end at whitespace, a quote, the end of the line or one of `;&\|)`; a comma does not end a value, so a trailing `,` is redacted with it) |
 | Values the session assigned to secret-named variables | after `export DB_PASS=hunter2hunter2`, the literal `hunter2hunter2` is redacted wherever it appears later in that session (names containing `token`, `secret`, `passw`, `api_key`, `private_key`, `credential` or `auth`; values of 6+ characters) |
 
 | Not covered | Why |

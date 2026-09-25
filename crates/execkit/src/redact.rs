@@ -83,13 +83,15 @@ fn patterns() -> &'static [Pattern] {
             // load()` untouched, since nothing there follows the name. The
             // optional `(?:[a-z0-9_]*_)?` prefix (must end in `_`) catches
             // compound names like `DB_PASSWORD`/`AWS_SECRET_ACCESS_KEY`
-            // without also matching `OLDPWD` or `tokenizer` (R8). `pwd` is
-            // deliberately not a keyword (R9): `PWD` is an ordinary,
+            // without also matching `OLDPWD` or `tokenizer`. `pwd` is
+            // deliberately not a keyword: `PWD` is an ordinary,
             // non-secret shell env var (current working directory). The value
-            // stops at `;`, `&`, `|`, `,` and `)`, so in `X_TOKEN=v&&echo ok`
-            // only `v` is redacted and the rest of the command stays readable.
+            // stops at `;`, `&`, `|` and `)`, so in `X_TOKEN=v&&echo ok` only
+            // `v` is redacted and the rest of the command stays readable. A
+            // comma does NOT end it: `password=abcd,efg` must not leak `efg`
+            // (losing a trailing `,` after a redacted value is the price).
             // The value must also END at a boundary - end of text,
-            // whitespace, a quote, or one of `;&|,)` - which is captured and
+            // whitespace, a quote, or one of `;&|)` - which is captured and
             // put back (no look-around in `regex`). The value may not contain
             // `(`, `<`, `[` or `{`, and `.` is not a boundary, so code stays
             // intact: `cfg.get("x")`, `Option<String>`, `vec[0]`,
@@ -97,7 +99,7 @@ fn patterns() -> &'static [Pattern] {
             // boundary is redacted). A bare identifier value (TS
             // `password: string`) still matches.
             templated(
-                r#"(?i)\b((?:[a-z0-9_]*_)?(?:password|passwd|secret|token|api[_-]?key|access[_-]?key|private[_-]?key)["']?\s*[:=]\s*["']?)[^\s"';&|,)(<\[{]{4,}($|[\s"';&|,)])"#,
+                r#"(?i)\b((?:[a-z0-9_]*_)?(?:password|passwd|secret|token|api[_-]?key|access[_-]?key|private[_-]?key)["']?\s*[:=]\s*["']?)[^\s"';&|)(<\[{]{4,}($|[\s"';&|)])"#,
                 "${1}[REDACTED]${2}",
             ),
         ]
@@ -611,7 +613,7 @@ mod tests {
                 "export GH_TOKEN=abcdef123;echo ok",
                 "export GH_TOKEN=[REDACTED];echo ok",
             ),
-            ("token=abcd1234, next", "token=[REDACTED], next"),
+            ("token=abcd1234, next", "token=[REDACTED] next"),
             (
                 "password=hunter22\nsecret=hunter33",
                 "password=[REDACTED]\nsecret=[REDACTED]",
@@ -623,6 +625,16 @@ mod tests {
         ] {
             assert_eq!(redact(input), want, "{input}");
         }
+    }
+
+    #[test]
+    fn comma_does_not_end_a_redacted_value() {
+        let r = redact("password=abcd,efg");
+        assert!(!r.contains("efg"), "partial secret leak: {r}");
+        assert_eq!(r, "password=[REDACTED]");
+        let r = redact("token: abcd1234efgh,");
+        assert!(!r.contains("abcd1234efgh"), "{r}");
+        assert!(r.starts_with("token: [REDACTED]"), "{r}");
     }
 
     #[test]
