@@ -33,10 +33,20 @@ agent knows the output was shaped:
 
 ## How much output a budget sees
 
-With a budget, execkit reads up to 8 MiB of each stream before shaping it, so
-`grep` finds a match anywhere in a large log and `lines_total` is the real count.
-Output past 8 MiB is compacted: execkit keeps the first and last 4 MiB and puts a
-`[execkit: N bytes elided]` line where the middle was.
+With a budget, execkit holds at least 8 MiB of a command's output in memory before
+shaping it, so `grep` finds a match anywhere in a large log and `lines_total` is
+the real count. Larger output is compacted as it arrives: the buffer may grow to
+16 MiB, then execkit keeps the first 4 MiB and the most recent 4 MiB, with a
+`[execkit: N bytes elided]` line (N is the running total) where the middle was.
+Once that happens, the budget only sees what was kept:
+
+- `lines_total` counts the kept head and tail lines (plus the elision line), not
+  every line the command printed. The result has `truncated: true`, which tells
+  you the count is partial.
+- `grep` cannot match lines in the elided middle.
+
+For very large output, filter in the command itself (`grep`, `tail -n`, `wc -l`),
+or write it to a file and read that in pieces.
 
 Without a budget, output is capped at about 100,000 characters per stream and the
 result has `truncated: true`. Over MCP it also carries a `hint` suggesting a

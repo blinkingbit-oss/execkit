@@ -290,6 +290,9 @@ pub struct StreamReport {
     /// Short label of the pipeline that ran: "all","tail","head","head_tail",
     /// "grep", or composed like "grep+tail".
     pub mode: String,
+    /// Lines in the output the budget saw. If the output outgrew the in-memory
+    /// window (see the book's budget section) that is only the retained head
+    /// and tail, and the result is `truncated`.
     pub lines_total: usize,
     pub lines_kept: usize,
 }
