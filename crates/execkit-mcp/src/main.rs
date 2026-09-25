@@ -47,6 +47,7 @@ use serde::Deserialize;
 
 use execkit::{Budget, Grep, HostKeyVerification, Keep, Policy, Session, SshAuth, SshConfig};
 use execkit_mcp::audit::{self, AuditWriter};
+use execkit_mcp::sshconfig;
 use execkit_mcp::watch;
 
 mod cli;
@@ -170,16 +171,20 @@ struct CreateParams {
     /// Docker container name or id (required for docker).
     #[serde(default)]
     container: Option<String>,
-    /// SSH host (required for ssh).
+    /// SSH host (required for ssh). May be a raw hostname/IP, or a Host alias
+    /// defined in the operator's ~/.ssh/config - HostName/User/Port/IdentityFile
+    /// from a matching alias fill in whatever isn't given below.
     #[serde(default)]
     host: Option<String>,
-    /// SSH port (default 22).
+    /// SSH port (default 22, or the alias's Port).
     #[serde(default)]
     port: Option<u16>,
-    /// SSH user (required for ssh).
+    /// SSH user (required for ssh, unless the ~/.ssh/config Host alias sets User).
     #[serde(default)]
     user: Option<String>,
-    /// SSH password auth.
+    /// SSH password auth. If omitted along with key_path, the resolved
+    /// ~/.ssh/config alias's IdentityFile(s) are tried, then id_ed25519,
+    /// id_ecdsa, id_rsa in the operator's key dir.
     #[serde(default)]
     password: Option<String>,
     /// SSH private-key path (must live under the operator's key dir).
@@ -338,7 +343,10 @@ impl ExeckitServer {
 
     #[tool(
         description = "Open a stateful shell session. transport is \"local\", \"ssh\", or \
-                       \"docker\". ssh needs host, user, and password or key_path; docker needs \
+                       \"docker\". ssh needs host (a hostname/IP, OR a Host alias from the \
+                       operator's ~/.ssh/config - its HostName/User/Port/IdentityFile fill in \
+                       whatever you don't pass) and either password or key_path (or an alias/\
+                       default key resolves auth for you); docker needs \
                        container (a running container name/id). Optional fingerprint (pin host \
                        key), allow/deny command lists. Returns a session_id. \
                        Remote sessions support workspace checkpoints - requires git on \
@@ -834,27 +842,30 @@ fn transport_label(p: &CreateParams) -> String {
 fn build_session(p: CreateParams, config: &Config) -> Result<Session, execkit::Error> {
     let mut session = match p.transport.as_str() {
         "ssh" => {
-            let host = p
+            let host_arg = p
                 .host
                 .ok_or_else(|| execkit::Error::Transport("ssh: 'host' required".into()))?;
-            let user = p
-                .user
-                .ok_or_else(|| execkit::Error::Transport("ssh: 'user' required".into()))?;
-            let auth = if let Some(pw) = p.password {
-                SshAuth::Password(pw)
-            } else if let Some(key) = p.key_path {
-                // Constrain to the operator's key dir; generic error so the path's
-                // existence/parseability never leaks to the (untrusted) caller.
-                let path = validated_key_path(&key, &config.key_dir)?;
-                SshAuth::Key {
-                    path,
-                    passphrase: None,
-                }
-            } else {
-                return Err(execkit::Error::Transport(
-                    "ssh: 'password' or 'key_path' required".into(),
-                ));
-            };
+            // `host` may be a raw hostname/IP or a Host alias from the
+            // operator's own ~/.ssh/config (read from <key_dir>/config; that
+            // file is operator-owned, never a path the agent can choose).
+            // Absent is fine (no alias support, just host/user/port/auth from
+            // the call); any other read error is treated the same
+            // way (best-effort - a malformed/unreadable config degrades to
+            // "no alias", it never blocks the connection).
+            let alias = std::fs::read_to_string(config.key_dir.join("config"))
+                .ok()
+                .and_then(|text| {
+                    sshconfig::lookup(&text, &host_arg, &execkit_mcp::paths::home_dir())
+                });
+            let (host, port, user, auth) = resolve_ssh(
+                host_arg,
+                p.user,
+                p.port,
+                p.password,
+                p.key_path,
+                alias.as_ref(),
+                &config.key_dir,
+            )?;
             // Host-key policy: pin if a fingerprint is supplied (safe - no file
             // I/O on a caller path); otherwise verify against the operator's
             // known_hosts; AcceptAny ONLY via explicit insecure opt-in.
@@ -865,8 +876,11 @@ fn build_session(p: CreateParams, config: &Config) -> Result<Session, execkit::E
             } else {
                 HostKeyVerification::KnownHosts(config.known_hosts.clone())
             };
+            // The resolved hostname/port (not the raw alias/default) drive
+            // both the actual connection and the known_hosts lookup key, so
+            // host-key pinning is keyed on where we actually connect.
             let mut cfg = SshConfig::new(host, user, auth, host_key);
-            if let Some(port) = p.port {
+            if let Some(port) = port {
                 cfg.port = port;
             }
             Session::ssh(cfg)?
@@ -916,6 +930,83 @@ fn validated_key_path(raw: &str, key_dir: &Path) -> Result<PathBuf, execkit::Err
     } else {
         Err(deny())
     }
+}
+
+/// Pure resolution of ssh connection parameters from the tool call's args plus
+/// an optional parsed `~/.ssh/config` alias entry. The only I/O is the
+/// canonicalize calls inside `validated_key_path`; no network access, so this
+/// is unit-testable without a live SSH server.
+///
+/// Precedence: an explicit call argument (`user`/`port`/`password`/
+/// `key_path`) always wins over the alias entry. `host` itself has no
+/// separate override - the caller passed either a raw host or an alias, and
+/// that value resolves the connection host together with the alias: the
+/// alias's `HostName` if present, else the literal `host_or_alias` (matching
+/// real ssh, which connects to the alias name itself when no HostName is set).
+///
+/// Auth: `password` first, then `key_path` (validated against `key_dir`),
+/// then - only when NEITHER was given - the alias's `IdentityFile` entries in
+/// order, then `id_ed25519`/`id_ecdsa`/`id_rsa` in `key_dir`, each checked
+/// with `validated_key_path` so an alias pointing outside `key_dir` is
+/// rejected exactly like an explicit out-of-bounds `key_path` (same generic
+/// error, nothing leaked). Falls through to the existing
+/// "password or key_path required" error if nothing usable is found.
+///
+/// Returns `(resolved_host, resolved_port, resolved_user, auth)`.
+#[allow(clippy::too_many_arguments)]
+fn resolve_ssh(
+    host_or_alias: String,
+    user: Option<String>,
+    port: Option<u16>,
+    password: Option<String>,
+    key_path: Option<String>,
+    alias: Option<&sshconfig::HostEntry>,
+    key_dir: &Path,
+) -> Result<(String, Option<u16>, String, SshAuth), execkit::Error> {
+    let resolved_host = alias
+        .and_then(|e| e.hostname.clone())
+        .unwrap_or(host_or_alias);
+    let resolved_port = port.or_else(|| alias.and_then(|e| e.port));
+    let resolved_user = match user {
+        Some(u) => u,
+        None => alias.and_then(|e| e.user.clone()).ok_or_else(|| {
+            execkit::Error::Transport(
+                "ssh: 'user' required (or define User for this Host in ~/.ssh/config)".into(),
+            )
+        })?,
+    };
+    let auth = if let Some(pw) = password {
+        SshAuth::Password(pw)
+    } else if let Some(key) = key_path {
+        // Constrain to the operator's key dir; generic error so the path's
+        // existence/parseability never leaks to the (untrusted) caller.
+        let path = validated_key_path(&key, key_dir)?;
+        SshAuth::Key {
+            path,
+            passphrase: None,
+        }
+    } else {
+        let alias_candidates = alias.map(|e| e.identity_files.clone()).unwrap_or_default();
+        let default_candidates = ["id_ed25519", "id_ecdsa", "id_rsa"]
+            .into_iter()
+            .map(|name| key_dir.join(name));
+        let found = alias_candidates
+            .into_iter()
+            .chain(default_candidates)
+            .find_map(|candidate| validated_key_path(&candidate.to_string_lossy(), key_dir).ok());
+        match found {
+            Some(path) => SshAuth::Key {
+                path,
+                passphrase: None,
+            },
+            None => {
+                return Err(execkit::Error::Transport(
+                    "ssh: 'password' or 'key_path' required".into(),
+                ))
+            }
+        }
+    };
+    Ok((resolved_host, resolved_port, resolved_user, auth))
 }
 
 fn text(s: String) -> CallToolResult {
@@ -1171,7 +1262,215 @@ async fn run_server() -> anyhow::Result<()> {
 
 #[cfg(test)]
 mod tests {
-    use super::{label_for, sanitize};
+    use super::{label_for, resolve_ssh, sanitize};
+    use execkit::SshAuth;
+    use execkit_mcp::sshconfig::HostEntry;
+    use std::path::{Path, PathBuf};
+
+    /// A scratch directory, deleted on drop - stands in for `key_dir` in
+    /// `resolve_ssh` tests (no `tempfile` dependency needed; matches the
+    /// manual-tempdir style already used in `tests/mcp_e2e.rs`).
+    struct TempKeyDir(PathBuf);
+    impl TempKeyDir {
+        fn new() -> Self {
+            static COUNTER: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+            let n = COUNTER.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            let dir = std::env::temp_dir().join(format!(
+                "execkit_mcp_resolve_ssh_{}_{n}",
+                std::process::id()
+            ));
+            std::fs::create_dir_all(&dir).expect("create temp key dir");
+            TempKeyDir(dir)
+        }
+        fn path(&self) -> &Path {
+            &self.0
+        }
+    }
+    impl Drop for TempKeyDir {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.0);
+        }
+    }
+
+    /// A key_dir with no config file and no default-named keys in it - the
+    /// "no alias, no fallback key" baseline most tests start from.
+    fn empty_key_dir() -> TempKeyDir {
+        TempKeyDir::new()
+    }
+
+    #[test]
+    fn explicit_password_wins_even_with_an_alias_present() {
+        let kd = empty_key_dir();
+        let alias = HostEntry {
+            hostname: Some("10.0.0.5".into()),
+            user: Some("alias_user".into()),
+            port: Some(2200),
+            identity_files: vec![],
+        };
+        let (host, port, user, auth) = resolve_ssh(
+            "myalias".into(),
+            Some("explicit_user".into()),
+            Some(22),
+            Some("hunter2".into()),
+            None,
+            Some(&alias),
+            kd.path(),
+        )
+        .unwrap();
+        assert_eq!(host, "10.0.0.5"); // alias HostName still fills host
+        assert_eq!(port, Some(22)); // explicit port beats alias port
+        assert_eq!(user, "explicit_user"); // explicit user beats alias user
+        assert!(matches!(auth, SshAuth::Password(pw) if pw == "hunter2"));
+    }
+
+    #[test]
+    fn no_alias_no_hostname_keeps_literal_host_and_requires_user() {
+        let kd = empty_key_dir();
+        let err = resolve_ssh(
+            "203.0.113.9".into(),
+            None,
+            None,
+            None,
+            None,
+            None,
+            kd.path(),
+        )
+        .unwrap_err();
+        assert!(err
+            .to_string()
+            .ends_with("ssh: 'user' required (or define User for this Host in ~/.ssh/config)"));
+    }
+
+    #[test]
+    fn alias_user_fills_in_when_call_omits_user() {
+        let kd = empty_key_dir();
+        let alias = HostEntry {
+            hostname: None,
+            user: Some("deploy".into()),
+            port: None,
+            identity_files: vec![],
+        };
+        let (host, _port, user, _auth) = resolve_ssh(
+            "myalias".into(),
+            None,
+            None,
+            Some("pw".into()),
+            None,
+            Some(&alias),
+            kd.path(),
+        )
+        .unwrap();
+        // no HostName in the alias -> the alias name itself is the host,
+        // matching real ssh behavior.
+        assert_eq!(host, "myalias");
+        assert_eq!(user, "deploy");
+    }
+
+    #[test]
+    fn alias_identity_file_outside_key_dir_is_rejected_and_falls_through() {
+        let kd = empty_key_dir();
+        let alias = HostEntry {
+            hostname: None,
+            user: Some("deploy".into()),
+            port: None,
+            identity_files: vec![PathBuf::from("/etc/passwd")],
+        };
+        let err = resolve_ssh(
+            "myalias".into(),
+            None,
+            None,
+            None,
+            None,
+            Some(&alias),
+            kd.path(),
+        )
+        .unwrap_err();
+        // Rejected generically (same message as no auth found at all) - the
+        // out-of-bounds path is never used, and never named in the error.
+        assert!(err
+            .to_string()
+            .ends_with("ssh: 'password' or 'key_path' required"));
+    }
+
+    #[test]
+    fn alias_identity_file_inside_key_dir_is_used() {
+        let kd = empty_key_dir();
+        let key_path = kd.path().join("id_deploy");
+        std::fs::write(&key_path, "fake key material").unwrap();
+        let alias = HostEntry {
+            hostname: None,
+            user: Some("deploy".into()),
+            port: None,
+            identity_files: vec![key_path.clone()],
+        };
+        let (_host, _port, _user, auth) = resolve_ssh(
+            "myalias".into(),
+            None,
+            None,
+            None,
+            None,
+            Some(&alias),
+            kd.path(),
+        )
+        .unwrap();
+        let expected = std::fs::canonicalize(&key_path).unwrap();
+        assert!(matches!(auth, SshAuth::Key { path, .. } if path == expected));
+    }
+
+    #[test]
+    fn falls_back_to_default_key_names_when_no_alias_identity_file() {
+        let kd = empty_key_dir();
+        let key_path = kd.path().join("id_ed25519");
+        std::fs::write(&key_path, "fake key material").unwrap();
+        let (_host, _port, _user, auth) = resolve_ssh(
+            "203.0.113.9".into(),
+            Some("bob".into()),
+            None,
+            None,
+            None,
+            None, // no alias at all
+            kd.path(),
+        )
+        .unwrap();
+        let expected = std::fs::canonicalize(&key_path).unwrap();
+        assert!(matches!(auth, SshAuth::Key { path, .. } if path == expected));
+    }
+
+    #[test]
+    fn no_auth_anywhere_errors_with_original_message() {
+        let kd = empty_key_dir();
+        let err = resolve_ssh(
+            "203.0.113.9".into(),
+            Some("bob".into()),
+            None,
+            None,
+            None,
+            None,
+            kd.path(),
+        )
+        .unwrap_err();
+        assert!(err
+            .to_string()
+            .ends_with("ssh: 'password' or 'key_path' required"));
+    }
+
+    #[test]
+    fn explicit_key_path_outside_key_dir_is_still_rejected() {
+        // Regression guard: alias support must not loosen the existing
+        // explicit key_path bound check.
+        let kd = empty_key_dir();
+        let err = resolve_ssh(
+            "203.0.113.9".into(),
+            Some("bob".into()),
+            None,
+            None,
+            Some("/etc/passwd".into()),
+            None,
+            kd.path(),
+        )
+        .unwrap_err();
+        assert!(err.to_string().ends_with("ssh: key_path not permitted"));
+    }
 
     #[test]
     fn sanitize_blocks_path_separators_and_junk() {

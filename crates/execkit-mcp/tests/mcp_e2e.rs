@@ -297,6 +297,56 @@ fn rejects_key_path_traversal_generically() {
 }
 
 #[test]
+fn ssh_alias_identity_file_outside_key_dir_is_rejected_generically() {
+    // A ~/.ssh/config Host alias's IdentityFile is still bound to the
+    // operator's key_dir, exactly like an explicit key_path: it must never
+    // be used implicitly to read a file outside that dir, and rejection must
+    // not leak the path.
+    let key_dir = std::env::temp_dir().join(format!("execkit_kd_alias_{}", std::process::id()));
+    std::fs::create_dir_all(&key_dir).unwrap();
+    std::fs::write(
+        key_dir.join("config"),
+        "Host myalias\n    HostName 127.0.0.1\n    User bob\n    IdentityFile /etc/passwd\n",
+    )
+    .unwrap();
+    let mut m = Mcp::start(&[("EXECKIT_MCP_KEY_DIR", key_dir.to_str().unwrap())]);
+    let r = m.call(
+        3,
+        "session_create",
+        json!({"transport":"ssh","host":"myalias"}),
+    );
+    assert!(is_error(&r));
+    let t = result_text(&r);
+    // The alias's IdentityFile was rejected and there's no default-named key
+    // in key_dir either, so this falls all the way through to the ordinary
+    // "no auth" error - never a connection attempt with /etc/passwd.
+    assert!(t.contains("'password' or 'key_path' required"), "{t}");
+    assert!(!t.contains("passwd"), "must not leak the path: {t}");
+    let _ = std::fs::remove_dir_all(&key_dir);
+}
+
+#[test]
+fn ssh_alias_miss_still_requires_user_with_config_hint() {
+    // No alias in ~/.ssh/config matches, and no user was passed: the error
+    // must name the ~/.ssh/config escape hatch, not just say "required".
+    let key_dir = std::env::temp_dir().join(format!("execkit_kd_nouser_{}", std::process::id()));
+    std::fs::create_dir_all(&key_dir).unwrap();
+    let mut m = Mcp::start(&[("EXECKIT_MCP_KEY_DIR", key_dir.to_str().unwrap())]);
+    let r = m.call(
+        3,
+        "session_create",
+        json!({"transport":"ssh","host":"127.0.0.1"}),
+    );
+    assert!(is_error(&r));
+    assert!(
+        result_text(&r).contains("'user' required (or define User for this Host in ~/.ssh/config)"),
+        "{}",
+        result_text(&r)
+    );
+    let _ = std::fs::remove_dir_all(&key_dir);
+}
+
+#[test]
 fn output_budget_shapes_and_reports() {
     let mut m = Mcp::start(&[]);
     let created = m.call(3, "session_create", json!({"transport":"local"}));
