@@ -10,7 +10,7 @@
 [![guide](https://img.shields.io/badge/guide-online-blue.svg)](https://blinkingbit-oss.github.io/execkit/)
 [![license](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](LICENSE)
 
-![The execkit live viewer: sessions grouped by transport on the left, the selected session's shell transcript with exit codes and timings on the right](docs/assets/demo-1-main.png)
+![The execkit live viewer: sessions grouped by transport and host on the left, the selected session's timestamped shell transcript with exit codes and timings on the right](docs/assets/demo-1-main.png)
 
 </div>
 
