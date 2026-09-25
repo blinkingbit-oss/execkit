@@ -47,3 +47,27 @@ fn invalid_regex_fails_before_running() {
     let err = s.exec_budgeted("echo hi", &Budget::grep("(")).unwrap_err();
     assert!(matches!(err, execkit::Error::Budget(_)));
 }
+
+// Output used to be compacted to ~200 KB BEFORE the budget ran, so
+// `seq 1 200000` (~1.4 MB) reported a truncated line total and a middle-line
+// grep found nothing. `r.stdout` ends with the true tail (the render()
+// elision marker for the 199997 dropped lines is pre-existing Budget::tail
+// behaviour, unrelated to this fix - see `tail_keeps_last_n_with_report`
+// above) and `lines_total` reflects the full, uncompacted output.
+#[test]
+fn budget_sees_true_line_total_for_large_output() {
+    let mut s = execkit::Session::local().unwrap();
+    let b = execkit::Budget::tail(3);
+    let r = s.exec_budgeted("seq 1 200000", &b).unwrap();
+    assert!(r.stdout.ends_with("199998\n199999\n200000"));
+    assert_eq!(r.budget.unwrap().stdout.lines_total, 200000);
+}
+
+#[test]
+fn grep_finds_middle_of_large_output() {
+    let mut s = execkit::Session::local().unwrap();
+    let b = execkit::Budget::grep("^100000$");
+    let r = s.exec_budgeted("seq 1 200000", &b).unwrap();
+    assert!(r.stdout.contains("100000"));
+    assert_eq!(r.budget.unwrap().stdout.lines_kept, 1);
+}

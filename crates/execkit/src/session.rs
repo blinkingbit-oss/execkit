@@ -199,7 +199,18 @@ impl Session {
             return Err(Error::SessionPoisoned);
         }
         let started = Instant::now();
-        let f = self.run_framed_for(command, timeout)?;
+        // Budgets need to see the FULL output to report a true line total and
+        // let grep find a match anywhere (not just in the last ~200 KB): give
+        // the accumulator a much larger cap whenever a non-default budget is
+        // shaping this call. Plain (unbudgeted) output keeps the smaller
+        // cap - it's returned to the caller as-is, so bounding it early still
+        // protects memory without changing behaviour.
+        let acc_cap = if *budget != Budget::default() {
+            8 * 1024 * 1024
+        } else {
+            self.default_acc_cap()
+        };
+        let f = self.run_framed_for(command, timeout, acc_cap)?;
         let (stdout, rep_out, cap_out) =
             budget::apply(&redact(&f.stdout), budget, self.max_output)?;
         let (stderr, rep_err, cap_err) =
@@ -499,7 +510,8 @@ impl Session {
     /// output from an interrupted internal command must not be parsed as a
     /// result. The session itself stays usable.
     fn run_framed(&mut self, command: &str) -> Result<Framed> {
-        let f = self.run_framed_for(command, self.timeout)?;
+        let acc_cap = self.default_acc_cap();
+        let f = self.run_framed_for(command, self.timeout, acc_cap)?;
         if f.timed_out {
             return Err(Error::Transport(format!(
                 "internal command timed out after {}s and was interrupted",
@@ -509,11 +521,28 @@ impl Session {
         Ok(f)
     }
 
+    /// The default in-memory accumulation cap: for plain (unbudgeted) output,
+    /// where whatever survives compaction is what the caller gets back.
+    fn default_acc_cap(&self) -> usize {
+        self.max_output.saturating_mul(2).max(65_536)
+    }
+
     /// Run one command through the sentinel framing; return raw cleaned output.
     /// No policy, redaction, bounding, audit, or auto-snapshot - callers add what
     /// they need. On timeout it interrupts and resyncs (see [`Session::exec`]);
     /// it poisons the session only if that fails or the shell exits.
-    fn run_framed_for(&mut self, command: &str, timeout: Duration) -> Result<Framed> {
+    ///
+    /// `acc_cap` bounds how much of the command's output is accumulated before
+    /// mid-stream compaction kicks in: a small cap is fine for plain exec (the
+    /// caller only sees that much anyway), but a budget (grep/head/tail/max_chars)
+    /// needs to see the FULL output to report true line totals and find matches
+    /// anywhere - callers pass a much larger cap in that case (see `exec_inner`).
+    fn run_framed_for(
+        &mut self,
+        command: &str,
+        timeout: Duration,
+        acc_cap: usize,
+    ) -> Result<Framed> {
         // SEC: a fresh token per command, so a marker seen (or guessed) during
         // one command is useless for forging the next one's result.
         let token = framing::new_token();
@@ -521,7 +550,6 @@ impl Session {
         self.io
             .write_all(framing::build_payload(command, &token).as_bytes())?;
 
-        let max_acc = self.max_output.saturating_mul(2).max(65_536);
         let mut acc: Vec<u8> = Vec::new();
         let mut overflowed = false;
         let deadline = Instant::now() + timeout;
@@ -546,13 +574,8 @@ impl Session {
                 }
             };
             acc.extend_from_slice(&chunk);
-            if acc.len() > max_acc {
-                let keep = max_acc / 2;
-                let tail_start = acc.len() - keep;
-                let mut compacted = Vec::with_capacity(keep * 2);
-                compacted.extend_from_slice(&acc[..keep]);
-                compacted.extend_from_slice(&acc[tail_start..]);
-                acc = compacted;
+            if acc.len() > acc_cap {
+                acc = compact(acc, acc_cap);
                 overflowed = true;
             }
             if let Some(p) = framing::parse(&acc, &markers) {
@@ -650,6 +673,28 @@ impl Session {
     }
 }
 
+/// Mid-stream anti-flood compaction: when the raw accumulator exceeds
+/// `acc_cap`, keep the first and last `acc_cap / 2` bytes.
+///
+/// The two halves are joined with a `\n[execkit: {n} bytes elided]\n`
+/// separator rather than concatenated directly: without it, whatever bytes
+/// happen to fall right before and right after the cut become adjacent, so a
+/// secret straddling the cut point could be silently rejoined into something
+/// redaction (which matches on the final text) fails to recognize. The
+/// separator makes the gap explicit and guarantees head and tail bytes are
+/// never immediately adjacent.
+fn compact(acc: Vec<u8>, acc_cap: usize) -> Vec<u8> {
+    let keep = acc_cap / 2;
+    let tail_start = acc.len() - keep;
+    let elided = tail_start - keep;
+    let sep = format!("\n[execkit: {elided} bytes elided]\n");
+    let mut compacted = Vec::with_capacity(keep * 2 + sep.len());
+    compacted.extend_from_slice(&acc[..keep]);
+    compacted.extend_from_slice(sep.as_bytes());
+    compacted.extend_from_slice(&acc[tail_start..]);
+    compacted
+}
+
 /// Raw result of one framed command (pre-redaction/bounding).
 struct Framed {
     stdout: String,
@@ -702,7 +747,46 @@ mod checkpoint_api_tests {
 
 #[cfg(test)]
 mod tests {
-    use super::{is_valid_checkpoint_id, is_valid_container_ref};
+    use super::{compact, is_valid_checkpoint_id, is_valid_container_ref};
+
+    #[test]
+    fn compact_separates_head_and_tail_with_elision_marker() {
+        // A "secret" that would straddle a direct head/tail join: its first
+        // half ends up kept in the head, its second half kept in the tail.
+        // Simulate an accumulator where the middle (including the rest of
+        // the secret) gets dropped: "SECRET_PREFIX" is the last bytes of
+        // head, "SECRET_SUFFIX" is the first bytes of tail.
+        let head = format!("{}SECRET_PREFIX", "h".repeat(100));
+        let tail = format!("SECRET_SUFFIX{}", "t".repeat(100));
+        let middle = "m".repeat(1000);
+        let acc = format!("{head}{middle}{tail}").into_bytes();
+        let acc_cap = (head.len() + tail.len()) * 2; // forces keep = head.len() ~= tail.len()
+        let compacted = compact(acc, acc_cap);
+        let text = String::from_utf8(compacted).unwrap();
+
+        // Head and tail survive...
+        assert!(text.contains("SECRET_PREFIX"));
+        assert!(text.contains("SECRET_SUFFIX"));
+        // ...but never directly adjacent: a separator sits between them, so
+        // "SECRET_PREFIXSECRET_SUFFIX" can never appear rejoined.
+        assert!(!text.contains("SECRET_PREFIXSECRET_SUFFIX"));
+        assert!(text.contains("bytes elided]"));
+        let sep_pos = text.find("[execkit:").unwrap();
+        let prefix_end = text.find("SECRET_PREFIX").unwrap() + "SECRET_PREFIX".len();
+        let suffix_start = text.find("SECRET_SUFFIX").unwrap();
+        assert!(prefix_end <= sep_pos, "separator must follow the head");
+        assert!(suffix_start >= sep_pos, "separator must precede the tail");
+    }
+
+    #[test]
+    fn compact_reports_correct_elided_byte_count() {
+        let acc = vec![b'x'; 1000];
+        let acc_cap = 100; // keep = 50 each side
+        let compacted = compact(acc, acc_cap);
+        let text = String::from_utf8(compacted).unwrap();
+        // 1000 total - 50 head - 50 tail = 900 elided.
+        assert!(text.contains("[execkit: 900 bytes elided]"), "{text}");
+    }
 
     #[test]
     fn checkpoint_id_validation() {

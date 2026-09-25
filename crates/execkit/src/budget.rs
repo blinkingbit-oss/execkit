@@ -122,7 +122,9 @@ fn grep_keep_indices(content: &[&str], re: &regex::Regex, context: usize) -> Vec
     for (i, line) in content.iter().enumerate() {
         if re.is_match(line) {
             let lo = i.saturating_sub(context);
-            let hi = (i + context).min(content.len().saturating_sub(1));
+            let hi = i
+                .saturating_add(context)
+                .min(content.len().saturating_sub(1));
             for k in keep.iter_mut().take(hi + 1).skip(lo) {
                 *k = true;
             }
@@ -159,6 +161,13 @@ mod grep_tests {
     #[test]
     fn no_match_is_empty() {
         assert!(idx("a\nb\nc", "ZZZ", 2).is_empty());
+    }
+
+    #[test]
+    fn huge_context_does_not_panic() {
+        let content = ["a", "b"];
+        let re = regex::Regex::new("a").unwrap();
+        assert_eq!(grep_keep_indices(&content, &re, usize::MAX), vec![0, 1]);
     }
 }
 
