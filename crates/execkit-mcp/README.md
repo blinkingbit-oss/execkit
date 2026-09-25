@@ -3,7 +3,7 @@
 <!-- mcp-name: io.github.blinkingbit-oss/execkit -->
 
 An [MCP](https://modelcontextprotocol.io) server (stdio) that exposes
-[`execkit`](../execkit) shell sessions to any MCP-capable agent - Claude Code,
+[`execkit`](https://github.com/blinkingbit-oss/execkit/tree/main/crates/execkit) shell sessions to any MCP-capable agent - Claude Code,
 Cursor, Gemini CLI, Codex, VS Code, Windsurf, and others.
 
 ## Tools

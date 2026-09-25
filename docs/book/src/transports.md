@@ -80,9 +80,15 @@ Host-key handling is safe by default:
   across:
 
   ```sh
-  mkdir -p -m 700 ~/.execkit
+  mkdir -p ~/.execkit && chmod 700 ~/.execkit
   grep -E '^[^ ]+ SHA256:' ~/.ssh/known_hosts >> ~/.execkit/known_hosts
   ```
+
+  Old pins were keyed by bare host whatever the port. A line for a host you
+  reached on a port other than 22 must be rewritten as `[host]:port` after
+  copying (for example `example.com SHA256:...` becomes
+  `[example.com]:2222 SHA256:...`); left as is, it is read as the port-22 pin,
+  so a later port-22 connection to that host fails as a key mismatch.
 
   If `EXECKIT_MCP_KNOWN_HOSTS` points at an OpenSSH-format file, connecting to a
   new host fails with an error saying so, instead of writing to that file. See

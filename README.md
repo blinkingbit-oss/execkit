@@ -179,7 +179,11 @@ Breaking changes from 0.8. The details are in
 
 - SSH host keys are pinned in `~/.execkit/known_hosts`, not `~/.ssh/known_hosts`.
   Old pins are not read. The first connection re-pins, or copy them over with
+  `mkdir -p ~/.execkit && chmod 700 ~/.execkit` then
   `grep -E '^[^ ]+ SHA256:' ~/.ssh/known_hosts >> ~/.execkit/known_hosts`.
+  Old pins were keyed by bare host whatever the port: rewrite a line for a
+  non-22 port as `[host]:port`, or a later port-22 connection to that host fails
+  as a key mismatch.
 - stdin is `/dev/null` for every command, and pagers are set to `cat`.
 - The target needs `base64`.
 - A timeout returns exit code 124 with `timed_out: true` and keeps the session,

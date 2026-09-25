@@ -23,7 +23,9 @@ Two requirements:
 
 1. **`git` on the remote host.** Checkpoints use a shadow git repo. If git is
    absent, auto-snapshot disables itself and checkpoint calls return a clear
-   "install git on the remote" error.
+   "install git on the remote" error. Restore needs git 2.22 or newer (it uses
+   `git checkout --no-overlay`); with an older git, `session_restore` fails
+   with git's error and changes no files.
 2. **An explicit `workspace`** on `session_create`. Without it, checkpoints and
    auto-snapshot are off. execkit will **not** default to the cwd or `$HOME`,
    snapshotting a home directory is slow and would capture secrets. Set
