@@ -265,6 +265,15 @@ impl Session {
         Ok(result)
     }
 
+    /// Redact `cmd` as this session would redact its own `command` field:
+    /// secret shapes, values learned from earlier commands, and values `cmd`
+    /// itself assigns to secret-shaped names. Nothing is learned for later.
+    /// For commands rejected before they reach [`Session::exec`] (e.g. by an
+    /// outer policy) that still need to be logged.
+    pub fn redact_command(&self, cmd: &str) -> String {
+        self.redactor.redact_command(cmd)
+    }
+
     /// Before a changing remote command, take a snapshot (best-effort). Skipped
     /// for local sessions, when auto is off, for read-only commands, and silently
     /// if git is missing on the remote (so the user's command still runs).

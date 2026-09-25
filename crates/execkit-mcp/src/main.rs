@@ -478,14 +478,22 @@ impl ExeckitServer {
         // the command; it is audited and pushed to the client, then returned as a
         // tool error so the agent can adapt.
         if let Err(reason) = self.operator_policy.check(&command) {
+            // SEC: the command never ran, but it still lands in the audit log
+            // and the client notification - redact it like an executed one.
+            // A busy session (lock held by a running exec) must not stall the
+            // block, so fall back to redaction without its learned values.
+            let shown = match session.session.try_lock() {
+                Ok(s) => s.redact_command(&command),
+                Err(_) => execkit::redact_command(&command),
+            };
             if let Some(a) = &audit {
-                a.blocked(&session_id, &transport, &command, &reason);
+                a.blocked(&session_id, &transport, &shown, &reason);
             }
             notify_blocked(
                 &ctx.peer,
                 ctx.meta.get_progress_token(),
                 &session_id,
-                &command,
+                &shown,
                 &reason,
             )
             .await;

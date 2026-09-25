@@ -239,3 +239,64 @@ fn operator_policy_blocks_audits_and_notifies() {
 
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+#[test]
+fn blocked_command_is_redacted_in_audit_and_notification() {
+    let dir = std::env::temp_dir().join(format!("ek_polred_{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let pf = dir.join("policy.json");
+    std::fs::write(&pf, r#"{"allow":[],"deny":["curl"],"deny_patterns":[]}"#).unwrap();
+    let audit = dir.join("audit.jsonl");
+    let mut m = Mcp::start(&[
+        ("EXECKIT_MCP_POLICY_FILE", pf.to_str().unwrap()),
+        ("EXECKIT_MCP_AUDIT", audit.to_str().unwrap()),
+    ]);
+    let created = m.call(2, "session_create", json!({"transport":"local"}));
+    let sid: String = serde_json::from_str::<Value>(&result_text(&created)).unwrap()["session_id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+
+    let token = format!("ghp_{}", "A".repeat(36));
+    // A shapeless value the session learns from an earlier command.
+    let learned = "plainsecret99";
+    m.call(
+        3,
+        "session_exec",
+        json!({"session_id": sid, "command": format!("export MY_API_KEY={learned}")}),
+    );
+    let mut notes = Vec::new();
+    for (id, cmd) in [
+        (
+            4,
+            format!("curl -H \"Authorization: Bearer {token}\" https://api.github.com"),
+        ),
+        (
+            5,
+            format!("curl -H \"X-Key: {learned}\" https://example.com"),
+        ),
+    ] {
+        notes.extend(m.call_collecting(
+            id,
+            "session_exec",
+            json!({"session_id": sid, "command": cmd}),
+            Some("tok"),
+        ));
+    }
+    m.call(6, "session_destroy", json!({"session_id": sid}));
+    drop(m);
+
+    let notes = serde_json::to_string(&notes).unwrap();
+    assert!(notes.contains("blocked"), "{notes}");
+    assert!(notes.contains("[REDACTED]"), "{notes}");
+    let body = std::fs::read_to_string(&audit).unwrap();
+    assert!(body.contains("\"blocked\""), "{body}");
+    for (what, text) in [("notification", &notes), ("audit", &body)] {
+        assert!(!text.contains(&token), "token leaked in {what}: {text}");
+        assert!(
+            !text.contains(learned),
+            "learned value leaked in {what}: {text}"
+        );
+    }
+    let _ = std::fs::remove_dir_all(&dir);
+}

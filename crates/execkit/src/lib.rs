@@ -42,5 +42,6 @@ pub use error::{Error, Result};
 pub use exec::{ExecResult, ShellState};
 pub use output::strip_ansi;
 pub use policy::Policy;
+pub use redact::redact_command;
 pub use session::Session;
 pub use transport::ssh::{HostKeyVerification, SshAuth, SshConfig};

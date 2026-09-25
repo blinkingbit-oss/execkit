@@ -136,7 +136,7 @@ fn strip_quotes(s: &str) -> &str {
 /// learned (via [`Redactor::learn_from_command`]) from commands the session
 /// has run, so a value with no recognizable shape still gets redacted once
 /// it's been assigned to a secret-shaped name.
-#[derive(Default)]
+#[derive(Default, Clone)]
 pub struct Redactor {
     literals: Vec<String>,
 }
@@ -175,6 +175,26 @@ impl Redactor {
             out = out.replace(lit.as_str(), "[REDACTED]");
         }
         out
+    }
+}
+
+/// Redact a command line the way a session redacts its own `command` field:
+/// known secret shapes plus the values the command itself assigns to
+/// secret-shaped names (`export MY_AUTH=...`). For commands that never reach
+/// a session (e.g. blocked by an operator policy) - see also
+/// [`crate::Session::redact_command`], which also applies what the session
+/// learned earlier.
+pub fn redact_command(cmd: &str) -> String {
+    Redactor::default().redact_command(cmd)
+}
+
+impl Redactor {
+    /// [`Redactor::redact`] of `cmd` after also learning from `cmd`, without
+    /// keeping what was learned.
+    pub(crate) fn redact_command(&self, cmd: &str) -> String {
+        let mut r = self.clone();
+        r.learn_from_command(cmd);
+        r.redact(cmd)
     }
 }
 
