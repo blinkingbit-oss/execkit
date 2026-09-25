@@ -59,8 +59,8 @@ being cut in half.
 | JSON Web Tokens | `eyJ....eyJ....sig` |
 | PEM private keys | the whole `-----BEGIN ... PRIVATE KEY-----` block, not just the header |
 | Passwords in URLs | `postgres://user:[REDACTED]@db` (user and host are kept) |
-| Bearer tokens | `Authorization: Bearer [REDACTED]` (the word `Bearer` is kept; tokens of 16+ characters) |
-| Secret-named `key=value` / `key: value` pairs | `password`, `passwd`, `secret`, `token`, `api_key`, `access_key`, `private_key`, including prefixed names like `DB_PASSWORD` or `AWS_SECRET_ACCESS_KEY` (values of 4+ characters that end at whitespace, a quote, the end of the line or one of `;&\|)`; a comma does not end a value, so a trailing `,` is redacted with it) |
+| Bearer and Basic credentials | `Authorization: Bearer [REDACTED]` (tokens of 16+ characters, up to whitespace, a quote, `,` or `;`) and `Authorization: Basic [REDACTED]`; the scheme word is kept |
+| Secret-named `key=value` / `key: value` pairs | `password`, `passwd`, `secret`, `secret_key`, `token`, `api_key`, `access_key`, `private_key`, including prefixed names like `DB_PASSWORD`, `SECRET_KEY` or `AWS_SECRET_ACCESS_KEY` (values of 4+ characters). A quoted value is redacted up to its closing quote, whatever it contains. An unquoted value runs to whitespace, a quote or one of `;&\|)`; a comma does not end it, so a trailing `,` is redacted with it |
 | Values the session assigned to secret-named variables | after `export DB_PASS=hunter2hunter2`, the literal `hunter2hunter2` is redacted wherever it appears later in that session (names containing `token`, `secret`, `passw`, `api_key`, `private_key`, `credential` or `auth`; values of 6+ characters) |
 
 | Not covered | Why |
@@ -69,7 +69,7 @@ being cut in half.
 | Encoded, reversed or split secrets | `base64`, `rev` or `cut` output no longer has the shape |
 | Secrets with no recognisable shape and no secret-named variable | for example a password printed from a file the session never assigned |
 | Values assigned outside the session | a variable set in a login profile or by another process is not learned |
-| Secret-named values that look like code | a value containing `(`, `<`, `[` or `{`, or running into one (`token: Option<String>`, `access_key = cfg.get("x")`), is left alone so source code stays readable; a real password containing those characters is missed too |
+| Secret-named values that look like code | an unquoted value that is an identifier (3+ characters) immediately followed by a code-shaped `(...)`, `<...>`, `[...]` or `{...}` is left alone so source code stays readable: `token: Option<String>`, `access_key = cfg.get("x")`, `secret = vec[0]`. An unquoted password of that exact shape (such as `Pass[123]`) is missed too; quote it |
 
 Redacted output is not file-accurate. Redaction can also hit ordinary code: a
 secret-named field with a bare identifier as its value, such as TypeScript

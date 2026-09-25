@@ -9,15 +9,21 @@
 //! no recognizable shape (e.g. a locally-generated password) still gets
 //! redacted once it has been seen.
 
-use regex::Regex;
+use regex::{Captures, Regex};
 use std::sync::OnceLock;
 
-/// A compiled pattern plus the `Regex::replace_all` replacement template to
-/// apply. Plain shape matches use `"[REDACTED]"`; patterns that capture
-/// context to keep (URL scheme/user, the `name=` prefix) use `${1}` etc.
+/// A compiled pattern plus how to replace a match. Plain shape matches use
+/// the template `"[REDACTED]"`; patterns that capture context to keep (URL
+/// scheme/user, `Bearer`) use `${1}` etc. The key/value pattern needs logic
+/// the regex cannot express (no look-around), so it uses a function.
 struct Pattern {
     re: Regex,
-    replacement: &'static str,
+    replacement: Replacement,
+}
+
+enum Replacement {
+    Template(&'static str),
+    Func(fn(&Captures) -> String),
 }
 
 fn simple(re: &str) -> Pattern {
@@ -27,8 +33,50 @@ fn simple(re: &str) -> Pattern {
 fn templated(re: &str, replacement: &'static str) -> Pattern {
     Pattern {
         re: Regex::new(re).unwrap(),
-        replacement,
+        replacement: Replacement::Template(replacement),
     }
+}
+
+/// Replacement for the key/value pattern: group 1 is the `name=` prefix,
+/// then either a quoted value (groups 2-4: open quote, body, close quote) or
+/// an unquoted one (group 5, plus group 6: a `)` right after it, consumed so
+/// it can be seen here and put back). A quoted value is always redacted,
+/// keeping its quotes. An unquoted value is left alone when it is code.
+fn key_value_replace(c: &Captures) -> String {
+    let prefix = &c[1];
+    if let (Some(open), Some(close)) = (c.get(2), c.get(4)) {
+        return format!("{prefix}{}[REDACTED]{}", open.as_str(), close.as_str());
+    }
+    let value = c.get(5).map_or("", |m| m.as_str());
+    let paren = c.get(6).map_or("", |m| m.as_str());
+    if looks_like_code(value, !paren.is_empty()) {
+        return c[0].to_string();
+    }
+    format!("{prefix}[REDACTED]{paren}")
+}
+
+/// An unquoted value is code, not a secret, when it is an identifier path
+/// (letters, digits, `_`, `.`, `::`; 3+ chars, not starting with a digit)
+/// immediately followed by `(`, `<`, `[` or `{`, and what follows the
+/// bracket is itself code-shaped (identifier/bracket/`,` characters only)
+/// and either empty, ending in a closer or `,`, or closed by the `)` right
+/// after the value. So `cfg.get(` (then `"x")`), `Option<String>,`,
+/// `vec[0]`, `load(x` (then `)`) are code, while `Xk9(mQ2!zR`,
+/// `abc[1]def` and `a.b(c` are redacted.
+fn looks_like_code(value: &str, closed_by_paren: bool) -> bool {
+    let id_len = value
+        .find(|ch: char| !(ch.is_ascii_alphanumeric() || matches!(ch, '_' | '.' | ':')))
+        .unwrap_or(value.len());
+    let (id, rest) = value.split_at(id_len);
+    let Some(rest) = rest.strip_prefix(['(', '<', '[', '{']) else {
+        return false;
+    };
+    id.len() >= 3
+        && !id.starts_with(|ch: char| ch.is_ascii_digit())
+        && rest
+            .chars()
+            .all(|ch| ch.is_ascii_alphanumeric() || "_.:,<>[]{}(".contains(ch))
+        && (rest.is_empty() || rest.ends_with([')', '>', ']', '}', ',']) || closed_by_paren)
 }
 
 fn patterns() -> &'static [Pattern] {
@@ -75,7 +123,16 @@ fn patterns() -> &'static [Pattern] {
             // HTTP bearer credentials: the word `Bearer` survives. Before the
             // key/value pattern, so `token: Bearer <tok>` loses the token, not
             // just the word `Bearer`.
-            templated(r"(?i)\b(Bearer)\s+[A-Za-z0-9._~+/=-]{16,}", "${1} [REDACTED]"),
+            // The token runs to whitespace, a quote, `,` or `;`, so an odd
+            // character (`%2F`) cannot cut it short and leak its tail.
+            templated(r#"(?i)\b(Bearer)\s+[^\s"',;]{16,}"#, "${1} [REDACTED]"),
+            // HTTP Basic credentials (base64 `user:pass`). Anchored on the
+            // `Authorization:` header so prose like "Basic Authentication"
+            // survives.
+            templated(
+                r"(?i)\b(Authorization:\s*Basic)\s+[A-Za-z0-9+/=]{8,}",
+                "${1} [REDACTED]",
+            ),
             // `name=value` / `name: value` secrets by name. The `{4,}` floor
             // keeps short/empty values (`token=`) untouched, and the literal
             // `[:=]` right after the name (no separator allowed in between)
@@ -90,18 +147,20 @@ fn patterns() -> &'static [Pattern] {
             // `v` is redacted and the rest of the command stays readable. A
             // comma does NOT end it: `password=abcd,efg` must not leak `efg`
             // (losing a trailing `,` after a redacted value is the price).
-            // The value must also END at a boundary - end of text,
-            // whitespace, a quote, or one of `;&|)` - which is captured and
-            // put back (no look-around in `regex`). The value may not contain
-            // `(`, `<`, `[` or `{`, and `.` is not a boundary, so code stays
-            // intact: `cfg.get("x")`, `Option<String>`, `vec[0]`,
-            // `self.token.clone()`. `.` inside a value is fine (`a.b` at a
-            // boundary is redacted). A bare identifier value (TS
-            // `password: string`) still matches.
-            templated(
-                r#"(?i)\b((?:[a-z0-9_]*_)?(?:password|passwd|secret|token|api[_-]?key|access[_-]?key|private[_-]?key)["']?\s*[:=]\s*["']?)[^\s"';&|)(<\[{]{4,}($|[\s"';&|)])"#,
-                "${1}[REDACTED]${2}",
-            ),
+            // A quoted value runs to the next quote and may hold anything
+            // (`"p(ss)word"`). An unquoted value may contain brackets too
+            // (`Xk9(mQ2!zR`); only code shapes - an identifier immediately
+            // followed by `(`, `<`, `[` or `{` (`cfg.get("x")`,
+            // `Option<String>`) - are left alone, decided in
+            // `key_value_replace` since `regex` has no look-around. A bare
+            // identifier value (TS `password: string`) still matches.
+            Pattern {
+                re: Regex::new(
+                    r#"(?i)\b((?:[a-z0-9_]*_)?(?:password|passwd|secret[_-]?key|secret|token|api[_-]?key|access[_-]?key|private[_-]?key)["']?\s*[:=]\s*)(?:(["'])([^"'\r\n]{4,})(["'])|([^\s"';&|)]{4,})(\))?)"#,
+                )
+                .unwrap(),
+                replacement: Replacement::Func(key_value_replace),
+            },
         ]
     })
 }
@@ -111,7 +170,11 @@ fn patterns() -> &'static [Pattern] {
 pub fn redact(text: &str) -> String {
     let mut out = text.to_string();
     for p in patterns() {
-        out = p.re.replace_all(&out, p.replacement).into_owned();
+        out = match p.replacement {
+            Replacement::Template(t) => p.re.replace_all(&out, t),
+            Replacement::Func(f) => p.re.replace_all(&out, f),
+        }
+        .into_owned();
     }
     out
 }
@@ -624,6 +687,98 @@ mod tests {
             ),
         ] {
             assert_eq!(redact(input), want, "{input}");
+        }
+    }
+
+    #[test]
+    fn passwords_with_brackets_are_still_redacted() {
+        for (input, secret) in [
+            ("DB_PASSWORD=Xk9(mQ2!zR", "Xk9(mQ2!zR"),
+            ("password=p<ssw0rd", "p<ssw0rd"),
+            ("password=abc[1]def", "abc[1]def"),
+            ("password=x9!k{Q2}zz", "x9!k{Q2}zz"),
+            ("token={abcdefgh}", "{abcdefgh}"),
+            ("password=a.b(c", "a.b(c"),
+            (r#"api_key: "abc<defgh""#, "abc<defgh"),
+            (r#"password: "p(ss)word123""#, "p(ss)word123"),
+            ("password='ab{cd}ef'", "ab{cd}ef"),
+        ] {
+            let r = redact(input);
+            assert!(r.contains("[REDACTED]"), "{input} -> {r}");
+            // No 3+ char run of the secret may survive after the key.
+            let key = &input[..input.find(secret).unwrap()];
+            let shown = r.strip_prefix(key).expect("key kept");
+            let chars: Vec<char> = secret.chars().collect();
+            for w in chars.windows(3) {
+                let w: String = w.iter().collect();
+                assert!(!shown.contains(&w), "{input} leaked {w:?}: {r}");
+            }
+        }
+        assert_eq!(
+            redact(r#"api_key: "abc<defgh""#),
+            r#"api_key: "[REDACTED]""#
+        );
+        assert_eq!(redact("password='ab{cd}ef'"), "password='[REDACTED]'");
+        assert_eq!(
+            redact(r#"{"password":"hunter22","api_key": "a(b)c<d", "user":"jay"}"#),
+            r#"{"password":"[REDACTED]","api_key": "[REDACTED]", "user":"jay"}"#
+        );
+        assert_eq!(
+            redact("(API_KEY=abcdef123)&& x"),
+            "(API_KEY=[REDACTED])&& x"
+        );
+    }
+
+    #[test]
+    fn code_shapes_survive_key_value_redaction() {
+        for line in [
+            "pub token: Option<String>,",
+            r#"let access_key = cfg.get("x");"#,
+            r#"let token = get("abcdef");"#,
+            "let secret = vec[0];",
+            "token = load(x);",
+            "password: Map<K, V>",
+            "token: self.tokens.first()",
+            "api_key = build{x}",
+            "let token = std::env::var(\"T\");",
+        ] {
+            assert_eq!(redact(line), line);
+        }
+    }
+
+    #[test]
+    fn secret_key_names_are_redacted() {
+        assert_eq!(
+            redact("SECRET_KEY=django-insecure-abc123"),
+            "SECRET_KEY=[REDACTED]"
+        );
+        assert_eq!(redact("secret-key: abcdefgh"), "secret-key: [REDACTED]");
+    }
+
+    #[test]
+    fn bearer_tail_after_odd_characters_does_not_leak() {
+        assert_eq!(
+            redact("Authorization: Bearer abcdefghijklmnop%2Fxyz"),
+            "Authorization: Bearer [REDACTED]"
+        );
+        assert_eq!(
+            redact(r#"-H "Authorization: Bearer abcdefghijklmnop%2Fxyz", next"#),
+            r#"-H "Authorization: Bearer [REDACTED]", next"#
+        );
+    }
+
+    #[test]
+    fn basic_auth_is_redacted() {
+        assert_eq!(
+            redact("Authorization: Basic dXNlcjpwYXNzd29yZA=="),
+            "Authorization: Basic [REDACTED]"
+        );
+        assert_eq!(
+            redact(r#"curl -H "authorization: basic dXNlcjpwYXNz" x"#),
+            r#"curl -H "authorization: basic [REDACTED]" x"#
+        );
+        for benign in ["Basic Authentication is enabled", "Basic usage: foo"] {
+            assert_eq!(redact(benign), benign);
         }
     }
 
