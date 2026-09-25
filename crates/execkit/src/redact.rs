@@ -43,11 +43,20 @@ fn patterns() -> &'static [Pattern] {
             simple(r"github_pat_[A-Za-z0-9_]{20,}"), // GitHub fine-grained PAT
             simple(r"glpat-[A-Za-z0-9_-]{20,}"), // GitLab PAT
             simple(r"eyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}"), // JWT
-            // Full PEM private-key block, not just the header. (?s) lets `.`
-            // cross newlines; the body is non-greedy up to the END marker (or
-            // end-of-string, if the block was truncated by budgeting).
+            // Full PEM private-key block, not just the header. When an END
+            // marker follows, the whole block up to (and including) it is
+            // consumed. When it doesn't (a truncated/streamed block), only
+            // the *following lines that still look like PEM content* are
+            // consumed - a base64 body line, or a `Key: value` PEM header
+            // line (e.g. `Proc-Type: 4,ENCRYPTED`) - so a lone BEGIN doesn't
+            // blank unrelated output that happens to come after it (R10).
+            // Each alternative's trailing `(?:\r?\n|\z)` is load-bearing: it
+            // forces the line to be consumed in full, not just a
+            // PEM-charset-looking prefix of it (e.g. "hello" out of "hello
+            // world") - regex has no look-around, so the boundary has to be
+            // matched literally as part of the same repetition.
             templated(
-                r"(?s)-----BEGIN [A-Z0-9 ]*PRIVATE KEY-----.*?(?:-----END [A-Z0-9 ]*PRIVATE KEY-----|\z)",
+                r"-----BEGIN [A-Z0-9 ]*PRIVATE KEY-----(?:\r?\n(?:(?:[A-Za-z0-9+/=]+|[A-Za-z0-9-]+:[^\r\n]*)(?:\r?\n|\z))*)?(?:-----END [A-Z0-9 ]*PRIVATE KEY-----)?",
                 "[REDACTED]",
             ),
             simple(r"xox[baprs]-[A-Za-z0-9-]{10,}"), // Slack token
@@ -65,9 +74,14 @@ fn patterns() -> &'static [Pattern] {
             // keeps short/empty values (`token=`) untouched, and the literal
             // `[:=]` right after the name (no separator allowed in between)
             // keeps lookalikes like `password_field = ...` or `tokenizer =
-            // load()` untouched, since nothing there follows the name.
+            // load()` untouched, since nothing there follows the name. The
+            // optional `(?:[a-z0-9_]*_)?` prefix (must end in `_`) catches
+            // compound names like `DB_PASSWORD`/`AWS_SECRET_ACCESS_KEY`
+            // without also matching `OLDPWD` or `tokenizer` (R8). `pwd` is
+            // deliberately not a keyword (R9): `PWD` is an ordinary,
+            // non-secret shell env var (current working directory).
             templated(
-                r#"(?i)\b((?:password|passwd|pwd|secret|token|api[_-]?key|access[_-]?key|private[_-]?key)["']?\s*[:=]\s*["']?)[^\s"']{4,}"#,
+                r#"(?i)\b((?:[a-z0-9_]*_)?(?:password|passwd|secret|token|api[_-]?key|access[_-]?key|private[_-]?key)["']?\s*[:=]\s*["']?)[^\s"']{4,}"#,
                 "${1}[REDACTED]",
             ),
         ]
@@ -340,5 +354,95 @@ mod tests {
         r.learn_from_command("export TOKEN=abcde"); // 5 chars, below the 6-char floor
         let out = r.redact("value is abcde here");
         assert_eq!(out, "value is abcde here");
+    }
+
+    #[test]
+    fn r9_pwd_alone_is_not_redacted() {
+        // `pwd` must not be a stateless key/value keyword -
+        // PWD is a common, non-secret shell env var (current working dir).
+        let s = "PWD=/tmp";
+        assert_eq!(redact(s), s);
+    }
+
+    #[test]
+    fn r8_underscore_prefixed_secret_names_are_redacted() {
+        // The keyword may be preceded by an
+        // underscore-terminated prefix, so compound env var names like
+        // `DB_PASSWORD` and `AWS_SECRET_ACCESS_KEY` are caught too.
+        assert_eq!(redact("DB_PASSWORD=hunter22"), "DB_PASSWORD=[REDACTED]");
+        assert_eq!(
+            redact("AWS_SECRET_ACCESS_KEY=wJalrXUtnFEMI/K7MDENG"),
+            "AWS_SECRET_ACCESS_KEY=[REDACTED]"
+        );
+    }
+
+    #[test]
+    fn r8_underscore_prefix_false_positives_still_survive() {
+        // The optional prefix must end in `_`, so `OLDPWD` (no underscore
+        // before any keyword) and `tokenizer`/`password_field` (keyword not
+        // immediately followed by `[:=]`) must not match. `pwd` alone is no
+        // longer a keyword at all.
+        let old_pwd = "OLDPWD=/home/x";
+        assert_eq!(redact(old_pwd), old_pwd);
+
+        let pwd = "PWD=/tmp";
+        assert_eq!(redact(pwd), pwd);
+
+        let path_line = "export PATH=/usr/bin";
+        assert_eq!(redact(path_line), path_line);
+
+        let tokenizer_line = "tokenizer = load()";
+        assert_eq!(redact(tokenizer_line), tokenizer_line);
+
+        let field_line = "password_field = form.get(x)";
+        assert_eq!(redact(field_line), field_line);
+    }
+
+    #[test]
+    fn r10_pem_without_end_marker_only_consumes_pem_looking_lines() {
+        // A lone BEGIN with no END must not blank all
+        // subsequent output - only lines that look like PEM content
+        // (base64, or `Key: value` PEM headers) are consumed.
+        let body_line1 = "MIIEowIBAAKCAQEAtotallysecretkeymaterialgoeshere1234567890abcdef";
+        let body_line2 = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789==";
+        let text =
+            format!("-----BEGIN RSA PRIVATE KEY-----\n{body_line1}\n{body_line2}\nhello world");
+        let r = redact(&text);
+        assert!(
+            !r.contains(body_line1) && !r.contains(body_line2),
+            "key lines must be redacted; got: {r}"
+        );
+        assert!(
+            r.ends_with("hello world"),
+            "trailing non-PEM text must survive; got: {r}"
+        );
+        assert!(r.contains("[REDACTED]"));
+    }
+
+    #[test]
+    fn r10_pem_full_block_with_end_marker_still_redacted() {
+        let body_line1 = "MIIEowIBAAKCAQEAtotallysecretkeymaterialgoeshere1234567890abcdef";
+        let body_line2 = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789==";
+        let pem = format!(
+            "-----BEGIN RSA PRIVATE KEY-----\n{body_line1}\n{body_line2}\n-----END RSA PRIVATE KEY-----\n"
+        );
+        let r = redact(&pem);
+        assert!(
+            !r.contains(body_line1) && !r.contains(body_line2),
+            "PEM body must not leak; got: {r}"
+        );
+        assert!(r.contains("[REDACTED]"));
+    }
+
+    #[test]
+    fn r10_pem_header_lines_are_consumed_as_pem_content() {
+        // Encrypted PEM blocks carry `Key: value` header lines before the
+        // base64 body (e.g. Proc-Type/DEK-Info); these must be treated as
+        // PEM-looking content, not as the line that stops the match.
+        let text = "-----BEGIN RSA PRIVATE KEY-----\nProc-Type: 4,ENCRYPTED\nDEK-Info: DES-EDE3-CBC,1234567890ABCDEF\nMIIEowIBAAKCAQEAsecretkeybodyhere1234567890abcdef\n-----END RSA PRIVATE KEY-----\n";
+        let r = redact(text);
+        assert!(!r.contains("secretkeybodyhere"));
+        assert!(!r.contains("DEK-Info"));
+        assert!(r.contains("[REDACTED]"));
     }
 }
