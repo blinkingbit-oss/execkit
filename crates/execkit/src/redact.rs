@@ -38,29 +38,36 @@ fn templated(re: &str, replacement: &'static str) -> Pattern {
 }
 
 /// Replacement for the key/value pattern: group 1 is the `name=` prefix,
-/// then either a quoted value (groups 2-4: open quote, body, close quote) or
-/// an unquoted one (group 5, plus group 6: the quote or `)` right after it,
-/// consumed so it can be seen here and put back). A quoted value is always
-/// redacted, keeping its quotes. An unquoted value is left alone when it is
-/// code.
+/// then one of: a double-quoted value (group 2), a single-quoted value
+/// (group 3) - each may hold the other kind of quote - or an unquoted one
+/// (group 5) with an optional unmatched opening quote (group 4, e.g. a
+/// value whose closing quote is on a later line) and the quote or `)` right
+/// after it (group 6, consumed so it can be seen here and put back). Quoted
+/// values are always redacted, keeping their quotes. An unquoted value is
+/// left alone when it is code.
 fn key_value_replace(c: &Captures) -> String {
     let prefix = &c[1];
-    if let (Some(open), Some(close)) = (c.get(2), c.get(4)) {
-        return format!("{prefix}{}[REDACTED]{}", open.as_str(), close.as_str());
+    if c.get(2).is_some() {
+        return format!("{prefix}\"[REDACTED]\"");
     }
+    if c.get(3).is_some() {
+        return format!("{prefix}'[REDACTED]'");
+    }
+    let open = c.get(4).map_or("", |m| m.as_str());
     let value = c.get(5).map_or("", |m| m.as_str());
     let after = c.get(6).map_or("", |m| m.as_str());
     if looks_like_code(value, after.chars().next()) {
         return c[0].to_string();
     }
-    format!("{prefix}[REDACTED]{after}")
+    format!("{prefix}{open}[REDACTED]{after}")
 }
 
 /// An unquoted value is code, not a secret, only in these narrow shapes -
 /// an identifier (letters, digits, `_`, `.`, `::`; 3+ chars, not starting
 /// with a digit) immediately followed by a bracket, and:
-/// - the identifier is a path (has `.` or `::`) and the value ends right at
-///   the bracket (`cfg.get(` then `"x")`, `self.tokens.first(` then `)`);
+/// - the identifier is a path (has `.` or `::`), the value ends right at
+///   the bracket, and a quote or `)` follows (`cfg.get(` then `"x")`,
+///   `self.tokens.first(` then `)`) - `my.pass(` at end of line is redacted;
 /// - the bracket is `<` followed by an uppercase letter (`Option<String>`,
 ///   `Map<K,`);
 /// - the bracket is `(` followed by a quote (`get(` then `"abcdef")`).
@@ -84,7 +91,7 @@ fn looks_like_code(value: &str, next: Option<char>) -> bool {
     let after = rest_chars.as_str();
     let first_after = after.chars().next().or(next);
     let is_path = id.contains('.') || id.contains("::");
-    (is_path && after.is_empty())
+    (is_path && after.is_empty() && next.is_some())
         || (bracket == '<' && first_after.is_some_and(|ch| ch.is_ascii_uppercase()))
         || (bracket == '(' && after.is_empty() && matches!(next, Some('"' | '\'')))
 }
@@ -166,7 +173,7 @@ fn patterns() -> &'static [Pattern] {
             // identifier value (TS `password: string`) still matches.
             Pattern {
                 re: Regex::new(
-                    r#"(?i)\b((?:[a-z0-9_]*_)?(?:password|passwd|secret[_-]?key|secret|token|api[_-]?key|access[_-]?key|private[_-]?key)["']?\s*[:=]\s*)(?:(["'])([^"'\r\n]{4,})(["'])|([^\s"';&|)]{4,})(["')])?)"#,
+                    r#"(?i)\b((?:[a-z0-9_]*_)?(?:password|passwd|secret[_-]?key|secret|token|api[_-]?key|access[_-]?key|private[_-]?key)["']?\s*[:=]\s*)(?:"([^"\r\n]{4,})"|'([^'\r\n]{4,})'|(["']?)([^\s"';&|)]{4,})(["')])?)"#,
                 )
                 .unwrap(),
                 replacement: Replacement::Func(key_value_replace),
@@ -749,6 +756,40 @@ mod tests {
             "token = std::env::var('T')",
         ] {
             assert_eq!(redact(line), line);
+        }
+    }
+
+    #[test]
+    fn unterminated_and_mixed_quote_values_are_redacted() {
+        for (input, want) in [
+            (r#"password: "hunter22"#, r#"password: "[REDACTED]"#),
+            (r#"PASSWORD="first-line-of"#, r#"PASSWORD="[REDACTED]"#),
+            (r#"token="abcdefgh123"#, r#"token="[REDACTED]"#),
+            (r#"password="abc'defghij""#, r#"password="[REDACTED]""#),
+            (r#"password="it's-a-secret""#, r#"password="[REDACTED]""#),
+            (r#"password='say "hi" now1'"#, "password='[REDACTED]'"),
+            ("token=abcdef123'", "token=[REDACTED]'"),
+        ] {
+            assert_eq!(redact(input), want, "{input}");
+        }
+    }
+
+    #[test]
+    fn dotted_path_at_end_of_line_is_not_code() {
+        for (input, want) in [
+            ("password=my.pass(", "password=[REDACTED]"),
+            ("password=Hunter.2024(", "password=[REDACTED]"),
+            ("password=abc.def[", "password=[REDACTED]"),
+            ("password=my.pass(\nnext", "password=[REDACTED]\nnext"),
+        ] {
+            assert_eq!(redact(input), want, "{input}");
+        }
+        for code in [
+            r#"let access_key = cfg.get("x");"#,
+            "token: self.tokens.first()",
+            "token = std::env::var('T')",
+        ] {
+            assert_eq!(redact(code), code);
         }
     }
 
