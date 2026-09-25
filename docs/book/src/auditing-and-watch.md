@@ -57,6 +57,8 @@ The page is read-only and local by construction: it binds loopback only, every
 request needs the URL token, and it can read the audit stream but never touch a
 session, a command, or your files. What you get:
 
+![The browser viewer: sessions grouped by transport on the left, a colored shell transcript on the right, and a status bar with the selected session's details](./assets/demo-1-main.png)
+
 - **Sidebar** grouped by transport (`local` / `ssh` / `docker`); a group header
   shows its session count, a session row shows its command count, and the active
   session is highlighted.
@@ -69,6 +71,10 @@ session, a command, or your files. What you get:
   `EXECKIT_MCP_AUDIT` file there is no per-session history.
 - **Per-session actions** from a 3-dots menu: rename (a display alias), pin, keep,
   export to `.txt` / `.log` / `.md` / `.json`, and screenshot to `.png`.
+
+![Transcript search: matches highlighted with a running count and prev / next / next err buttons](./assets/demo-4-search.png)
+
+![The per-session menu open over a closed Docker session whose transcript shows a failed command and a command blocked by policy](./assets/demo-2-menu.png)
 - A **status bar** that shows the selected session's details; click it to copy the
   session id.
 
@@ -83,9 +89,9 @@ command and its output as a line prefixed with the session id, as it happens:
 
 ```bash
 execkit-mcp watch --follow /var/log/execkit/
-# [1_local] /home/u $ npm run build
-# [1_local] x exit 1  (3420ms)
-# [2_ssh_deploy@web-01] /srv $ systemctl restart app
+# [a3f9-1_local] /home/u $ npm run build
+# [a3f9-1_local] x exit 1  (3420ms)
+# [a3f9-2_ssh_deploy@web-01] /srv $ systemctl restart app
 ```
 
 ## Live notifications in the client

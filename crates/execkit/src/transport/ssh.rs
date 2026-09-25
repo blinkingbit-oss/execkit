@@ -10,7 +10,7 @@ use std::time::Duration;
 
 use crate::error::{Error, Result};
 
-/// Default timeout for establishing the SSH TCP connection (see [`SshConfig::connect_timeout`]).
+/// Default timeout for connect + handshake + auth (see [`SshConfig::connect_timeout`]).
 const DEFAULT_CONNECT_TIMEOUT: Duration = Duration::from_secs(15);
 
 /// How to reach an SSH host.
@@ -21,8 +21,9 @@ pub struct SshConfig {
     pub user: String,
     pub auth: SshAuth,
     pub host_key: HostKeyVerification,
-    /// How long to wait for the TCP connection to be established before
-    /// giving up. Does not cover auth or shell startup. Default 15s.
+    /// How long to wait for the TCP connection, key exchange and
+    /// authentication, together, before giving up. Does not cover shell
+    /// startup. Default 15s.
     pub connect_timeout: Duration,
 }
 

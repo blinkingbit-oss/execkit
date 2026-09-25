@@ -14,18 +14,28 @@ for agents.
   duration, and cwd as data the agent can act on, not a blob to parse.
 - **Safe by default.** Output is ANSI-stripped, secret-redacted, and bounded so a
   noisy build cannot blow the agent's context window or leak credentials.
-- **Real transports.** Local shell, SSH, and Docker, with host-key verification
-  and a sandboxed key directory.
+- **Real transports.** Local shell, SSH, and Docker, with host-key verification,
+  a sandboxed key directory, and host aliases from your ssh config.
+- **Timeouts that keep the session.** A command that runs too long is interrupted
+  and reported with `timed_out: true`; the session keeps its cwd and env.
 - **Undo.** Git-backed workspace checkpoints let you snapshot before a risky
   change and restore on demand (files only, not side effects).
 - **Observability.** An append-only audit log, a live read-only viewer, and live
   MCP notifications so you can watch what the agent does in the shell.
 
+## Where it fits
+
+execkit complements your agent's built-in shell or sandbox rather than replacing
+it. Reach for it when the agent needs to work on a remote host or inside a
+container, when you want a record of what ran, or when you want to undo file
+changes on a remote workspace.
+
 ## Two ways to use it
 
 - **As an MCP server** (`execkit-mcp`): a stdio [Model Context
   Protocol](https://modelcontextprotocol.io) server that any MCP-capable agent
-  (Claude Code, Cursor, Gemini CLI, and others) can drive directly. Start at
+  (Claude Code, Cursor, Gemini CLI, Codex, VS Code, Windsurf, and others) can
+  drive directly. `uvx execkit-mcp` runs it without installing anything. Start at
   [Installation](./installation.md).
 - **As a Rust library** (`execkit`): embed sessions in your own program. See the
   [Rust library](./rust-library.md) page. A [Python SDK](./python-sdk.md) wraps

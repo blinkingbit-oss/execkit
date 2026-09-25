@@ -2,14 +2,15 @@
 
 An [MCP](https://modelcontextprotocol.io) server (stdio) that exposes
 [`execkit`](../execkit) shell sessions to any MCP-capable agent - Claude Code,
-Cursor, Gemini CLI, and others.
+Cursor, Gemini CLI, Codex, VS Code, Windsurf, and others.
 
 ## Tools
 
 | Tool | Args | Returns |
 |---|---|---|
-| `session_create` | `transport` (`"local"`/`"ssh"`/`"docker"`); for ssh: `host`, `user`, `password` or `key_path`, optional `port`, `fingerprint` (pin host key); for docker: `container` (running name/id); optional `allow`/`deny` command lists | `{ "session_id": "..." }` |
-| `session_exec` | `session_id`, `command`, optional `budget` (shape output: grep/tail/head/head_tail + max_chars) | structured `ExecResult` JSON: `stdout`, `stderr` (split!), `exit_code`, `duration_ms`, `cwd`, `truncated` |
+| `session_create` | `transport` (`"local"`/`"ssh"`/`"docker"`); for ssh: `host` (hostname, IP, or a `Host` alias from your ssh config), `user`, `password` or `key_path`, optional `port`, `fingerprint` (pin host key); for docker: `container` (running name/id); optional `allow`/`deny` command lists | `{ "session_id": "..." }` |
+| `session_exec` | `session_id`, `command`, optional `budget` (shape output: grep/tail/head/head_tail + max_chars), optional `timeout_secs` | structured `ExecResult` JSON: `command`, `stdout`, `stderr` (split!), `exit_code`, `duration_ms`, `cwd`, `truncated`, `timed_out`, and a `hint` when output was truncated with no budget |
+| `session_list` | none | `[{ session_id, transport, idle_secs }]` |
 | `session_destroy` | `session_id` | `{ "destroyed": true }` |
 | `session_checkpoint` | `session_id`, optional `label` | `{ "checkpoint_id": "..." }` |
 | `session_checkpoints` | `session_id` | `[{ id, label, created }]` |
@@ -18,6 +19,22 @@ Cursor, Gemini CLI, and others.
 Sessions are **stateful** - `cd`/env persist across `session_exec` calls. Output
 is ANSI-stripped, secret-redacted, and bounded; commands pass the optional policy
 fence before running.
+
+Commands are non-interactive: stdin is `/dev/null`, so use `sudo -n` and `-y`
+flags. Each `session_exec` times out after `timeout_secs` (default 120, or
+`EXECKIT_MCP_EXEC_TIMEOUT`; max 3600). On timeout execkit sends Ctrl-C and returns
+`timed_out: true` with `exit_code: 124`; the session keeps its cwd and env. For
+long jobs, start them in the background and poll:
+
+```jsonc
+{ "session_id": "...", "command": "nohup make release > /tmp/release.log 2>&1 &" }
+{ "session_id": "...", "command": "tail -n 20 /tmp/release.log" }
+```
+
+A session is closed automatically when its shell exits (`exit`, or a failing
+command under `set -e`) or when a timed-out command ignores Ctrl-C. Later calls
+with that id get an `unknown session_id` tool error; `session_list` shows what is
+still open.
 
 ## Checkpoints (remote only)
 
@@ -41,10 +58,17 @@ Control it via `session_create`:
 If git is absent, auto-snapshot disables itself and checkpoint calls return a clear
 "install git on the remote" error.
 
-WARNING: `session_restore` is destructive. It reverts tracked files AND deletes ALL
-untracked files and directories anywhere under the workspace (via git clean), not
-only files created since the checkpoint. Do not restore if untracked files in the
-workspace must be preserved.
+Credential-shaped files (`.env`, `.env.*`, `*.pem`, `*.key`, `id_rsa*`,
+`id_ed25519*`, `.ssh`, `.aws`, `.gnupg`, `.netrc`) are never snapshotted, even if a
+`checkpoint_ignores` negation tries to include them. The shadow repo
+(`~/.execkit/ckpt-<token>.git` on the remote) is deleted when the session ends.
+
+WARNING: `session_restore` is destructive. The workspace ends up matching the
+checkpoint: tracked files are reverted, files the checkpoint did not have are
+removed (including ones a later checkpoint tracked), and ALL untracked files and
+directories under the workspace are deleted (via git clean), not only files
+created since the checkpoint. Do not restore if untracked files in the workspace
+must be preserved.
 
 ## Output budgets
 
@@ -68,6 +92,7 @@ changes the exit code or side effects. When applied, the result includes a
 ## Install
 
 ```bash
+uvx execkit-mcp --version        # zero-install: uv fetches and runs it
 pip install execkit-mcp          # the server binary, shipped as a wheel (no Rust toolchain)
 cargo install execkit-mcp        # ...or via cargo (or build from source: cargo build -p execkit-mcp)
 ```
@@ -86,7 +111,7 @@ client. The fastest way is to let it print the config with the right binary path
 already filled in:
 
 ```bash
-execkit-mcp setup claude         # or: cursor | gemini
+execkit-mcp setup claude         # or: cursor | gemini | codex | vscode | windsurf
 ```
 
 (`cargo install` puts the binary at `~/.cargo/bin/execkit-mcp`; use the full path
@@ -98,8 +123,9 @@ if it isn't on the client's PATH.)
 claude mcp add execkit -- execkit-mcp        # add `-s user` to enable it everywhere
 ```
 
-**Cursor** (`~/.cursor/mcp.json`) and **Gemini CLI** (`~/.gemini/settings.json`) -
-add the same block:
+**Cursor** (`~/.cursor/mcp.json`), **Gemini CLI** (`~/.gemini/settings.json`) and
+**Windsurf** (`~/.codeium/windsurf/mcp_config.json`) - add the same block
+(`setup codex` and `setup vscode` print those clients' formats):
 
 ```json
 {
@@ -108,6 +134,9 @@ add the same block:
   }
 }
 ```
+
+With uv you can skip the install and use `"command": "uvx", "args": ["execkit-mcp"]`
+instead.
 
 To turn on auditing or other operator settings, add an `env` block:
 
@@ -127,10 +156,10 @@ Then the agent can call `session_create` -> `session_exec` -> `session_destroy`.
 ## Example session (what the agent sees)
 
 ```jsonc
-// session_create {"transport":"local"}              -> {"session_id":"1_local"}
-// session_exec   {"session_id":"1_local","command":"npm run build"}
-//   -> {"stdout":"...","stderr":"Error: Cannot find module 'webpack'",
-//       "exit_code":1,"duration_ms":3420,"cwd":"/home/u/app","truncated":false}
+// session_create {"transport":"local"}              -> {"session_id":"a3f9-1_local"}
+// session_exec   {"session_id":"a3f9-1_local","command":"npm run build"}
+//   -> {"command":"npm run build","stdout":"...","stderr":"Error: Cannot find module 'webpack'",
+//       "exit_code":1,"duration_ms":3420,"cwd":"/home/u/app","truncated":false,"timed_out":false}
 ```
 
 ## Security model
@@ -144,7 +173,8 @@ by the **operator at startup** (env vars), not by per-call agent arguments:
 | `EXECKIT_MCP_AUDIT` | append a JSONL audit log of every command here | off |
 | `EXECKIT_MCP_AUDIT_DIR` | write one JSONL file per session into this directory (`<session_id>-<open_ms>.jsonl`); takes precedence over `EXECKIT_MCP_AUDIT` when both are set | off |
 | `EXECKIT_MCP_AUDIT_RETENTION_DAYS` | delete per-session log files older than this many days at startup (dir mode only); `0` disables | `14` |
-| `EXECKIT_MCP_KEY_DIR` | SSH `key_path` must canonicalize to inside this dir | `~/.ssh` |
+| `EXECKIT_MCP_EXEC_TIMEOUT` | default `session_exec` timeout in seconds (clamped 1-3600); `timeout_secs` overrides per call | `120` |
+| `EXECKIT_MCP_KEY_DIR` | SSH `key_path` must canonicalize to inside this dir; its `config` file is read for `Host` aliases | `~/.ssh` |
 | `EXECKIT_MCP_KNOWN_HOSTS` | execkit-managed SSH host-key verification file (TOFU; rejects changed keys) | `~/.execkit/known_hosts` |
 | `EXECKIT_MCP_INSECURE_ACCEPT_ANY_HOSTKEY` | **DANGEROUS** - disable host-key checks | unset |
 | `EXECKIT_MCP_MAX_SESSIONS` | soft cap on concurrent live sessions | `64` |
@@ -154,8 +184,11 @@ by the **operator at startup** (env vars), not by per-call agent arguments:
 | `EXECKIT_MCP_WATCH_PORT` | Port for the viewer (the URL must stay stable for reconnect); falls back to a random port if taken | 7878 |
 | `EXECKIT_MCP_WATCH_OPEN` | Also auto-open the browser at the viewer URL (default: just show the link) | off |
 
-- **Host keys are verified by default** (TOFU against known_hosts; a changed key
-  is rejected as a likely MITM). Pass a `fingerprint` to require an exact key, or
+- **Host keys are verified by default** (TOFU against execkit's own known_hosts,
+  `~/.execkit/known_hosts`, keyed `host` or `[host]:port`; a changed key is
+  rejected as a likely MITM). Your OpenSSH `~/.ssh/known_hosts` is not used. If
+  `EXECKIT_MCP_KNOWN_HOSTS` points at an OpenSSH-format file, connecting to a new
+  host fails with an error instead of writing to it. Pass a `fingerprint` to require an exact key, or
   set the insecure env var only for throwaway/test hosts.
 - **`key_path` is sandboxed** to `EXECKIT_MCP_KEY_DIR`; out-of-bounds/traversal paths
   are rejected with a generic error (no path-existence leak).
@@ -196,13 +229,14 @@ prefixed with the session id, as it happens:
 
 ```bash
 execkit-mcp watch --follow /var/log/execkit/
-# [1_local]              /home/u $ npm run build
-# [1_local]              x exit 1  (3420ms)
-# [2_ssh_deploy@web-01]  /srv $ systemctl restart app
+# [a3f9-1_local]              /home/u $ npm run build
+# [a3f9-1_local]              x exit 1  (3420ms)
+# [a3f9-2_ssh_deploy@web-01]  /srv $ systemctl restart app
 ```
 
-Session ids are self-identifying - `<n>_local`, `<n>_ssh_<user>@<host>[:port]`,
-or `<n>_docker_<container>` - so the audit filenames and the stream read clearly
+Session ids are self-identifying - `<run>-<n>_local`,
+`<run>-<n>_ssh_<user>@<host>[:port]`, or `<run>-<n>_docker_<container>`, where
+`<run>` is a short random prefix per server process - so the audit filenames and the stream read clearly
 at a glance.
 
 ### Live viewer in your browser
@@ -293,7 +327,8 @@ the regex backslashes double up (`\\b`); use `(?i)` for case-insensitive matchin
 
 A blocked command never runs; it is recorded in the audit log, shown in `watch`,
 and pushed to the client as a warning. This is an ADVISORY guardrail, not a
-sandbox: string matching is trivially bypassable (`/bin/rm`, base64, `bash -c`).
-The real boundary is a least-privilege user, a container, or a scoped SSH account.
+sandbox: string matching is trivially bypassable (`env curl` gets past
+`deny: ["curl"]`, as do base64 and `bash -c`). A denial names the rule or pattern
+that matched. The real boundary is a least-privilege user, a container, or a scoped SSH account.
 
 Apache-2.0.

@@ -47,8 +47,10 @@ be overridden by a negation pattern.
 ## Restore is destructive
 
 > **Warning.** `session_restore` reverts tracked files to their state at the
-> checkpoint **and deletes all untracked files and directories** anywhere
-> under the workspace (via `git clean`). This includes files created and
+> checkpoint, removes files the checkpoint did not have, **and deletes all
+> untracked files and directories** anywhere under the workspace (via
+> `git clean`). Ignored paths (`node_modules`, build dirs, the credential
+> files above) are left alone. This includes files created and
 > tracked by a *later* checkpoint than the one you're restoring to - restore
 > always leaves the workspace matching the target checkpoint exactly, not a
 > merge of it with whatever came after. Do not restore if untracked files in

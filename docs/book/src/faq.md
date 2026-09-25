@@ -8,6 +8,15 @@ or intercept the client's native shell tool (Claude Code's `Bash`, for example).
 After you wire it in, the agent's tool list is "native tools **plus** execkit's
 tools." Both are live at once.
 
+## Should I use execkit instead of my agent's built-in sandbox?
+
+Use both. A built-in shell or sandbox is the right tool for quick local commands
+in the project the agent is working on. execkit adds what those usually don't
+have: sessions on remote hosts over SSH and inside Docker containers, a JSONL
+audit trail with a live viewer, redacted and budgeted output, and checkpoints you
+can restore on remote workspaces. It is not a sandbox itself; see
+[Security model](./security-model.md).
+
 ## How does the agent decide to use execkit instead of running commands locally?
 
 It is the model choosing from its tool list; there is no automatic rerouting. The
@@ -82,3 +91,31 @@ system: a least-privilege user, a container, or a scoped SSH account. See the
 No. "MCP servers add capabilities; they do not hijack the host's existing tools"
 is true of every MCP client. Only the step that disables the native shell is
 client-specific; how the agent chooses a tool is the same everywhere.
+
+## My command timed out. Is the session gone?
+
+No. A command that runs past its timeout (120 seconds by default over MCP, or
+`timeout_secs` on the call) is interrupted with Ctrl-C and returned with
+`timed_out: true` and exit code 124. The session keeps its cwd and env. For jobs
+that take longer, start them in the background and poll the log:
+
+```bash
+nohup ./long-job.sh > /tmp/job.log 2>&1 &
+tail -n 20 /tmp/job.log
+```
+
+See [Sessions](./sessions.md#timeouts).
+
+## Why can't I answer a prompt, use `sudo`, or open an editor?
+
+Commands run with stdin set to `/dev/null`, so nothing can wait for keyboard
+input. A prompt gets end-of-file and usually fails at once instead of hanging the
+session. Use non-interactive forms: `sudo -n` (with a NOPASSWD rule for what the
+agent may run), `apt-get -y`, `git --no-pager`, `GIT_EDITOR=true`.
+
+## The agent says "unknown session_id". What happened?
+
+The session was closed: the agent destroyed it, the shell exited (`exit`, or a
+failing command under `set -e`), a timed-out command ignored Ctrl-C, or it was
+idle past `EXECKIT_MCP_SESSION_TTL`. The agent can call `session_list` to see
+which sessions are open, and `session_create` to start a new one.

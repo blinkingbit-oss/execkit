@@ -2,7 +2,7 @@
 
 # execkit
 
-**Stateful, structured, safe command execution for AI agents - over local shells, SSH, and Docker.**
+**Persistent, structured shell sessions for AI agents, on your laptop, your servers over SSH, and your Docker containers.**
 
 [![CI](https://github.com/blinkingbit-oss/execkit/actions/workflows/ci.yml/badge.svg)](https://github.com/blinkingbit-oss/execkit/actions/workflows/ci.yml)
 [![crates.io](https://img.shields.io/crates/v/execkit.svg)](https://crates.io/crates/execkit)
@@ -10,21 +10,48 @@
 [![guide](https://img.shields.io/badge/guide-online-blue.svg)](https://blinkingbit-oss.github.io/execkit/)
 [![license](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](LICENSE)
 
+![The execkit live viewer: sessions grouped by transport on the left, the selected session's shell transcript with exit codes and timings on the right](docs/assets/demo-1-main.png)
+
 </div>
 
-> **Early `0.x` release - not production-ready.** See [Limitations](#limitations).
+What you get that a built-in agent shell doesn't:
 
-execkit gives an AI agent a **persistent session** on a machine - a local shell, an
-SSH host, or a Docker container - and returns a **structured result** for every command. Crucially, it
-treats the agent itself as untrusted: every command passes a policy fence, output
-is scrubbed of secrets, and flooding output is bounded. Use it as an **embeddable
-Rust library** or as an **MCP server** any agent can drive.
+- **Persistent sessions on local, SSH and Docker.** `cd` and env carry across
+  calls, and every command returns a structured result: split stdout/stderr,
+  exit code, duration, cwd.
+- **Output that protects the agent's context.** Secrets are redacted before the
+  model sees them, and output budgets (`tail`, `head`, `grep`, a char cap) keep a
+  noisy build from flooding the context window.
+- **An audit trail, a live viewer, and undo.** Every command can go to a JSONL
+  audit log, you can watch sessions live in a terminal or browser (above), and
+  remote sessions can checkpoint and restore the workspace files.
 
-## Why
+## Install
 
-Letting an autonomous agent run shell commands is useful but risky: built-in agent
-shells are local-only with no guardrails, managed sandboxes lock you in, and raw
-SSH is stateless-per-command with no notion of "is this command allowed?"
+Zero-install, with [uv](https://docs.astral.sh/uv/). Add this to your MCP client config:
+
+```json
+{ "mcpServers": { "execkit": { "command": "uvx", "args": ["execkit-mcp"] } } }
+```
+
+Or install it and let execkit print the config for your client:
+
+```bash
+pip install execkit-mcp && execkit-mcp setup claude   # or: cursor | gemini | codex | vscode | windsurf
+```
+
+Then `execkit-mcp doctor` checks your setup. More options (prebuilt binary,
+`cargo install`, building from source) are in the [Quickstart](docs/QUICKSTART.md).
+
+**Status:** early `0.x`. The API may change between minor versions. Read
+[Limitations](#limitations) before pointing it at anything important.
+
+## Where it fits
+
+execkit complements your agent's built-in shell or sandbox; it does not replace
+it. Use it when the agent needs to work on a remote host or inside a container,
+when you want a record of what ran, or when you want to undo file changes on a
+remote workspace.
 
 **The agent is the adversary.** The LLM driving execkit can be prompt-injected by
 anything it reads, so execkit contains its own caller: a command passes the policy
@@ -44,60 +71,61 @@ flowchart LR
 
 ## Use it from an agent (MCP)
 
-Install the server - **no Rust toolchain needed**:
+The agent gets `session_create` (local, ssh, or docker), `session_exec`,
+`session_list` and `session_destroy`, plus `session_checkpoint` /
+`session_checkpoints` / `session_restore` for remote undo.
 
-```bash
-# pip (the server binary ships as a wheel):
-pip install execkit-mcp
-
-# ...or a prebuilt binary (Linux/macOS, x86_64 + arm64):
-curl --proto '=https' --tlsv1.2 -LsSf https://github.com/blinkingbit-oss/execkit/releases/latest/download/execkit-mcp-installer.sh | sh
-
-# ...or with cargo:
-cargo install execkit-mcp
-```
-
-Point your MCP client at it (`claude mcp add execkit -- execkit-mcp`, or a config block):
-
-```json
-{ "mcpServers": { "execkit": { "command": "execkit-mcp" } } }
-```
-
-The agent gets `session_create` (local, ssh, or docker) -> `session_exec` ->
-`session_destroy`, plus `session_checkpoint`/`session_restore` for remote undo.
-`session_exec` returns a structured `ExecResult` (split stdout/stderr, exit code,
-cwd), already secret-redacted and bounded.
-
-State persists across calls, and every result is parsed - not scraped from a terminal:
+State persists across calls, and every result is parsed, not scraped from a terminal:
 
 ```jsonc
 // session_exec {"command": "cd /app && npm ci"}   -> { "exit_code": 0, "cwd": "/app" }
 // session_exec {"command": "npm run build"}        // cwd is still /app
 //   -> { "stderr": "Error: Cannot find module 'webpack'",
-//        "exit_code": 1, "duration_ms": 3420, "cwd": "/app", "truncated": false }
+//        "exit_code": 1, "duration_ms": 3420, "cwd": "/app",
+//        "truncated": false, "timed_out": false }
 ```
+
+Commands time out after 120 seconds by default (`timeout_secs` per call, up to
+3600). On timeout execkit interrupts the command with Ctrl-C and returns
+`timed_out: true` with exit code 124. The session keeps its cwd and env.
 
 See [`crates/execkit-mcp/README.md`](./crates/execkit-mcp/README.md) for the operator
 security settings (host-key verification, key dir, audit, session limits).
+
+## Watch what the agent does
+
+Set `EXECKIT_MCP_AUDIT_DIR` and every session is recorded. `execkit-mcp watch`
+shows it live in the terminal, and `execkit-mcp watch --serve --open` opens the
+read-only browser viewer shown at the top.
+
+| | |
+|---|---|
+| ![Transcript search with highlighted matches and a next-error button](docs/assets/demo-4-search.png) | ![Per-session menu with rename, pin, keep, export and screenshot; the transcript shows a failed command and a command blocked by policy](docs/assets/demo-2-menu.png) |
+| Search a transcript with `/` and jump between errors. | Rename, pin or keep a session, export it, or take a screenshot. Blocked commands show inline. |
 
 ## Use it as a library
 
 ```toml
 [dependencies]
-execkit = "0.6"                                           # local + SSH + Docker
-# execkit = { version = "0.6", default-features = false }  # local + Docker only (no SSH; no russh/tokio)
+execkit = "0.9"                                           # local + SSH + Docker
+# execkit = { version = "0.9", default-features = false }  # local + Docker only (no SSH; no russh/tokio)
 ```
 
 ```rust
+use std::time::Duration;
 use execkit::{Policy, Session};
 
 fn main() -> Result<(), execkit::Error> {
     let mut s = Session::local()?
-        .with_policy(Policy { allow: vec![], deny: vec!["rm".into()] });
+        .with_policy(Policy { allow: vec![], deny: vec!["rm".into()] })
+        .with_timeout(Duration::from_secs(60));
 
     let r = s.exec("echo hi; echo err 1>&2; cd /tmp")?;
     // r.stdout == "hi"  r.stderr == "err"  r.exit_code == 0  r.cwd == "/tmp"
     println!("{} (exit {})", r.stdout, r.exit_code);
+
+    let r = s.exec_with_timeout("sleep 30", None, Duration::from_secs(1))?;
+    // r.timed_out == true  r.exit_code == 124; the session is still usable
     Ok(())
 }
 ```
@@ -108,60 +136,70 @@ Runnable examples: `cargo run --example local`,
 
 ### Python
 
-The same sessions from Python - `pip install execkit` (native bindings, no Rust
+The same sessions from Python. `pip install execkit` (native bindings, no Rust
 toolchain needed):
 
 ```python
-from execkit import Session, Policy
+from execkit import Session
 
-with Session.local(policy=Policy(deny=["rm"]), timeout=30.0) as s:
-    r = s.exec("cd /app && npm ci")
-    print(r.stdout, r.exit_code, r.cwd)
+with Session.local() as s:
+    r = s.exec("echo hi; echo err >&2; cd /tmp")
+    print(r.stdout, r.exit_code, r.cwd, r.stderr)   # hi 0 /tmp err
 ```
 
 See [`crates/execkit-py/README.md`](./crates/execkit-py/README.md).
 
-## What you get
+## What's in the box
 
-- **Persistent, stateful sessions** - `cd`/env/state persist across commands, over
-  **local PTY, SSH, or Docker**.
-- **Structured `ExecResult`** - split stdout/stderr, exit code, duration, cwd.
-- **Safe by construction** - advisory command policy, **secret redaction**, bounded
-  (anti-flood) output, SSH host-key verification.
-- **One small API, every transport** - the same `ExecResult` regardless of transport.
-- **Embeddable, never a service** - `cargo add`, in *your* process; no daemon, no vendor.
-- **Undo for agent actions** - on remote sessions, snapshot the workspace and
-  restore files if a command goes wrong (requires `git` on the remote and an
-  explicit workspace; files only, not side effects).
-- **Output budgets** - shape any command's output so huge logs do not blow the
-  agent's context: `tail`/`head`/`head+tail` by line, a `grep` filter with
-  context, and a char cap. Per-call or a session default; the result reports what
+- **Persistent, stateful sessions** over **local PTY, SSH, or Docker**. SSH
+  accepts host aliases from your `~/.ssh/config`.
+- **Structured `ExecResult`**: split stdout/stderr, exit code, duration, cwd,
+  `truncated`, `timed_out`.
+- **Base64 command framing.** Comments, heredocs, `!`, trailing `&`, syntax
+  errors and long commands do not hang the session.
+- **Timeouts that keep the session.** A timed-out command is interrupted and the
+  session carries on.
+- **Secret redaction** of common token shapes (AWS, GitHub, GitLab, Slack, Stripe,
+  Google, Anthropic, OpenAI, JWTs, PEM private keys), URL passwords,
+  `password=`/`token=`-style pairs, and values the session assigned to
+  secret-named variables. The echoed command is redacted too.
+- **Output budgets**: `tail`/`head`/`head+tail` by line, a `grep` filter with
+  context, and a char cap. Per call or a session default; the result reports what
   was kept.
+- **Undo for agent actions** on remote sessions: snapshot the workspace and
+  restore files if a command goes wrong (needs `git` on the remote and an
+  explicit workspace; files only, not side effects).
+- **Audit log and live viewer**, plus live MCP notifications to the client.
+- **Embeddable, never a service**: `cargo add`, in *your* process; no daemon, no vendor.
 
 ## Limitations
 
-An early library - today:
-
-- **Not a sandbox.** The command policy is an *advisory* tripwire (string-matching,
-  bypassable). The load-bearing control is a least-privilege *environment* - run the
-  agent and SSH user with minimal rights.
-- **A timed-out command poisons the session** - you get a clear error and should
-  create a new session.
-- **Unix-only.** Local sessions need a POSIX shell (`bash`); Windows is later.
-- **Synchronous core** - fine for typical agent use; not tuned for thousands of
+- **Not a sandbox.** The command policy is advisory string matching. It is easy to
+  bypass: `deny: ["curl"]` blocks `curl` but not `env curl`, `sudo curl` or
+  `sh -c curl`. The real control is a least-privilege *environment*: run the agent
+  and SSH user with minimal rights.
+- **No interactive input.** stdin is `/dev/null`, so prompts, REPLs and editors do
+  not work. Use non-interactive flags (`sudo -n`, `apt-get -y`). Shell history is
+  off.
+- **Timeouts interrupt, they do not kill everything.** execkit sends Ctrl-C. A
+  command that ignores Ctrl-C ends the session. For long jobs, run them in the
+  background (`nohup CMD > /tmp/job.log 2>&1 &`) and poll the log.
+- **The target needs a POSIX shell and `base64`.** Local sessions use `bash`.
+  Windows is not supported.
+- **Synchronous core.** Fine for typical agent use; not tuned for thousands of
   concurrent sessions.
 - **SSH `AcceptAny` host-key mode** exists for testing, behind an explicit insecure
-  opt-in - never use it in production.
+  opt-in. Never use it in production.
 
 Found something rough? [Open an issue](https://github.com/blinkingbit-oss/execkit/issues).
 
 ## Contributing & security
 
 - Contributions: see [`CONTRIBUTING.md`](./CONTRIBUTING.md).
-- Found a vulnerability? Follow [`SECURITY.md`](./SECURITY.md) - please don't open a
+- Found a vulnerability? Follow [`SECURITY.md`](./SECURITY.md). Please don't open a
   public issue for security reports.
 
 ## License
 
-Apache-2.0 - embed it freely, including commercially. See [`LICENSE`](./LICENSE) and
+Apache-2.0: embed it freely, including commercially. See [`LICENSE`](./LICENSE) and
 [`NOTICE`](./NOTICE).

@@ -13,7 +13,8 @@ written, which directory SSH keys come from, or the session limits.
 | `EXECKIT_MCP_AUDIT` | append a JSONL audit log of every command here | off |
 | `EXECKIT_MCP_AUDIT_DIR` | one JSONL file per session in this directory (`<session_id>-<open_ms>.jsonl`); takes precedence over `EXECKIT_MCP_AUDIT` | off |
 | `EXECKIT_MCP_AUDIT_RETENTION_DAYS` | delete per-session log files older than N days at startup (dir mode only); `0` disables | `14` |
-| `EXECKIT_MCP_KEY_DIR` | SSH `key_path` must canonicalize to inside this dir | `~/.ssh` |
+| `EXECKIT_MCP_EXEC_TIMEOUT` | default `session_exec` timeout in seconds (clamped 1-3600); `timeout_secs` overrides per call | `120` |
+| `EXECKIT_MCP_KEY_DIR` | SSH keys must canonicalize to inside this dir; its `config` file supplies `Host` aliases | `~/.ssh` |
 | `EXECKIT_MCP_KNOWN_HOSTS` | execkit-managed SSH host-key verification file (TOFU; rejects changed keys) | `~/.execkit/known_hosts` |
 | `EXECKIT_MCP_INSECURE_ACCEPT_ANY_HOSTKEY` | **DANGEROUS** disable host-key checks | unset |
 | `EXECKIT_MCP_MAX_SESSIONS` | soft cap on concurrent live sessions | `64` |
@@ -38,12 +39,49 @@ what each one resolves to on your machine.
   deliberately and scope the context.
 - The server speaks MCP on **stdout**; all diagnostics go to **stderr**.
 
+## Secret redaction
+
+Output (stdout and stderr), the echoed `command` field, the audit log and the
+live notifications are all redacted before they leave execkit. Matches become
+`[REDACTED]`. Redaction runs before output budgets, so a secret cannot survive by
+being cut in half.
+
+| Covered | Examples |
+|---|---|
+| AWS access key ids | `AKIA...` |
+| GitHub tokens | `ghp_`, `gho_`, `ghu_`, `ghs_`, `ghr_`, `github_pat_` |
+| GitLab personal access tokens | `glpat-...` |
+| Slack tokens | `xoxb-`, `xoxa-`, `xoxp-`, `xoxr-`, `xoxs-` |
+| Stripe live secret keys | `sk_live_...` |
+| Google API keys | `AIza...` |
+| Anthropic API keys | `sk-ant-...` |
+| OpenAI-style keys | `sk-...`, `sk-proj-...` (32+ characters) |
+| JSON Web Tokens | `eyJ....eyJ....sig` |
+| PEM private keys | the whole `-----BEGIN ... PRIVATE KEY-----` block, not just the header |
+| Passwords in URLs | `postgres://user:[REDACTED]@db` (user and host are kept) |
+| Secret-named `key=value` / `key: value` pairs | `password`, `passwd`, `secret`, `token`, `api_key`, `access_key`, `private_key`, including prefixed names like `DB_PASSWORD` or `AWS_SECRET_ACCESS_KEY` (values of 4+ characters) |
+| Values the session assigned to secret-named variables | after `export DB_PASS=hunter2hunter2`, the literal `hunter2hunter2` is redacted wherever it appears later in that session (names containing `token`, `secret`, `passw`, `api_key`, `private_key`, `credential` or `auth`; values of 6+ characters) |
+
+| Not covered | Why |
+|---|---|
+| Arbitrary high-entropy strings | no fixed shape; matching them would redact hashes, ids and base64 data too |
+| Encoded, reversed or split secrets | `base64`, `rev` or `cut` output no longer has the shape |
+| Secrets with no recognisable shape and no secret-named variable | for example a password printed from a file the session never assigned |
+| Values assigned outside the session | a variable set in a login profile or by another process is not learned |
+
+Redaction is a safety net for accidental leaks, not a guarantee. An agent that
+wants to exfiltrate a secret can encode it first. Keep secrets the agent should
+not see out of the environment it can reach.
+
 ## The fence is advisory, not a sandbox
 
 `allow` / `deny` command lists are defense in depth, not a jail. Matching on
-command strings is trivially bypassable (`/bin/rm`, `$(echo rm)`, base64,
-`bash -c "..."`). Treat the fence as a guardrail against accidents and obvious
-mistakes.
+command strings is trivially bypassable (`env rm`, `$(echo rm)`, base64,
+`bash -c "..."`). Name matching looks at the first word of each pipeline segment,
+so `deny: ["curl"]` blocks `curl` and `/usr/bin/curl` but not `env curl` or
+`sudo curl`. Treat the fence as a guardrail against accidents and obvious
+mistakes. A denial names the rule or pattern that matched, so the agent can see
+why a command did not run.
 
 The real security boundary is the operating system: run the agent's shell as a
 **least-privilege user**, in a **container**, or on a **scoped SSH account**, so
@@ -74,5 +112,5 @@ the regex backslashes double up (`\\b`); use `(?i)` for case-insensitive matchin
 
 A blocked command never runs; it is recorded in the audit log, shown in `watch`,
 and pushed to the client as a warning. This is an ADVISORY guardrail, not a
-sandbox: string matching is trivially bypassable (`/bin/rm`, base64, `bash -c`).
+sandbox: string matching is trivially bypassable (`env rm`, base64, `bash -c`).
 The real boundary is a least-privilege user, a container, or a scoped SSH account.

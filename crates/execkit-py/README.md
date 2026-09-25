@@ -9,17 +9,34 @@ pip install execkit
 ```
 
 ```python
-import execkit
-from execkit import Session, Policy
+from execkit import Session
 
-with Session.local(policy=Policy(deny=["rm"]), timeout=30.0) as s:
-    r = s.exec("cd /app && npm ci")
-    print(r.stdout, r.exit_code, r.cwd)
+with Session.local() as s:
+    r = s.exec("echo hi; echo err >&2; cd /tmp")
+    print(r.stdout, r.exit_code, r.cwd, r.stderr)   # hi 0 /tmp err
 ```
 
 State (cwd, env) persists across `exec` calls. Every result is a structured
-`ExecResult` (split stdout/stderr, exit code, cwd, duration), already
-secret-redacted and output-bounded. Commands pass an advisory policy fence first.
+`ExecResult` (split stdout/stderr, exit code, cwd, duration, `truncated`,
+`timed_out`), already secret-redacted and output-bounded. Pass a `Policy` for an
+advisory command fence: `Session.local(policy=Policy(deny=["rm"]))`.
+
+## Timeouts
+
+`Session.local(timeout=...)` sets the default per-command timeout in seconds, and
+`exec(cmd, timeout=...)` overrides it for one call. A command that outlives it is
+interrupted with Ctrl-C and returned with `timed_out=True` and `exit_code == 124`.
+The session keeps its cwd and env:
+
+```python
+with Session.local() as s:
+    r = s.exec("sleep 10", timeout=1)
+    print(r.timed_out, r.exit_code)   # True 124
+```
+
+Only a command that ignores Ctrl-C raises `execkit.Timeout` and leaves the session
+unusable. stdin is closed, so commands that prompt get end-of-file instead of
+hanging; use non-interactive flags such as `sudo -n`.
 
 Async callers: `r = await asyncio.to_thread(s.exec, "npm ci")` (the native call
 releases the GIL).

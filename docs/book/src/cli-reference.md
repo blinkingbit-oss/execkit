@@ -8,18 +8,21 @@ Everything below is for a human at a terminal.
 ```text
 execkit-mcp                          Run the MCP server on stdio (default)
 execkit-mcp setup <client>           Print the config to wire execkit into a client
-                                     client: claude | cursor | gemini
+                                     client: claude | cursor | gemini | codex | vscode | windsurf
 execkit-mcp doctor                   Check the local environment and print a report
 execkit-mcp watch [--follow|--serve] [--open] <path>
                                      Live, read-only viewer (TUI, follow stream, or browser)
-execkit-mcp --version                Print version
+execkit-mcp --version | version      Print version
 execkit-mcp --help                   Print help
 ```
 
 ### `setup <client>`
 
 Prints a ready MCP config block with this binary's absolute path filled in, and
-for Claude Code the `claude mcp add` one-liner. It prints rather than edits your
+for Claude Code the `claude mcp add` one-liner. Each client gets its own format
+and file location: JSON `mcpServers` for Claude Code, Cursor, Gemini CLI and
+Windsurf, JSON `servers` for VS Code (`.vscode/mcp.json`), and TOML
+`[mcp_servers.execkit]` for Codex (`~/.codex/config.toml`). It prints rather than edits your
 client's live config, so it cannot corrupt one. See
 [Wiring into an agent](./wiring-into-an-agent.md).
 
@@ -49,6 +52,7 @@ EXECKIT_MCP_AUDIT_RETENTION_DAYS  Prune per-session files older than N days (def
 EXECKIT_MCP_WATCH_WEB             Auto-start the loopback browser viewer and surface its URL
 EXECKIT_MCP_WATCH_PORT            Port for the browser viewer (default 7878; random if taken)
 EXECKIT_MCP_WATCH_OPEN            Also auto-open the browser at the viewer URL (default: link only)
+EXECKIT_MCP_EXEC_TIMEOUT          Default per-call exec timeout in seconds (default 120, clamped 1-3600)
 EXECKIT_MCP_KEY_DIR               Directory SSH keys must live under (default ~/.ssh)
 EXECKIT_MCP_KNOWN_HOSTS           execkit-managed SSH known_hosts file (default ~/.execkit/known_hosts)
 EXECKIT_MCP_MAX_SESSIONS          Soft cap on concurrent live sessions (default 64)
