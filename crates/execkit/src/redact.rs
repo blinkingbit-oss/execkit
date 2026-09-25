@@ -72,6 +72,10 @@ fn patterns() -> &'static [Pattern] {
                 r"(?i)\b([a-z][a-z0-9+.-]*://[^\s:/@]+:)[^\s@/]+@",
                 "${1}[REDACTED]@",
             ),
+            // HTTP bearer credentials: the word `Bearer` survives. Before the
+            // key/value pattern, so `token: Bearer <tok>` loses the token, not
+            // just the word `Bearer`.
+            templated(r"(?i)\b(Bearer)\s+[A-Za-z0-9._~+/=-]{16,}", "${1} [REDACTED]"),
             // `name=value` / `name: value` secrets by name. The `{4,}` floor
             // keeps short/empty values (`token=`) untouched, and the literal
             // `[:=]` right after the name (no separator allowed in between)
@@ -82,11 +86,17 @@ fn patterns() -> &'static [Pattern] {
             // without also matching `OLDPWD` or `tokenizer` (R8). `pwd` is
             // deliberately not a keyword (R9): `PWD` is an ordinary,
             // non-secret shell env var (current working directory). The value
-            // stops at `;`, `&`, `|` and `)`, so in `X_TOKEN=v&&echo ok` only
-            // `v` is redacted and the rest of the command stays readable.
+            // stops at `;`, `&`, `|`, `,` and `)`, so in `X_TOKEN=v&&echo ok`
+            // only `v` is redacted and the rest of the command stays readable.
+            // The value must also END at a boundary - end of text,
+            // whitespace, a quote, or one of `;&|,)` - which is captured and
+            // put back (no look-around in `regex`). A value that runs into
+            // `(`, `<`, `[`, `{` or `.` is code, not a secret: `cfg.get("x")`,
+            // `Option<String>`, `vec[0]`, `self.token.clone()` stay intact.
+            // A bare identifier value (TS `password: string`) still matches.
             templated(
-                r#"(?i)\b((?:[a-z0-9_]*_)?(?:password|passwd|secret|token|api[_-]?key|access[_-]?key|private[_-]?key)["']?\s*[:=]\s*["']?)[^\s"';&|)]{4,}"#,
-                "${1}[REDACTED]",
+                r#"(?i)\b((?:[a-z0-9_]*_)?(?:password|passwd|secret|token|api[_-]?key|access[_-]?key|private[_-]?key)["']?\s*[:=]\s*["']?)[^\s"';&|,)(<\[{]{4,}($|[\s"';&|,)])"#,
+                "${1}[REDACTED]${2}",
             ),
         ]
     })
@@ -563,5 +573,84 @@ mod tests {
         assert_eq!(r.redact("abcdef123 zyxwvu987"), "[REDACTED] [REDACTED]");
         // `&&echo` / `)` were not learned as part of a value.
         assert_eq!(r.redact("&&echo ok )"), "&&echo ok )");
+    }
+
+    #[test]
+    fn key_value_redaction_leaves_source_code_intact() {
+        for line in [
+            "pub token: Option<String>,",
+            r#"let access_key = cfg.get("x");"#,
+            "let secret = vec[0];",
+            "password: Map<K, V>",
+            "token: self.tokens.first()",
+            "api_key = build{x}",
+        ] {
+            assert_eq!(redact(line), line, "source line must survive");
+            assert_eq!(redact_command(line), line, "source line must survive");
+        }
+    }
+
+    #[test]
+    fn key_value_redaction_still_catches_real_secrets() {
+        for (input, want) in [
+            ("password=hunter22", "password=[REDACTED]"),
+            ("DB_PASSWORD=x9!kQ2", "DB_PASSWORD=[REDACTED]"),
+            (r#"api_key: "abc123xyz""#, r#"api_key: "[REDACTED]""#),
+            ("token: abcd1234efgh", "token: [REDACTED]"),
+            (
+                "AWS_SECRET_ACCESS_KEY=wJalrXUtnFEMI/K7MDENG",
+                "AWS_SECRET_ACCESS_KEY=[REDACTED]",
+            ),
+            (
+                "export X_TOKEN=abcdef123&&echo ok",
+                "export X_TOKEN=[REDACTED]&&echo ok",
+            ),
+            (
+                "export GH_TOKEN=abcdef123;echo ok",
+                "export GH_TOKEN=[REDACTED];echo ok",
+            ),
+            ("token=abcd1234, next", "token=[REDACTED], next"),
+            (
+                "password=hunter22\nsecret=hunter33",
+                "password=[REDACTED]\nsecret=[REDACTED]",
+            ),
+            (
+                "password=abcd;token=efgh",
+                "password=[REDACTED];token=[REDACTED]",
+            ),
+        ] {
+            assert_eq!(redact(input), want, "{input}");
+        }
+    }
+
+    #[test]
+    fn bearer_tokens_are_redacted_keeping_the_word() {
+        assert_eq!(
+            redact("Authorization: Bearer abcdefghijklmnop1234"),
+            "Authorization: Bearer [REDACTED]"
+        );
+        assert_eq!(
+            redact(r#"curl -H "Authorization: Bearer eyJ0eXAi.abc-def_123+/=xyz" https://x"#),
+            r#"curl -H "Authorization: Bearer [REDACTED]" https://x"#
+        );
+        assert_eq!(
+            redact("authorization: bearer ABCDEFGHIJKLMNOP.qrs"),
+            "authorization: bearer [REDACTED]"
+        );
+        assert_eq!(
+            redact("token: Bearer abcdefghijklmnop1234"),
+            "token: [REDACTED] [REDACTED]"
+        );
+        assert_eq!(
+            redact_command(r#"curl -H "Authorization: Bearer <token>" https://x"#),
+            r#"curl -H "Authorization: Bearer <token>" https://x"#
+        );
+        for benign in [
+            "Bearer x",
+            "Authorization: Bearer short123",
+            "the bearer of news",
+        ] {
+            assert_eq!(redact(benign), benign);
+        }
     }
 }
