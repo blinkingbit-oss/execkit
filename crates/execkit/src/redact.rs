@@ -81,9 +81,11 @@ fn patterns() -> &'static [Pattern] {
             // compound names like `DB_PASSWORD`/`AWS_SECRET_ACCESS_KEY`
             // without also matching `OLDPWD` or `tokenizer` (R8). `pwd` is
             // deliberately not a keyword (R9): `PWD` is an ordinary,
-            // non-secret shell env var (current working directory).
+            // non-secret shell env var (current working directory). The value
+            // stops at `;`, `&`, `|` and `)`, so in `X_TOKEN=v&&echo ok` only
+            // `v` is redacted and the rest of the command stays readable.
             templated(
-                r#"(?i)\b((?:[a-z0-9_]*_)?(?:password|passwd|secret|token|api[_-]?key|access[_-]?key|private[_-]?key)["']?\s*[:=]\s*["']?)[^\s"']{4,}"#,
+                r#"(?i)\b((?:[a-z0-9_]*_)?(?:password|passwd|secret|token|api[_-]?key|access[_-]?key|private[_-]?key)["']?\s*[:=]\s*["']?)[^\s"';&|)]{4,}"#,
                 "${1}[REDACTED]",
             ),
         ]
@@ -102,22 +104,30 @@ pub fn redact(text: &str) -> String {
 
 /// Matches a shell assignment: optional `export `, `NAME=value`, where
 /// `value` is a double- or single-quoted string or a bare run up to
-/// whitespace/`;`/`&`/`|`.
+/// whitespace/`;`/`&`/`|`/`)`. An assignment may follow `(` (a subshell).
 fn assignment_pattern() -> &'static Regex {
     static RE: OnceLock<Regex> = OnceLock::new();
     RE.get_or_init(|| {
         Regex::new(
-            r#"(?:^|[\s;&|])(?:export\s+)?([A-Za-z_][A-Za-z0-9_]*)=("[^"]*"|'[^']*'|[^\s;&|]+)"#,
+            r#"(?:^|[\s;&|(])(?:export\s+)?([A-Za-z_][A-Za-z0-9_]*)=("[^"]*"|'[^']*'|[^\s;&|)]+)"#,
         )
         .unwrap()
     })
 }
 
 /// Matches an env var name that looks like it holds a secret.
+///
+/// `auth` counts only as its own `_`-delimited word (`AUTH`, `MY_AUTH`,
+/// `BASIC_AUTH_PASS`, `OAUTH_...`) or run into `KEY`/`TOKEN`/`PASS`
+/// (`AUTHKEY`), never inside another word: `GIT_AUTHOR_NAME` and
+/// `AUTHORITY_URL` are not secrets.
 fn secret_name_pattern() -> &'static Regex {
     static RE: OnceLock<Regex> = OnceLock::new();
     RE.get_or_init(|| {
-        Regex::new(r"(?i)(token|secret|passw|api_?key|private_?key|credential|auth)").unwrap()
+        Regex::new(
+            r"(?i)(token|secret|passw|api_?key|private_?key|credential|(?:^|_)o?auth(?:$|_|key|token|pass))",
+        )
+        .unwrap()
     })
 }
 
@@ -500,5 +510,58 @@ mod tests {
             "trailing output must survive; got: {r}"
         );
         assert!(r.contains("[REDACTED]"));
+    }
+
+    #[test]
+    fn auth_matches_only_as_a_word_not_inside_author() {
+        let mut r = Redactor::default();
+        r.learn_from_command(
+            r#"export GIT_AUTHOR_NAME="Jay Shankar"; export AUTHORITY_URL=https://x.example"#,
+        );
+        let out = r.redact("Author: Jay Shankar via https://x.example");
+        assert_eq!(out, "Author: Jay Shankar via https://x.example");
+
+        for cmd in [
+            "export MY_AUTH=secretvalue",
+            "AUTH_TOKEN=secretvalue",
+            "export AUTH=secretvalue",
+            "export BASIC_AUTH_PASS=secretvalue",
+            "export OAUTH_CLIENT=secretvalue",
+            "export X_AUTHKEY=secretvalue",
+        ] {
+            let mut r = Redactor::default();
+            r.learn_from_command(cmd);
+            assert_eq!(r.redact("v=secretvalue"), "v=[REDACTED]", "{cmd}");
+        }
+    }
+
+    #[test]
+    fn key_value_redaction_stops_at_shell_operators() {
+        assert_eq!(
+            redact("export X_TOKEN=abcdef123&&echo ok"),
+            "export X_TOKEN=[REDACTED]&&echo ok"
+        );
+        assert_eq!(
+            redact("export GH_TOKEN=abcdef123; echo ok"),
+            "export GH_TOKEN=[REDACTED]; echo ok"
+        );
+        assert_eq!(
+            redact("export GH_TOKEN=abcdef123;echo ok"),
+            "export GH_TOKEN=[REDACTED];echo ok"
+        );
+        assert_eq!(redact("PASSWORD=abcdef123|cat"), "PASSWORD=[REDACTED]|cat");
+        assert_eq!(
+            redact("(API_KEY=abcdef123)&& x"),
+            "(API_KEY=[REDACTED])&& x"
+        );
+    }
+
+    #[test]
+    fn learned_value_stops_at_shell_operators() {
+        let mut r = Redactor::default();
+        r.learn_from_command("export MY_SECRET=abcdef123&&echo ok;(MY_PASSWD=zyxwvu987)");
+        assert_eq!(r.redact("abcdef123 zyxwvu987"), "[REDACTED] [REDACTED]");
+        // `&&echo` / `)` were not learned as part of a value.
+        assert_eq!(r.redact("&&echo ok )"), "&&echo ok )");
     }
 }
