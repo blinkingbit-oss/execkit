@@ -482,6 +482,33 @@ fn active_session_is_not_reaped() {
 }
 
 #[test]
+fn session_is_not_reaped_right_after_a_long_exec() {
+    // TTL=1s. An exec that runs longer than the TTL must count as use when it
+    // FINISHES, not only when it started - else the next reap (triggered by
+    // any create) drops a session that was busy a moment ago.
+    let mut m = Mcp::start(&[("EXECKIT_MCP_SESSION_TTL", "1")]);
+    let a = m.call(2, "session_create", json!({"transport": "local"}));
+    let sid = result_json(&a)["session_id"].as_str().unwrap().to_string();
+    let e = m.call(
+        3,
+        "session_exec",
+        json!({"session_id": sid, "command": "sleep 2.5; echo done"}),
+    );
+    assert_eq!(result_json(&e)["stdout"], "done");
+    let _ = m.call(4, "session_create", json!({"transport": "local"}));
+    let still = m.call(
+        5,
+        "session_exec",
+        json!({"session_id": sid, "command": "echo still"}),
+    );
+    assert_eq!(
+        result_json(&still)["stdout"],
+        "still",
+        "session that just finished a long exec must survive reap: {still:?}"
+    );
+}
+
+#[test]
 fn shell_exit_closes_session_and_next_exec_is_unknown() {
     // A command that exits the shell (Err::ShellExited) must close the dead
     // session (remove it from the map) rather than leaving it registered but

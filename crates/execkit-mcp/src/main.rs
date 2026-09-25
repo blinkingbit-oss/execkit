@@ -513,7 +513,13 @@ impl ExeckitServer {
         // Concurrent execs on the SAME session serialize on this lock (the
         // outer map lock is already released). `lock` recovers from poisoning.
         let outcome = tokio::task::spawn_blocking(move || {
-            lock(&session.session).exec_with_timeout(&command, budget.as_ref(), timeout)
+            let mut s = lock(&session.session);
+            let r = s.exec_with_timeout(&command, budget.as_ref(), timeout);
+            // Touch again before unlocking: `get` stamped the START, so a
+            // command that ran past the TTL would otherwise leave the session
+            // reapable the instant it unlocks.
+            *lock(&session.last_used) = Instant::now();
+            r
         })
         .await
         .map_err(internal)?;
