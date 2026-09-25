@@ -1,7 +1,17 @@
 # execkit-mcp (npm name reserved)
 
-Reserved for [**execkit**](https://github.com/blinkingbit-oss/execkit) - stateful,
-structured, safe command execution for AI agents over local shells, SSH, and Docker.
+This npm name is reserved for [**execkit**](https://github.com/blinkingbit-oss/execkit) -
+stateful, structured, safe command execution for AI agents over local shells,
+SSH, and Docker. There is no npm package to run here.
 
-Today execkit ships as a Rust crate and an MCP server (`execkit-mcp`, installable
-via a prebuilt binary). See the [project README](https://github.com/blinkingbit-oss/execkit).
+Install execkit-mcp with:
+
+```bash
+uvx execkit-mcp
+# or
+pip install execkit-mcp
+```
+
+See the [project README](https://github.com/blinkingbit-oss/execkit) for setup
+and usage with Claude Code, Cursor, Gemini CLI, Codex, VS Code, Windsurf, and
+others.

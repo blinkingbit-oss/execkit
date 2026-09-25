@@ -116,3 +116,32 @@ jobs:
           # re-run skips the already-published files instead of hard-failing
           # (PyPI versions are immutable, so a failed re-run can't bump+retry).
           skip-existing: true
+
+  publish-mcp-registry:
+    name: Publish to MCP Registry
+    needs: [publish]
+    runs-on: ubuntu-latest
+    # Same gating as the PyPI publish job above: only a real release tag, never
+    # a workflow_dispatch run.
+    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/')
+    permissions:
+      contents: read
+      id-token: write # OIDC: GitHub-native auth to the MCP Registry, no stored token
+    steps:
+      - uses: actions/checkout@v6
+      - name: Sync server.json version from the workspace Cargo.toml
+        # release-plz bumps Cargo.toml's workspace version on the release-PR
+        # merge (which creates this tag) but does not know about server.json,
+        # so sync it here from the checked-out tag rather than committing a
+        # redundant version bump to server.json in the release PR.
+        run: |
+          VERSION=$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml)
+          jq --arg v "$VERSION" '.version = $v | .packages[0].version = $v' server.json > server.json.tmp
+          mv server.json.tmp server.json
+      - name: Install mcp-publisher
+        run: |
+          curl -L "https://github.com/modelcontextprotocol/registry/releases/latest/download/mcp-publisher_$(uname -s | tr '[:upper:]' '[:lower:]')_$(uname -m | sed 's/x86_64/amd64/;s/aarch64/arm64/').tar.gz" | tar xz mcp-publisher
+      - name: Authenticate to MCP Registry
+        run: ./mcp-publisher login github-oidc
+      - name: Publish server to MCP Registry
+        run: ./mcp-publisher publish

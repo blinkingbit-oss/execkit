@@ -1,7 +1,7 @@
 {
   "name": "execkit-mcp",
-  "version": "0.0.1",
-  "description": "Name reserved for execkit-mcp - see https://github.com/blinkingbit-oss/execkit",
+  "version": "0.0.2",
+  "description": "This npm name is reserved. Install execkit-mcp with `uvx execkit-mcp` or `pip install execkit-mcp` - see https://github.com/blinkingbit-oss/execkit",
   "license": "Apache-2.0",
   "homepage": "https://github.com/blinkingbit-oss/execkit",
   "repository": { "type": "git", "url": "git+https://github.com/blinkingbit-oss/execkit.git" },
