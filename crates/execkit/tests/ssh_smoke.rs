@@ -100,8 +100,9 @@ fn ssh_drop_after_timeout_does_not_hang() {
     let mut s = Session::ssh(cfg)
         .expect("ssh connect")
         .with_timeout(Duration::from_millis(500));
-    // Floods forever -> StillRunning; the runtime thread blocks in read_tx.send.
-    assert!(s.exec("yes").is_err());
+    // Floods forever and ignores the Ctrl-C a timeout sends, so the resync fails
+    // -> StillRunning; the runtime thread blocks in read_tx.send.
+    assert!(s.exec("sh -c 'trap \"\" INT; exec yes'").is_err());
     let t = Instant::now();
     drop(s); // must return promptly, not deadlock in join()
     assert!(
