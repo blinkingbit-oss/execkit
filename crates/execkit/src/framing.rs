@@ -114,6 +114,17 @@ fn b64(data: &[u8]) -> String {
 /// THE LINE - the trailer would never print and the session would hang.
 /// `command` strips the special-builtin status: the error becomes exit 2 and
 /// the trailer still runs. The command still runs in the current shell.
+///
+/// Decoding runs the init-resolved decoder path, quoted (`"$__ek_dp"
+/// "$__ek_df"`), in its own silenced step: a user `IFS=`/`PATH=` change cannot
+/// word-split or un-find it. If decoding still fails, the command reports
+/// exit 125 with a stderr message rather than `eval ""` silently "succeeding"
+/// with exit 0. The fallback is chosen inside the silenced step, so under
+/// `set -x` only `command eval '<cmd>'` is traced. `2>|` rather than `2>`
+/// so a user `set -C` (noclobber) cannot refuse the file mktemp just made.
+/// The pre-create is `command : >|` for the same reason: `:` is a special
+/// builtin, so a failed redirection on it (noclobber, unwritable TMPDIR) makes
+/// dash/busybox ash abandon the whole run line; `command` stops that.
 pub(crate) fn build_payload(command: &str, token: &str) -> String {
     let m = Markers::new(token);
     let enc = b64(command.as_bytes());
@@ -131,10 +142,12 @@ pub(crate) fn build_payload(command: &str, token: &str) -> String {
     // shell (not a subshell) so cd/env changes persist.
     p.push_str(&format!(
         "{{ __ek_f=$(mktemp 2>/dev/null || printf '%s' \"${{TMPDIR:-/tmp}}/execkitE_$$_{t8}\"); \
-: > \"$__ek_f\"; chmod 600 \"$__ek_f\"; }} 2>/dev/null; \
-{{ command eval \"$(printf '%s' \"$__ek_c\" | $__ek_d)\"; }} </dev/null 2>\"$__ek_f\"; \
+command : >|\"$__ek_f\"; chmod 600 \"$__ek_f\"; }} 2>/dev/null; \
+{{ __ek_s=$(printf '%s' \"$__ek_c\" | \"$__ek_dp\" \"$__ek_df\") || \
+__ek_s=\"printf 'execkit: could not decode command (was IFS/PATH changed?)\\\\n' >&2; (exit 125)\"; }} 2>/dev/null; \
+{{ command eval \"$__ek_s\"; }} </dev/null 2>|\"$__ek_f\"; \
 {{ __ek_rc=$?; printf '\\n%s\\037%d\\037%s\\037' '{start}' \"$__ek_rc\" \"$(printf %s \"$PWD\" | tr -d '\\037')\"; \
-cat \"$__ek_f\"; rm -f \"$__ek_f\"; unset __ek_c __ek_f; printf '%s\\n' '{end}'; }} 2>/dev/null\n",
+cat \"$__ek_f\"; rm -f \"$__ek_f\"; unset __ek_c __ek_f __ek_s; printf '%s\\n' '{end}'; }} 2>/dev/null\n",
         t8 = &token[..token.len().min(8)],
         start = m.start,
         end = m.end,
@@ -145,19 +158,29 @@ cat \"$__ek_f\"; rm -f \"$__ek_f\"; unset __ek_c __ek_f; printf '%s\\n' '{end}';
 /// Extract a complete result from the accumulated output, or `None` if the
 /// trailer has not fully arrived yet.
 ///
-/// Uses the FIRST end marker and the LAST start marker before it: the command's
-/// own stdout sits before the real start marker, so anything that looks like a
-/// start marker there is skipped over rather than trusted.
+/// Uses the first end marker that validates and the LAST start marker before
+/// it: the command's own stdout sits before the real start marker, so anything
+/// that looks like a start marker there is skipped over rather than trusted.
 pub(crate) fn parse(acc: &[u8], m: &Markers) -> Option<Parsed> {
     let (start_b, end_b) = (m.start.as_bytes(), m.end.as_bytes());
-    let end_pos = find(acc, end_b)?;
-    let start_pos = rfind(&acc[..end_pos], start_b)?;
-    let between = &acc[start_pos + start_b.len()..end_pos];
-    // Only the first three US separators matter (stderr may contain more).
-    let mut us = between.iter().enumerate().filter(|(_, b)| **b == US);
-    let (Some((s0, _)), Some((s1, _)), Some((s2, _))) = (us.next(), us.next(), us.next()) else {
-        return None;
+    // An END whose block does not validate is skipped, not fatal: under
+    // `set -v` the shell echoes the run line itself, which carries both
+    // markers but a literal `\037` instead of real US bytes.
+    let mut from = 0;
+    let (start_pos, end_pos, s0, s1, s2) = loop {
+        let end_pos = from + find(&acc[from..], end_b)?;
+        from = end_pos + 1;
+        let Some(start_pos) = rfind(&acc[..end_pos], start_b) else {
+            continue;
+        };
+        let between = &acc[start_pos + start_b.len()..end_pos];
+        // Only the first three US separators matter (stderr may contain more).
+        let mut us = between.iter().enumerate().filter(|(_, b)| **b == US);
+        if let (Some((s0, _)), Some((s1, _)), Some((s2, _))) = (us.next(), us.next(), us.next()) {
+            break (start_pos, end_pos, s0, s1, s2);
+        }
     };
+    let between = &acc[start_pos + start_b.len()..end_pos];
     let exit_code: i32 = String::from_utf8_lossy(&between[s0 + 1..s1])
         .trim()
         .parse()
@@ -222,6 +245,22 @@ mod tests {
         assert_eq!(p.exit_code, 0);
         assert_eq!(p.cwd, "/tmp");
         assert_eq!(p.stderr, "err");
+    }
+
+    #[test]
+    fn parse_skips_end_marker_whose_block_does_not_validate() {
+        // `set -v` echoes the run line: both markers, but a literal `\037`
+        // instead of real US bytes. The real block follows it.
+        let m = Markers::new("t2");
+        let raw = format!(
+            "{s}\\037%d\\037%s\\037' x; printf '%s\\n' '{e}'\nok\n{s}\x1f0\x1f/tmp\x1f{e}\n",
+            s = m.start,
+            e = m.end
+        );
+        let p = parse(raw.as_bytes(), &m).unwrap();
+        assert_eq!(p.exit_code, 0);
+        assert_eq!(p.cwd, "/tmp");
+        assert!(p.stdout.ends_with("ok"), "{:?}", p.stdout);
     }
 
     #[test]

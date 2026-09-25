@@ -135,3 +135,83 @@ fn works_under_posix_sh() {
     assert_ne!(x.exec("if then fi").unwrap().exit_code, 0);
     assert_eq!(x.exec("echo ok # c").unwrap().stdout, "ok");
 }
+
+// User shell settings must not break the framing.
+
+#[test]
+fn ifs_change_does_not_break_decoding() {
+    let mut x = s();
+    x.exec("IFS=,").unwrap();
+    assert_eq!(x.exec("echo ok").unwrap().stdout, "ok");
+    x.exec("IFS=").unwrap();
+    assert_eq!(x.exec("echo ok").unwrap().stdout, "ok");
+    x.exec("unset IFS").unwrap();
+    let r = x.exec("echo a b").unwrap();
+    assert_eq!((r.stdout.as_str(), r.exit_code), ("a b", 0));
+}
+
+#[test]
+fn path_change_does_not_break_decoding() {
+    let mut x = s();
+    x.exec("PATH=/nonexistent").unwrap();
+    // echo is a builtin, so it must still run (not be silently skipped).
+    assert_eq!(x.exec("echo ok").unwrap().stdout, "ok");
+    let mut y = s();
+    y.exec("unset PATH").unwrap();
+    assert_eq!(y.exec("echo ok").unwrap().stdout, "ok");
+}
+
+#[test]
+fn noclobber_does_not_break_stderr_capture() {
+    let mut x = s();
+    x.exec("set -C").unwrap();
+    let r = x.exec("echo ok; echo e >&2").unwrap();
+    assert_eq!(
+        (r.stdout.as_str(), r.stderr.as_str(), r.exit_code),
+        ("ok", "e", 0)
+    );
+}
+
+#[test]
+fn verbose_mode_does_not_hang() {
+    let mut x = s();
+    x.exec("set -v").unwrap();
+    let r = x.exec("echo ok").unwrap();
+    assert!(r.stdout.contains("ok"), "{:?}", r.stdout);
+    assert_eq!(r.exit_code, 0);
+}
+
+#[test]
+fn posix_sh_ifs_path_noclobber() {
+    let mut x = Session::local_shell("sh", &["-i"])
+        .unwrap()
+        .with_timeout(Duration::from_secs(5));
+    x.exec("IFS=,; set -C; PATH=/nonexistent").unwrap();
+    assert_eq!(x.exec("echo ok").unwrap().stdout, "ok");
+}
+
+#[test]
+fn decode_failure_is_loud_not_silent_success() {
+    let mut x = s();
+    // Break the decoder deliberately: the command must NOT report exit 0.
+    x.exec("unset __ek_dp").unwrap();
+    let r = x.exec("echo ok").unwrap();
+    assert_eq!(r.exit_code, 125);
+    assert!(r.stderr.contains("could not decode"), "{:?}", r.stderr);
+    assert_eq!(r.stdout, "");
+}
+
+#[test]
+fn posix_sh_noclobber_with_mktemp_file() {
+    // mktemp has already created the stderr file; under `set -C` a plain
+    // `: >` on it fails, and in dash/ash that drops the whole run line.
+    let mut x = Session::local_shell("sh", &["-i"])
+        .unwrap()
+        .with_timeout(Duration::from_secs(5));
+    x.exec("set -C").unwrap();
+    let r = x.exec("echo ok; echo e >&2").unwrap();
+    assert_eq!(
+        (r.stdout.as_str(), r.stderr.as_str(), r.exit_code),
+        ("ok", "e", 0)
+    );
+}

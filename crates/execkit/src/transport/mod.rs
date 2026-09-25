@@ -29,6 +29,9 @@ pub trait Transport: Send {
 /// command line* contains the `''` - we match only real output, never the
 /// pre-`stty -echo` echo. The tag ends in `ok` only if a decoder was found
 /// (GNU/busybox `base64 -d`, or BSD/macOS `base64 -D`); framing needs one.
+/// The decoder is stored as a resolved path (`__ek_dp`) plus flag (`__ek_df`)
+/// and always run quoted, so a later `PATH=`/`unset PATH`/`IFS=` in the
+/// user's session cannot break decoding (see `framing::build_payload`).
 ///
 /// SEC: history is turned off (`set +o history`, `unset HISTFILE`) so agent
 /// commands - which may carry secrets - are never written to a history file.
@@ -45,10 +48,11 @@ pub(crate) fn shell_init(t: &mut dyn Transport) -> Result<()> {
         b"stty -echo 2>/dev/null; PS1=''; PS2=''; PROMPT_COMMAND=''; \
 command set +o history 2>/dev/null; command set +H 2>/dev/null; command set +m 2>/dev/null; \
 unset HISTFILE; \
-if printf 'YQ==' | base64 -d >/dev/null 2>&1; then __ek_d='base64 -d'; \
-elif printf 'YQ==' | base64 -D >/dev/null 2>&1; then __ek_d='base64 -D'; \
-else __ek_d=''; fi; \
-printf '%s\\n' EXECKITrdy''9f3a7c\"${__ek_d:+ok}\"''\n",
+__ek_dp=$(command -v base64 2>/dev/null); \
+if printf 'YQ==' | \"$__ek_dp\" -d >/dev/null 2>&1; then __ek_df=-d; \
+elif printf 'YQ==' | \"$__ek_dp\" -D >/dev/null 2>&1; then __ek_df=-D; \
+else __ek_dp=''; fi; \
+printf '%s\\n' EXECKITrdy''9f3a7c\"${__ek_dp:+ok}\"''\n",
     )?;
     let mut acc = Vec::new();
     let deadline = Instant::now() + Duration::from_secs(8);
