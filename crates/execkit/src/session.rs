@@ -561,9 +561,11 @@ impl Session {
     /// it poisons the session only if that fails or the shell exits.
     ///
     /// `acc_cap` bounds how much of the command's output is kept in memory:
-    /// once the buffer passes `2 * acc_cap` it is compacted back to `acc_cap`
-    /// (head and tail halves). A small cap is fine for plain exec (the
-    /// caller only sees that much anyway), but a budget (grep/head/tail/max_chars)
+    /// once the buffer passes `2 * acc_cap` it is compacted back to about
+    /// `acc_cap`: stdout's head and tail halves, and stderr (which arrives
+    /// after stdout) separately to its own head and tail, at least a quarter
+    /// each. A small cap is fine for plain exec (the caller only sees that
+    /// much anyway), but a budget (grep/head/tail/max_chars)
     /// needs to see the FULL output to report true line totals and find matches
     /// anywhere - callers pass a much larger cap in that case (see `exec_inner`).
     fn run_framed_for(
@@ -628,19 +630,10 @@ impl Session {
         markers: &Markers,
         timeout: Duration,
     ) -> Result<Framed> {
-        let (acc, overflowed) = (acc.bytes(), acc.overflowed());
+        let (out, overflowed) = (acc.partial_stdout(markers), acc.overflowed());
         let Ok(cwd) = self.resync() else {
             self.poisoned = true;
             return Err(Error::StillRunning);
-        };
-        // The command may have finished just as the deadline hit, leaving a
-        // partial trailer in `acc`: keep only what precedes it.
-        let out = match acc
-            .windows(markers.start.len())
-            .position(|w| w == markers.start.as_bytes())
-        {
-            Some(i) => &acc[..i],
-            None => acc,
         };
         Ok(Framed {
             stdout: crate::output::clean(&String::from_utf8_lossy(out)),
@@ -726,7 +719,8 @@ impl Drop for Session {
 
 /// In-memory output window for a budgeted exec: budgets see all output up to
 /// this size (and up to twice it between compactions); beyond that, the
-/// first and last `BUDGET_ACC_CAP / 2` bytes are kept (see
+/// first and last `BUDGET_ACC_CAP / 2` bytes of stdout and at least the first
+/// and last `BUDGET_ACC_CAP / 4` bytes of stderr are kept (see
 /// [`framing::Accumulator`]).
 const BUDGET_ACC_CAP: usize = 8 * 1024 * 1024;
 

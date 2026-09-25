@@ -38,6 +38,9 @@ shaping it, so `grep` finds a match anywhere in a large log and `lines_total` is
 the real count. Larger output is compacted as it arrives: the buffer may grow to
 16 MiB, then execkit keeps the first 4 MiB and the most recent 4 MiB, with a
 `[execkit: N bytes elided]` line (N is the running total) where the middle was.
+stderr arrives after stdout and is compacted on its own the same way, with its
+own elision line and count. It keeps a head and a tail of at least 2 MiB each
+(up to 4 MiB each when stdout was small).
 Once that happens, the budget only sees what was kept:
 
 - `lines_total` counts the kept head and tail lines (plus the elision line), not

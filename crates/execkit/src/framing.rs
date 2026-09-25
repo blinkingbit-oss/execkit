@@ -202,18 +202,44 @@ pub(crate) fn parse(acc: &[u8], m: &Markers) -> Option<Parsed> {
 /// end marker only in its own bytes plus `end.len() - 1` bytes of overlap
 /// (so a marker split across chunks is still found), and the full [`parse`]
 /// runs only once an end-marker candidate shows up. Past `cap` the buffer is
-/// allowed to grow to `2 * cap` before [`compact`] cuts it back to `cap`, so
-/// each compaction's copy is paid for by `cap` bytes of new input.
+/// allowed to grow to `2 * cap` before it is compacted back to about `cap`,
+/// so each compaction's copy is paid for by new input.
+///
+/// The trailer's start marker sits between the command's stdout and its
+/// stderr, and compaction must never drop it (else [`parse`] could never
+/// succeed and the command would run into its timeout). So the start marker
+/// is tracked like the end marker, and once it and its header
+/// (`US exit US cwd US`) have arrived, the buffer is two zones compacted
+/// separately, each with its own elision separator and running count:
+/// stdout before the start marker (first and last `cap / 2` bytes kept, as
+/// before the marker arrived) and stderr after the header (first and last
+/// half of whatever stdout left of `cap`, but at least `cap / 4` each).
+/// Neither zone ever includes the marker or the header.
 pub(crate) struct Accumulator {
     buf: Vec<u8>,
     cap: usize,
     /// `buf[..scanned]` has been searched: any end marker in it was already
     /// seen by `parse` and rejected (an invalid END never becomes valid, since
-    /// its validity depends only on the bytes before it).
+    /// its validity depends only on the bytes before it). Likewise for start
+    /// markers whose header could already be checked.
     scanned: usize,
-    /// Total bytes dropped by compaction so far.
+    /// Bytes of stdout dropped by compaction so far.
     elided: usize,
+    /// Position of the trailer's start marker, once seen with a valid
+    /// `US exit US` right after it. The command cannot print one (the token
+    /// is unguessable); a `set -v` echo of the run line has a literal
+    /// `\037` there instead, so it is not mistaken for the real one.
+    start: Option<usize>,
+    /// Where stderr begins (just past the header's third US), once arrived.
+    stderr_at: Option<usize>,
+    /// Bytes of stderr dropped by compaction so far.
+    err_elided: usize,
+    /// Head and tail kept of stderr, fixed at its first compaction.
+    err_keep: Option<usize>,
 }
+
+/// Longest `US exit US` after a start marker: `$?` is 0-255.
+const HDR: usize = 5;
 
 impl Accumulator {
     pub fn new(cap: usize) -> Self {
@@ -222,6 +248,10 @@ impl Accumulator {
             cap,
             scanned: 0,
             elided: 0,
+            start: None,
+            stderr_at: None,
+            err_elided: 0,
+            err_keep: None,
         }
     }
 
@@ -236,49 +266,145 @@ impl Accumulator {
                 return Some(p);
             }
         }
+        self.track_start(m.start.as_bytes());
         if self.buf.len() > self.cap.saturating_mul(2) {
-            compact(&mut self.buf, self.cap / 2, &mut self.elided);
+            self.compact();
         }
-        // Everything now in the buffer has been searched; after a compaction
-        // the tail (and so the overlap window) is unchanged.
+        // Everything now in the buffer has been searched; a compaction keeps
+        // the tail (and so the overlap windows) unchanged.
         self.scanned = self.buf.len();
         None
     }
 
-    /// Whether any output was dropped by compaction.
-    pub fn overflowed(&self) -> bool {
-        self.elided > 0
+    /// Find the real start marker (incrementally, like the end marker), then
+    /// the end of its header.
+    fn track_start(&mut self, start: &[u8]) {
+        if self.start.is_none() {
+            // Overlap covers a marker split across chunks and one whose
+            // header had not fully arrived yet.
+            let mut from = self.scanned.saturating_sub(start.len() - 1 + HDR);
+            while let Some(i) = find(&self.buf[from..], start) {
+                let pos = from + i;
+                if valid_header(&self.buf[pos + start.len()..]) {
+                    self.start = Some(pos);
+                    break;
+                }
+                from = pos + 1;
+            }
+        }
+        if let (Some(s), None) = (self.start, self.stderr_at) {
+            let hdr = &self.buf[s + start.len()..];
+            if let Some((i, _)) = hdr.iter().enumerate().filter(|(_, b)| **b == US).nth(2) {
+                self.stderr_at = Some(s + start.len() + i + 1);
+            }
+        }
     }
 
-    /// The raw bytes accumulated so far (for a timed-out command).
+    fn compact(&mut self) {
+        let Some(s) = self.start else {
+            let len = self.buf.len();
+            compact_range(&mut self.buf, 0, len, self.cap / 2, &mut self.elided);
+            return;
+        };
+        // stdout: same keep as before the start marker arrived, so an earlier
+        // separator still sits right after the head.
+        let new_s = compact_range(&mut self.buf, 0, s, self.cap / 2, &mut self.elided);
+        self.start = Some(new_s);
+        // Until the header is complete there is no stderr to compact yet
+        // (it is short: `$?` and `$PWD`).
+        if let Some(e) = self.stderr_at {
+            // `e >= s`; the stdout zone may even have grown by a separator.
+            let e = e - s + new_s;
+            self.stderr_at = Some(e);
+            // stderr gets what stdout left of `cap`, but at least `cap / 4`
+            // per side. Fixed at the first compaction (the stdout zone no
+            // longer changes) so an earlier separator stays after the head.
+            let keep = *self
+                .err_keep
+                .get_or_insert_with(|| (self.cap.saturating_sub(e) / 2).max(self.cap / 4));
+            let len = self.buf.len();
+            compact_range(&mut self.buf, e, len, keep, &mut self.err_elided);
+        }
+    }
+
+    /// Whether any output was dropped by compaction.
+    pub fn overflowed(&self) -> bool {
+        self.elided > 0 || self.err_elided > 0
+    }
+
+    /// The command's stdout accumulated so far, for a timed-out command.
+    /// The command may have finished just as the deadline hit, leaving a
+    /// partial trailer: keep only what precedes it.
+    pub fn partial_stdout(&self, m: &Markers) -> &[u8] {
+        match self.start.or_else(|| find(&self.buf, m.start.as_bytes())) {
+            Some(i) => &self.buf[..i],
+            None => &self.buf,
+        }
+    }
+
+    /// The raw bytes accumulated so far.
+    #[cfg(test)]
     pub fn bytes(&self) -> &[u8] {
         &self.buf
     }
+}
+
+/// Whether `after` (the bytes after a start marker) begins with the
+/// `US exit US` the trailer prints. Not yet decidable counts as `false`: the
+/// caller rescans those bytes on the next chunk.
+fn valid_header(after: &[u8]) -> bool {
+    let Some((&US, rest)) = after.split_first() else {
+        return false;
+    };
+    let digits = rest.iter().take_while(|b| b.is_ascii_digit()).count();
+    (1..=HDR - 2).contains(&digits) && rest.get(digits) == Some(&US)
 }
 
 fn elision_marker(elided: usize) -> String {
     format!("\n[execkit: {elided} bytes elided]\n")
 }
 
-/// Mid-stream anti-flood compaction: keep the first and last `keep` bytes,
-/// joined by a `\n[execkit: {n} bytes elided]\n` separator where `n` is the
-/// running total of `*elided` (updated here).
+/// Mid-stream anti-flood compaction of the whole buffer; see [`compact_range`].
+#[cfg(test)]
+fn compact(buf: &mut Vec<u8>, keep: usize, elided: &mut usize) {
+    let len = buf.len();
+    compact_range(buf, 0, len, keep, elided);
+}
+
+/// Mid-stream anti-flood compaction of `buf[from..to]`: keep its first and
+/// last `keep` bytes, joined by a `\n[execkit: {n} bytes elided]\n`
+/// separator where `n` is the running total of `*elided` (updated here).
+/// Returns the new end of the range. A range too short to shrink is left
+/// alone.
 ///
 /// The separator stops a secret straddling the cut from being rejoined into
 /// something redaction (which matches on the final text) fails to recognize:
-/// head and tail bytes are never adjacent. On a later compaction the previous
-/// separator sits right after the head and is dropped with the middle; it is
-/// not counted as elided output.
-fn compact(buf: &mut Vec<u8>, keep: usize, elided: &mut usize) {
+/// head and tail bytes are never adjacent. It starts and ends with `\n`,
+/// which no marker contains, so it cannot form a marker with its
+/// neighbours. On a later compaction of the same range (same `from` and
+/// `keep`) the previous separator sits right after the head and is dropped
+/// with the middle; it is not counted as elided output.
+fn compact_range(
+    buf: &mut Vec<u8>,
+    from: usize,
+    to: usize,
+    keep: usize,
+    elided: &mut usize,
+) -> usize {
     let old_sep = if *elided > 0 {
         elision_marker(*elided).len()
     } else {
         0
     };
-    let tail_start = buf.len().saturating_sub(keep).max(keep + old_sep);
-    *elided += tail_start - keep - old_sep;
-    let sep = elision_marker(*elided);
-    buf.splice(keep..tail_start, sep.into_bytes());
+    if to - from <= 2 * keep + old_sep {
+        return to;
+    }
+    let (head_end, tail_start) = (from + keep, to - keep);
+    *elided += tail_start - head_end - old_sep;
+    let sep = elision_marker(*elided).into_bytes();
+    let new_to = to - (tail_start - head_end) + sep.len();
+    buf.splice(head_end..tail_start, sep);
+    new_to
 }
 
 fn find(hay: &[u8], needle: &[u8]) -> Option<usize> {
@@ -454,6 +580,191 @@ mod tests {
         assert!(text.contains("[execkit: 1400 bytes elided]"), "{text}");
         assert_eq!(text.matches("elided").count(), 1);
         assert!(text.starts_with(&"x".repeat(50)) && text.ends_with(&"y".repeat(50)));
+    }
+
+    /// `n` numbered lines `{tag}{i:07}\n` (9 bytes each).
+    fn lines(tag: char, n: usize) -> String {
+        (0..n).map(|i| format!("{tag}{i:07}\n")).collect()
+    }
+
+    /// The elided count in the one `[execkit: N bytes elided]` in `s`.
+    fn elided_in(s: &str) -> usize {
+        assert_eq!(s.matches("bytes elided]").count(), 1, "{s:?}");
+        s.split("[execkit: ")
+            .nth(1)
+            .and_then(|r| r.split(' ').next())
+            .and_then(|n| n.parse().ok())
+            .expect("elision count")
+    }
+
+    /// Feed `stdout`, then the trailer with `stderr`, in `step`-byte chunks.
+    /// Returns the result and the largest buffer size seen.
+    fn feed_both(
+        m: &Markers,
+        cap: usize,
+        stdout: &str,
+        stderr: &str,
+        step: usize,
+    ) -> (Parsed, usize) {
+        let full = format!("{stdout}\n{}\x1f0\x1f/tmp\x1f{stderr}{}\n", m.start, m.end);
+        let mut a = Accumulator::new(cap);
+        let mut peak = 0;
+        for c in full.as_bytes().chunks(step) {
+            let r = a.push(c, m);
+            peak = peak.max(a.bytes().len());
+            if let Some(p) = r {
+                return (p, peak);
+            }
+        }
+        panic!("no result: the start marker was compacted away");
+    }
+
+    #[test]
+    fn accumulator_keeps_start_when_stdout_and_stderr_are_both_large() {
+        let m = Markers::new("both");
+        let cap = 1000;
+        let (out, err) = (lines('o', 2000), lines('e', 2000));
+        for step in [1, 7, 100, 4096] {
+            let (p, peak) = feed_both(&m, cap, &out, &err, step);
+            assert_eq!((p.exit_code, p.cwd.as_str()), (0, "/tmp"), "step {step}");
+            assert!(p.stdout.starts_with("o0000000\n"), "{:?}", p.stdout);
+            assert!(p.stdout.ends_with("o0001999"), "{:?}", p.stdout);
+            assert!(p.stderr.starts_with("e0000000\n"), "{:?}", p.stderr);
+            assert!(p.stderr.ends_with("e0001999"), "{:?}", p.stderr);
+            assert!(!p.stdout.contains('e') || p.stdout.contains("elided"));
+            assert!(!p.stderr.contains("o0"), "stdout leaked into stderr");
+            assert!(!p.stdout.contains("__EXECKIT") && !p.stderr.contains("__EXECKIT"));
+            // Elided + kept == sent, per stream.
+            let so = elided_in(&p.stdout);
+            let kept_out = p.stdout.len() - elision_marker(so).len() + 1; // + stripped `\n`
+            assert_eq!(so + kept_out, out.len(), "stdout count, step {step}");
+            let se = elided_in(&p.stderr);
+            let kept_err = p.stderr.len() - elision_marker(se).len() + 1; // + trimmed `\n`
+            assert_eq!(se + kept_err, err.len(), "stderr count, step {step}");
+            assert!(
+                peak <= 2 * cap + step + 64,
+                "buffer grew to {peak}, step {step}"
+            );
+        }
+    }
+
+    #[test]
+    fn accumulator_small_stdout_large_stderr_keeps_about_cap_of_stderr() {
+        let m = Markers::new("errbig");
+        let cap = 1000;
+        let err = lines('e', 2000);
+        let (p, peak) = feed_both(&m, cap, "hi", &err, 64);
+        assert_eq!((p.stdout.as_str(), p.exit_code), ("hi", 0));
+        assert!(p.stderr.starts_with("e0000000\n") && p.stderr.ends_with("e0001999"));
+        let se = elided_in(&p.stderr);
+        let kept = p.stderr.len() - elision_marker(se).len() + 1;
+        assert_eq!(se + kept, err.len());
+        // stdout left nearly all of `cap` to stderr.
+        assert!(kept >= cap * 9 / 10, "kept only {kept}");
+        assert!(peak <= 2 * cap + 64 + 64, "buffer grew to {peak}");
+    }
+
+    #[test]
+    fn accumulator_stdout_zone_growing_by_its_separator_is_fine() {
+        // stdout just over 2 * (cap / 2) when the first split compaction runs:
+        // the separator is longer than the bytes it replaces.
+        let m = Markers::new("grow");
+        let cap = 1000;
+        let out = "o".repeat(1009);
+        let err = "e".repeat(1500);
+        let mut a = Accumulator::new(cap);
+        assert!(a.push(format!("{out}\n").as_bytes(), &m).is_none());
+        let hdr = format!("{}\x1f0\x1f/tmp\x1f{err}", m.start);
+        assert!(a.push(hdr.as_bytes(), &m).is_none());
+        let p = a
+            .push(format!("{}\n", m.end).as_bytes(), &m)
+            .expect("found");
+        assert_eq!((p.exit_code, p.cwd.as_str()), (0, "/tmp"));
+        let so = elided_in(&p.stdout);
+        assert_eq!(so + p.stdout.len() - elision_marker(so).len(), out.len());
+        let se = elided_in(&p.stderr);
+        assert_eq!(se + p.stderr.len() - elision_marker(se).len(), err.len());
+    }
+
+    #[test]
+    fn accumulator_start_marker_split_across_chunks() {
+        let m = Markers::new("splitstart");
+        let cap = 1000;
+        let (out, err) = (lines('o', 500), lines('e', 2000));
+        let full = format!("{out}\n{}\x1f7\x1f/w\x1f{err}{}\n", m.start, m.end);
+        let s = full.find(&m.start).unwrap();
+        // Cut inside START, and inside the `US rc US` right after it.
+        for cut in [s + 3, s + m.start.len() - 1, s + m.start.len() + 2] {
+            let mut a = Accumulator::new(cap);
+            assert!(a.push(&full.as_bytes()[..cut], &m).is_none());
+            let mut got = None;
+            for c in full.as_bytes()[cut..].chunks(50) {
+                if let Some(p) = a.push(c, &m) {
+                    got = Some(p);
+                    break;
+                }
+            }
+            let p = got.unwrap_or_else(|| panic!("no result, cut at {cut}"));
+            assert_eq!((p.exit_code, p.cwd.as_str()), (7, "/w"));
+            assert!(p.stdout.ends_with("o0000499"));
+            assert!(p.stderr.ends_with("e0001999"));
+        }
+    }
+
+    #[test]
+    fn partial_stdout_never_includes_trailer_after_large_stderr() {
+        // Timed out after the trailer's start but before its end: the stdout
+        // handed back must stop at the start marker, even after compaction.
+        let m = Markers::new("timeout");
+        let mut a = Accumulator::new(1000);
+        let head = format!("{}\n{}\x1f0\x1f/tmp\x1f", lines('o', 2000), m.start);
+        for c in head.as_bytes().chunks(64) {
+            assert!(a.push(c, &m).is_none());
+        }
+        for c in lines('e', 2000).as_bytes().chunks(64) {
+            assert!(a.push(c, &m).is_none());
+        }
+        let out = String::from_utf8_lossy(a.partial_stdout(&m)).into_owned();
+        assert!(!out.contains("__EXECKIT"), "{out:?}");
+        assert!(
+            !out.contains('e') || !out.contains("e000"),
+            "stderr in stdout: {out:?}"
+        );
+        assert!(out.trim_end().ends_with("o0001999"), "{out:?}");
+    }
+
+    #[test]
+    fn set_v_echoed_start_is_not_protected_as_the_real_one() {
+        // `set -v`: the echoed run line carries START with a literal `\037`.
+        // Large output after it must still be compacted, and the real
+        // trailer found.
+        let m = Markers::new("setv");
+        let cap = 1000;
+        let echo = format!("{s}\\037%d\\037' x '{e}'\n", s = m.start, e = m.end);
+        let full = format!(
+            "{echo}{}\n{}\x1f0\x1f/tmp\x1f{}{}\n",
+            lines('o', 2000),
+            m.start,
+            lines('e', 2000),
+            m.end
+        );
+        let mut a = Accumulator::new(cap);
+        let mut got = None;
+        for c in full.as_bytes().chunks(64) {
+            if let Some(p) = a.push(c, &m) {
+                got = Some(p);
+                break;
+            }
+            assert!(
+                a.bytes().len() <= 2 * cap + 64 + 64,
+                "unbounded: {}",
+                a.bytes().len()
+            );
+        }
+        let p = got.expect("found");
+        assert_eq!(p.exit_code, 0);
+        assert!(p.stdout.ends_with("o0001999"), "{:?}", p.stdout);
+        assert!(p.stderr.ends_with("e0001999"), "{:?}", p.stderr);
     }
 
     #[test]
