@@ -496,7 +496,6 @@ impl ExeckitServer {
             Some(Err(e)) => return Ok(tool_error(e)),
             None => None,
         };
-        let had_budget = budget.is_some();
         let timeout = Duration::from_secs(
             p.timeout_secs
                 .unwrap_or(self.config.exec_timeout_secs)
@@ -524,9 +523,10 @@ impl ExeckitServer {
                     &r,
                 )
                 .await;
-                // No budget on THIS call and the result was still truncated: hint
-                // the agent that a budget (grep/keep/max_chars) would shape it.
-                let hint = (r.truncated && !had_budget).then_some(
+                // No budget shaped this result at all (neither a per-call
+                // budget nor a session-default output_budget) and it was
+                // still truncated: hint that a budget would shape it.
+                let hint = (r.truncated && r.budget.is_none()).then_some(
                     "output was truncated; pass budget (grep/keep/max_chars) to shape it",
                 );
                 let out = ExecResultOut { result: r, hint };

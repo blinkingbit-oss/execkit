@@ -696,3 +696,35 @@ fn truncated_output_without_budget_includes_a_hint() {
 
     let _ = m.call(4, "session_destroy", json!({"session_id": sid}));
 }
+
+#[test]
+fn truncated_output_shaped_by_a_session_default_budget_has_no_hint() {
+    // The hint is keyed on the EFFECTIVE budget (ExecResult.budget),
+    // not on whether THIS call passed a `budget` argument. A session-default
+    // output_budget (set at session_create) already shapes the output, so
+    // even though this call omits `budget`, no hint should be added.
+    let mut m = Mcp::start(&[]);
+    let created = m.call(
+        2,
+        "session_create",
+        json!({"transport":"local",
+               "output_budget": {"keep": {"mode": "tail", "n": 5}}}),
+    );
+    let sid = result_json(&created)["session_id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+
+    let e = m.call(
+        3,
+        "session_exec",
+        json!({"session_id": sid, "command": "seq 1 100000"}),
+    );
+    assert!(!is_error(&e), "{e:?}");
+    let r = result_json(&e);
+    assert!(r["budget"].is_object(), "{r:?}"); // session default shaped it
+    assert_eq!(r["truncated"], true, "{r:?}"); // tail 5 dropped lines
+    assert!(r.get("hint").is_none(), "{r:?}");
+
+    let _ = m.call(4, "session_destroy", json!({"session_id": sid}));
+}
