@@ -449,7 +449,7 @@ impl ExeckitServer {
         description = "Run a command in a session; returns ExecResult JSON (stdout, stderr, \
                           exit_code, duration_ms, cwd, truncated). Non-interactive: stdin is \
                           closed - no prompts, REPLs, or editors; use `sudo -n`. Default \
-                          timeout 120s (EXECKIT_MCP_EXEC_TIMEOUT overrides default); \
+                          timeout 120s (EXECKIT_MCP_EXEC_TIMEOUT); \
                           timeout_secs overrides per call (max 3600). On timeout the command \
                           is interrupted (exit_code 124, timed_out:true); the session stays \
                           usable. For long jobs, background: `nohup CMD > /tmp/x.log 2>&1 &` \
@@ -459,7 +459,8 @@ impl ExeckitServer {
                           keep:{mode:\"all\"|\"tail\"|\"head\"|\"head_tail\",n?|head?+tail?}, max_chars?} \
                           - line-based, after redaction; never changes exit code/side \
                           effects; adds a report (mode + lines_total/lines_kept). Truncated \
-                          output with no budget passed adds a hint.",
+                          unbudgeted output adds a hint. Redacted output is not file-accurate: \
+                          never write it back to a file.",
         annotations(destructive_hint = true, open_world_hint = true)
     )]
     async fn session_exec(
