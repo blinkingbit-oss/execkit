@@ -14,7 +14,7 @@ use crate::error::{Error, Result};
 use crate::exec::ExecResult;
 use crate::framing::{self, Markers};
 use crate::policy::Policy;
-use crate::redact::redact;
+use crate::redact::Redactor;
 use crate::transport::{self, local::LocalPty, Transport};
 
 /// A live, stateful shell session.
@@ -32,6 +32,10 @@ pub struct Session {
     poisoned: bool,
     /// Some only for remote (ssh/docker) sessions; None for local.
     checkpointer: Option<Checkpointer>,
+    /// Learns secret-shaped literal values from commands this session runs
+    /// (see `exec_inner`), so output/command echoing them is redacted even
+    /// when the value doesn't match a fixed pattern.
+    redactor: Redactor,
 }
 
 impl Session {
@@ -95,6 +99,7 @@ impl Session {
             output_budget: None,
             poisoned: false,
             checkpointer,
+            redactor: Redactor::default(),
         })
     }
 
@@ -183,6 +188,10 @@ impl Session {
         if self.poisoned {
             return Err(Error::SessionPoisoned);
         }
+        // Learn secret-shaped literal values from this command first, so
+        // even a value with no recognizable shape (e.g. a freshly generated
+        // password) is redacted from this same command's echoed output below.
+        self.redactor.learn_from_command(command);
         // Fail fast on a bad/oversized grep regex BEFORE running the command.
         if let Some(g) = &budget.grep {
             budget::compile_grep(&g.pattern)?;
@@ -212,9 +221,9 @@ impl Session {
         };
         let f = self.run_framed_for(command, timeout, acc_cap)?;
         let (stdout, rep_out, cap_out) =
-            budget::apply(&redact(&f.stdout), budget, self.max_output)?;
+            budget::apply(&self.redactor.redact(&f.stdout), budget, self.max_output)?;
         let (stderr, rep_err, cap_err) =
-            budget::apply(&redact(&f.stderr), budget, self.max_output)?;
+            budget::apply(&self.redactor.redact(&f.stderr), budget, self.max_output)?;
         let report = if *budget != Budget::default() {
             Some(crate::budget::BudgetReport {
                 stdout: rep_out.clone(),
@@ -224,7 +233,7 @@ impl Session {
             None
         };
         let result = ExecResult {
-            command: command.to_string(),
+            command: self.redactor.redact(command),
             stdout,
             stderr,
             exit_code: f.exit_code,

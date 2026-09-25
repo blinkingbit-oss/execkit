@@ -6,6 +6,9 @@ use serde::{Deserialize, Serialize};
 ///
 /// Note `stdout` and `stderr` are **split** (a raw PTY merges them), already
 /// ANSI-stripped and secret-redacted, and bounded to the session's output cap.
+/// `command` is echoed back secret-redacted too (fixed shapes plus any
+/// session-learned literal values), since it may itself carry a secret (e.g.
+/// `export TOKEN=...`).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ExecResult {
     pub command: String,

@@ -64,6 +64,25 @@ fn timeout_is_interrupted_not_poisoned() {
 }
 
 #[test]
+fn session_learned_token_is_redacted_from_output_and_command() {
+    let mut s = Session::local().unwrap();
+    let token = format!("ghp_{}", "A".repeat(36));
+    let r = s
+        .exec(&format!("export GH_TOKEN={token} && echo $GH_TOKEN"))
+        .unwrap();
+    assert!(
+        !r.stdout.contains(&token),
+        "stdout must not contain the learned token; got: {}",
+        r.stdout
+    );
+    assert!(
+        !r.command.contains(&token),
+        "command must not contain the learned token; got: {}",
+        r.command
+    );
+}
+
+#[test]
 fn output_is_bounded_for_flood() {
     let mut s = Session::local().unwrap().with_max_output(1000);
     // ~50k lines (~280 KB) from one fast process - must come back bounded near
