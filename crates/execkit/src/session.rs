@@ -623,7 +623,8 @@ impl Session {
     /// `shell_init` turned job control off (`set +m`), so the command runs in
     /// the shell's process group: the `\x03` sends SIGINT to it, and the shell
     /// abandons the rest of the run line (the trailer never prints). The
-    /// resync removes the stderr temp file that trailer would have removed.
+    /// resync reads back (the tail of) the stderr temp file that trailer
+    /// would have printed and removed; it is returned ahead of the guidance.
     fn interrupt(
         &mut self,
         acc: &framing::Accumulator,
@@ -631,17 +632,22 @@ impl Session {
         timeout: Duration,
     ) -> Result<Framed> {
         let (out, overflowed) = (acc.partial_stdout(markers), acc.overflowed());
-        let Ok(cwd) = self.resync() else {
+        let Ok((cwd, late_stderr)) = self.resync() else {
             self.poisoned = true;
             return Err(Error::StillRunning);
         };
         Ok(Framed {
             stdout: crate::output::clean(&String::from_utf8_lossy(out)),
             stderr: format!(
-                "execkit: timed out after {}s; sent Ctrl-C. The shell session is intact \
-                 (cwd/env kept). For long jobs run them in the background: \
-                 nohup CMD > /tmp/job.log 2>&1 & then poll the log.",
-                timeout.as_secs_f64()
+                "{late_stderr}{sep}execkit: timed out after {}s; sent Ctrl-C. The shell \
+                 session is intact (cwd/env kept). For long jobs run them in the \
+                 background: nohup CMD > /tmp/job.log 2>&1 & then poll the log.",
+                timeout.as_secs_f64(),
+                sep = if late_stderr.is_empty() || late_stderr.ends_with('\n') {
+                    ""
+                } else {
+                    "\n"
+                },
             ),
             exit_code: 124,
             cwd,
@@ -652,15 +658,22 @@ impl Session {
 
     /// Write Ctrl-C, then run a cleanup command under a fresh token and wait
     /// up to 5 s for its end marker. Everything before it (the interrupted
-    /// command's late output, a `^C` echo) is discarded. Returns the cwd.
+    /// command's late output, a `^C` echo) is discarded. Returns the cwd and
+    /// the interrupted command's stderr.
     ///
     /// The interrupted run line left its stderr temp file behind (its trailer
     /// never ran). Its path is still in `$__ek_f`, but the resync's own run
     /// line reassigns `__ek_f` before the cleanup command runs, so the path is
-    /// saved to `__ek_x` on a line of its own first.
-    fn resync(&mut self) -> Result<String> {
+    /// saved to `__ek_x` on a line of its own first. The cleanup copies the
+    /// file's last 16 KiB to its own stderr (so they come back framed as the
+    /// resync's stderr), then removes it. 16 KiB is well under half of `CAP`,
+    /// so the resync block always survives the drain below intact.
+    /// It must not unset `__ek_f`: that now names the resync's OWN stderr
+    /// file, which its trailer still has to print and remove.
+    fn resync(&mut self) -> Result<(String, String)> {
         const SAVE: &[u8] = b"{ __ek_x=$__ek_f; } 2>/dev/null\n";
-        const RESYNC: &str = "rm -f \"$__ek_x\" 2>/dev/null; unset __ek_x __ek_c __ek_f";
+        const RESYNC: &str = "tail -c 16384 \"$__ek_x\" >&2 2>/dev/null; \
+                              rm -f \"$__ek_x\" 2>/dev/null; unset __ek_x";
         const CAP: usize = 65_536;
         self.io.write_all(b"\x03")?;
         self.io.write_all(SAVE)?;
@@ -683,7 +696,7 @@ impl Session {
                 acc.drain(..acc.len() - CAP / 2);
             }
             if let Some(p) = framing::parse(&acc, &markers) {
-                return Ok(p.cwd);
+                return Ok((p.cwd, p.stderr));
             }
         }
     }
