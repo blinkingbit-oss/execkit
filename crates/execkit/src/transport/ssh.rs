@@ -234,7 +234,7 @@ fn chmod_0700(dir: &Path) -> Result<()> {
 #[cfg(feature = "ssh")]
 mod imp {
     use std::sync::mpsc as std_mpsc;
-    use std::sync::Arc;
+    use std::sync::{Arc, Mutex};
     use std::thread::JoinHandle;
     use std::time::Duration;
 
@@ -331,6 +331,11 @@ mod imp {
         policy: HostKeyVerification,
         host: String,
         port: u16,
+        /// A verification *error* (unreadable or OpenSSH-format known_hosts,
+        /// a failed TOFU write). russh only sees "rejected" and reports a
+        /// generic unknown-key error, so the real cause is kept here for
+        /// `connect_and_auth` to return instead.
+        verify_err: Arc<Mutex<Option<Error>>>,
     }
 
     impl client::Handler for Handler {
@@ -343,7 +348,14 @@ mod imp {
             let fp = server_public_key
                 .fingerprint(russh::keys::ssh_key::HashAlg::Sha256)
                 .to_string();
-            Ok(verify_fingerprint(&self.policy, &self.host, self.port, &fp).unwrap_or(false))
+            match verify_fingerprint(&self.policy, &self.host, self.port, &fp) {
+                Ok(accept) => Ok(accept),
+                Err(e) => {
+                    // Fail closed, but remember why.
+                    *self.verify_err.lock().unwrap_or_else(|p| p.into_inner()) = Some(e);
+                    Ok(false)
+                }
+            }
         }
     }
 
@@ -354,14 +366,22 @@ mod imp {
     /// never completes the TCP handshake.
     async fn connect_and_auth(cfg: &SshConfig) -> Result<client::Handle<Handler>> {
         let config = Arc::new(client::Config::default());
+        let verify_err = Arc::new(Mutex::new(None));
         let handler = Handler {
             policy: cfg.host_key.clone(),
             host: cfg.host.clone(),
             port: cfg.port,
+            verify_err: verify_err.clone(),
         };
         let mut handle = client::connect(config, (cfg.host.as_str(), cfg.port), handler)
             .await
-            .map_err(|e| Error::Transport(format!("ssh connect: {e}")))?;
+            .map_err(|e| {
+                verify_err
+                    .lock()
+                    .unwrap_or_else(|p| p.into_inner())
+                    .take()
+                    .unwrap_or_else(|| Error::Transport(format!("ssh connect: {e}")))
+            })?;
 
         let result = match &cfg.auth {
             SshAuth::Password(p) => handle
@@ -469,6 +489,104 @@ mod imp {
                     None => break, // transport dropped
                 },
             }
+        }
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use std::sync::{Arc, Mutex};
+
+        use russh::client::Handler as _;
+        use russh::keys::ssh_key::private::Ed25519Keypair;
+        use russh::keys::PrivateKey;
+
+        use super::{Handler, SshTransport};
+        use crate::transport::ssh::{HostKeyVerification, SshAuth, SshConfig};
+
+        fn test_key() -> PrivateKey {
+            PrivateKey::from(Ed25519Keypair::from_seed(&[7u8; 32]))
+        }
+
+        /// A known_hosts file in OpenSSH format: verification errors (it
+        /// would be unsafe to TOFU-append to it) rather than rejecting.
+        fn openssh_known_hosts(tag: &str) -> std::path::PathBuf {
+            let path =
+                std::env::temp_dir().join(format!("execkit_kh_imp_{tag}_{}", std::process::id()));
+            std::fs::write(&path, "otherhost ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAA\n").unwrap();
+            path
+        }
+
+        #[test]
+        fn handler_keeps_verification_error() {
+            let path = openssh_known_hosts("handler");
+            let slot = Arc::new(Mutex::new(None));
+            let mut h = Handler {
+                policy: HostKeyVerification::KnownHosts(path.clone()),
+                host: "newhost".into(),
+                port: 22,
+                verify_err: slot.clone(),
+            };
+            let rt = tokio::runtime::Builder::new_current_thread()
+                .build()
+                .unwrap();
+            let accepted = rt
+                .block_on(h.check_server_key(test_key().public_key()))
+                .unwrap();
+            assert!(!accepted, "a verification error must fail closed");
+            let err = slot.lock().unwrap().take().expect("error captured");
+            assert!(err.to_string().contains("OpenSSH format"), "{err}");
+            let _ = std::fs::remove_file(&path);
+        }
+
+        struct NoAuthServer;
+        impl russh::server::Handler for NoAuthServer {
+            type Error = russh::Error;
+        }
+
+        /// End to end: `SshTransport::connect` against an in-process russh
+        /// server returns the known_hosts guidance, not russh's generic
+        /// "unknown server key".
+        #[test]
+        fn connect_returns_known_hosts_error_not_generic_reject() {
+            let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+            let port = listener.local_addr().unwrap().port();
+            listener.set_nonblocking(true).unwrap();
+            std::thread::spawn(move || {
+                let rt = tokio::runtime::Builder::new_current_thread()
+                    .enable_all()
+                    .build()
+                    .unwrap();
+                rt.block_on(async move {
+                    let listener = tokio::net::TcpListener::from_std(listener).unwrap();
+                    let config = Arc::new(russh::server::Config {
+                        keys: vec![test_key()],
+                        ..Default::default()
+                    });
+                    if let Ok((sock, _)) = listener.accept().await {
+                        if let Ok(running) =
+                            russh::server::run_stream(config, sock, NoAuthServer).await
+                        {
+                            let _ = running.await;
+                        }
+                    }
+                });
+            });
+
+            let path = openssh_known_hosts("connect");
+            let mut cfg = SshConfig::new(
+                "127.0.0.1",
+                "nobody",
+                SshAuth::Password("x".into()),
+                HostKeyVerification::KnownHosts(path.clone()),
+            );
+            cfg.port = port;
+            cfg.connect_timeout = std::time::Duration::from_secs(10);
+            let msg = match SshTransport::connect(cfg) {
+                Ok(_) => panic!("connect must fail"),
+                Err(e) => e.to_string(),
+            };
+            assert!(msg.contains("OpenSSH format"), "got: {msg}");
+            let _ = std::fs::remove_file(&path);
         }
     }
 }
