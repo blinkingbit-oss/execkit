@@ -519,6 +519,8 @@ impl ExeckitServer {
             // Touch again before unlocking: `get` stamped the START, so a
             // command that ran past the TTL would otherwise leave the session
             // reapable the instant it unlocks.
+            // Lock order: `last_used` taken while holding `session`. Safe only because reap_idle
+            // `try_lock`s `session` while holding `last_used` - never make that a blocking `lock`.
             *lock(&session.last_used) = Instant::now();
             r
         })
@@ -750,6 +752,8 @@ impl ExeckitServer {
             let stale: Vec<String> = map
                 .iter()
                 .filter(|(_, e)| {
+                    // Holds `last_used` while probing `session`: must stay `try_lock` (session_exec
+                    // takes `last_used` while holding `session`; a blocking lock here could deadlock).
                     now.duration_since(*lock(&e.last_used)) > ttl && e.session.try_lock().is_ok()
                 })
                 .map(|(id, _)| id.clone())
