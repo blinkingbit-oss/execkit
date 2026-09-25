@@ -136,6 +136,8 @@ jobs:
         # redundant version bump to server.json in the release PR.
         run: |
           VERSION=$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml)
+          [ -n "$VERSION" ] || { echo "::error::could not extract version from Cargo.toml" >&2; exit 1; }
+          [ "$VERSION" = "${GITHUB_REF_NAME#v}" ] || { echo "::error::Cargo.toml version $VERSION != tag $GITHUB_REF_NAME" >&2; exit 1; }
           jq --arg v "$VERSION" '.version = $v | .packages[0].version = $v' server.json > server.json.tmp
           mv server.json.tmp server.json
       - name: Install mcp-publisher
