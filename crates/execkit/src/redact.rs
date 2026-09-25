@@ -47,16 +47,18 @@ fn patterns() -> &'static [Pattern] {
             // marker follows, the whole block up to (and including) it is
             // consumed. When it doesn't (a truncated/streamed block), only
             // the *following lines that still look like PEM content* are
-            // consumed - a base64 body line, or a `Key: value` PEM header
-            // line (e.g. `Proc-Type: 4,ENCRYPTED`) - so a lone BEGIN doesn't
-            // blank unrelated output that happens to come after it (R10).
+            // consumed - a base64 body line, or a real PEM header line
+            // (`Proc-Type:`/`DEK-Info:`, matched case-insensitively; NOT any
+            // arbitrary `word: ...` line - `Error: ...` or `note: ...` must
+            // survive) - so a lone BEGIN doesn't blank unrelated output that
+            // happens to come after it.
             // Each alternative's trailing `(?:\r?\n|\z)` is load-bearing: it
             // forces the line to be consumed in full, not just a
             // PEM-charset-looking prefix of it (e.g. "hello" out of "hello
             // world") - regex has no look-around, so the boundary has to be
             // matched literally as part of the same repetition.
             templated(
-                r"-----BEGIN [A-Z0-9 ]*PRIVATE KEY-----(?:\r?\n(?:(?:[A-Za-z0-9+/=]+|[A-Za-z0-9-]+:[^\r\n]*)(?:\r?\n|\z))*)?(?:-----END [A-Z0-9 ]*PRIVATE KEY-----)?",
+                r"-----BEGIN [A-Z0-9 ]*PRIVATE KEY-----(?:\r?\n(?:(?:[A-Za-z0-9+/=]+|(?i:Proc-Type|DEK-Info):[^\r\n]*)(?:\r?\n|\z))*)?(?:-----END [A-Z0-9 ]*PRIVATE KEY-----)?",
                 "[REDACTED]",
             ),
             simple(r"xox[baprs]-[A-Za-z0-9-]{10,}"), // Slack token
@@ -443,6 +445,40 @@ mod tests {
         let r = redact(text);
         assert!(!r.contains("secretkeybodyhere"));
         assert!(!r.contains("DEK-Info"));
+        assert!(r.contains("[REDACTED]"));
+    }
+
+    #[test]
+    fn r10_pem_header_allowance_does_not_swallow_arbitrary_colon_lines() {
+        // The header alternative must only match real PEM header
+        // keys (Proc-Type / DEK-Info), not any `word: ...`-shaped line - an
+        // unrelated `Error: ...` or `note: ...` line after a lone BEGIN must
+        // survive untouched.
+        let text = "-----BEGIN RSA PRIVATE KEY-----\nError: something\nrest of output";
+        let r = redact(text);
+        assert!(
+            r.contains("Error: something"),
+            "unrelated colon-shaped line must survive; got: {r}"
+        );
+        assert!(
+            r.ends_with("rest of output"),
+            "trailing output must survive; got: {r}"
+        );
+        assert!(r.contains("[REDACTED]"));
+    }
+
+    #[test]
+    fn r10_pem_header_allowance_case_insensitive_still_not_arbitrary() {
+        let text = "-----BEGIN RSA PRIVATE KEY-----\nnote: hello\nrest of output";
+        let r = redact(text);
+        assert!(
+            r.contains("note: hello"),
+            "unrelated colon-shaped line must survive; got: {r}"
+        );
+        assert!(
+            r.ends_with("rest of output"),
+            "trailing output must survive; got: {r}"
+        );
         assert!(r.contains("[REDACTED]"));
     }
 }
