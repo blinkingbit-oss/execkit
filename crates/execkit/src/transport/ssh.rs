@@ -171,12 +171,21 @@ fn verify_known_hosts(path: &Path, host: &str, port: u16, fingerprint: &str) -> 
     // and pin it. One atomic O_APPEND write so a concurrent reader never sees
     // a partial line.
     if let Some(parent) = path.parent() {
-        if !parent.as_os_str().is_empty() && !parent.exists() {
-            std::fs::create_dir_all(parent)?;
-            #[cfg(unix)]
-            {
-                use std::os::unix::fs::PermissionsExt;
-                std::fs::set_permissions(parent, std::fs::Permissions::from_mode(0o700))?;
+        if !parent.as_os_str().is_empty() {
+            if !parent.exists() {
+                std::fs::create_dir_all(parent)?;
+                #[cfg(unix)]
+                chmod_0700(parent)?;
+            } else if is_default_known_hosts_dir(parent) {
+                // The default parent (~/.execkit) is very likely to
+                // already exist - the audit log and web-viewer state also
+                // live there and may have created it first, with default
+                // (non-private) permissions. Enforce 0700 on it too. Never
+                // touch the permissions of a pre-existing *custom*
+                // (EXECKIT_MCP_KNOWN_HOSTS-pointed) directory - an operator
+                // may have deliberately set them.
+                #[cfg(unix)]
+                chmod_0700(parent)?;
             }
         }
     }
@@ -192,6 +201,29 @@ fn verify_known_hosts(path: &Path, host: &str, port: u16, fingerprint: &str) -> 
         std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600))?;
     }
     Ok(true)
+}
+
+/// Whether `dir` is the *default* known_hosts directory (`.../.execkit`),
+/// as opposed to a custom location an operator pointed
+/// `EXECKIT_MCP_KNOWN_HOSTS` at. This crate has no knowledge of `$HOME`
+/// resolution (that lives in `execkit-mcp`/`execkit-py`), so the check is
+/// structural: the parent directory's own name is `.execkit`. A custom path
+/// nested under a directory that happens to also be named `.execkit` is
+/// treated the same as the default - it is still "an execkit state dir",
+/// just not literally `~/.execkit`; the intent (never mangling permissions
+/// of a directory the operator chose and controls fully) is preserved
+/// because any *other* name never matches.
+fn is_default_known_hosts_dir(dir: &Path) -> bool {
+    dir.file_name() == Some(std::ffi::OsStr::new(".execkit"))
+}
+
+/// Force `dir` to mode `0700` (owner rwx only). Unix only; a no-op crate
+/// boundary on other platforms (callers gate this behind `#[cfg(unix)]`).
+#[cfg(unix)]
+fn chmod_0700(dir: &Path) -> Result<()> {
+    use std::os::unix::fs::PermissionsExt;
+    std::fs::set_permissions(dir, std::fs::Permissions::from_mode(0o700))?;
+    Ok(())
 }
 
 // ===========================================================================
@@ -314,28 +346,21 @@ mod imp {
         }
     }
 
-    async fn establish(
-        cfg: &SshConfig,
-    ) -> Result<(client::Handle<Handler>, russh::Channel<client::Msg>)> {
+    /// TCP connect, key exchange (inside `client::connect`), and auth - the
+    /// whole pre-shell handshake with the remote end. Callers wrap this in
+    /// `cfg.connect_timeout`: a server that completes key exchange and
+    /// then stalls during auth must not hang forever any more than one that
+    /// never completes the TCP handshake.
+    async fn connect_and_auth(cfg: &SshConfig) -> Result<client::Handle<Handler>> {
         let config = Arc::new(client::Config::default());
         let handler = Handler {
             policy: cfg.host_key.clone(),
             host: cfg.host.clone(),
             port: cfg.port,
         };
-        let connect_fut = client::connect(config, (cfg.host.as_str(), cfg.port), handler);
-        let mut handle = match tokio::time::timeout(cfg.connect_timeout, connect_fut).await {
-            Ok(Ok(handle)) => handle,
-            Ok(Err(e)) => return Err(Error::Transport(format!("ssh connect: {e}"))),
-            Err(_) => {
-                return Err(Error::Transport(format!(
-                    "ssh: connect to {}:{} timed out after {}s",
-                    cfg.host,
-                    cfg.port,
-                    cfg.connect_timeout.as_secs()
-                )))
-            }
-        };
+        let mut handle = client::connect(config, (cfg.host.as_str(), cfg.port), handler)
+            .await
+            .map_err(|e| Error::Transport(format!("ssh connect: {e}")))?;
 
         let result = match &cfg.auth {
             SshAuth::Password(p) => handle
@@ -364,6 +389,24 @@ mod imp {
         if !result.success() {
             return Err(Error::Transport("ssh authentication failed".into()));
         }
+        Ok(handle)
+    }
+
+    async fn establish(
+        cfg: &SshConfig,
+    ) -> Result<(client::Handle<Handler>, russh::Channel<client::Msg>)> {
+        let handle = match tokio::time::timeout(cfg.connect_timeout, connect_and_auth(cfg)).await {
+            Ok(Ok(handle)) => handle,
+            Ok(Err(e)) => return Err(e),
+            Err(_) => {
+                return Err(Error::Transport(format!(
+                    "ssh: connect to {}:{} timed out after {}s",
+                    cfg.host,
+                    cfg.port,
+                    cfg.connect_timeout.as_secs()
+                )))
+            }
+        };
 
         let channel = handle
             .channel_open_session()
@@ -596,27 +639,122 @@ mod tests {
         let _ = std::fs::remove_file(&path);
     }
 
+    /// A foreign (OpenSSH-format) line for an unrelated host must not
+    /// disturb verification of a host that DOES have a valid execkit
+    /// (`SHA256:`) entry in the same file - it is neither blocked (as an
+    /// unknown host would be) nor mismatched.
+    #[test]
+    fn openssh_line_for_other_host_does_not_block_known_execkit_host() {
+        let path = unique_path("mixed_format");
+        std::fs::write(
+            &path,
+            "otherhost ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAA\nA SHA256:good\n",
+        )
+        .unwrap();
+
+        assert!(
+            verify_known_hosts(&path, "A", 22, "SHA256:good").unwrap(),
+            "known execkit host must verify despite a foreign line elsewhere in the file"
+        );
+        assert!(
+            !verify_known_hosts(&path, "A", 22, "SHA256:bad").unwrap(),
+            "a mismatched fingerprint for the known host must still be rejected"
+        );
+
+        let _ = std::fs::remove_file(&path);
+    }
+
+    /// `~/.execkit` is very likely to already exist by the time SSH
+    /// first connects (the audit log / web viewer create it first, with
+    /// default - not private - permissions). The default known_hosts
+    /// parent must be forced to 0700 even when TOFU finds it already there.
+    #[cfg(unix)]
+    #[test]
+    fn default_known_hosts_parent_is_forced_to_0700_even_if_preexisting() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let base = unique_path("preexisting_execkit_dir");
+        let parent = base.join(".execkit");
+        std::fs::create_dir_all(&parent).unwrap();
+        // Simulate the audit log / web viewer having created it first, with
+        // whatever the umask gave them (not necessarily private).
+        std::fs::set_permissions(&parent, std::fs::Permissions::from_mode(0o755)).unwrap();
+
+        let path = parent.join("known_hosts");
+        assert!(verify_known_hosts(&path, "h", 22, "SHA256:x").unwrap());
+
+        let mode = std::fs::metadata(&parent).unwrap().permissions().mode() & 0o777;
+        assert_eq!(
+            mode, 0o700,
+            "pre-existing ~/.execkit must be tightened to 0700"
+        );
+
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
+    /// A *custom* `EXECKIT_MCP_KNOWN_HOSTS` directory (not named
+    /// `.execkit`) must never have its permissions changed - the operator
+    /// chose that location and owns its permissions.
+    #[cfg(unix)]
+    #[test]
+    fn custom_known_hosts_parent_permissions_are_never_touched() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let base = unique_path("preexisting_custom_dir");
+        let parent = base.join("my-custom-ssh-state");
+        std::fs::create_dir_all(&parent).unwrap();
+        std::fs::set_permissions(&parent, std::fs::Permissions::from_mode(0o755)).unwrap();
+
+        let path = parent.join("known_hosts");
+        assert!(verify_known_hosts(&path, "h", 22, "SHA256:x").unwrap());
+
+        let mode = std::fs::metadata(&parent).unwrap().permissions().mode() & 0o777;
+        assert_eq!(
+            mode, 0o755,
+            "a custom known_hosts directory's permissions must be left alone"
+        );
+
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
+    /// The connect_timeout budget must cover the whole connect+auth
+    /// handshake, not just the initial TCP connect - a peer that accepts the
+    /// TCP connection but never speaks SSH (so key exchange, and any auth
+    /// that would follow it, never completes) must still time out promptly.
+    /// A real (but silent) local TCP peer, so this is fast and not
+    /// network-dependent - no `#[ignore]` needed.
     #[cfg(feature = "ssh")]
     #[test]
-    #[ignore = "requires a network stack that can attempt (and hang on) a TCP \
-        connect to an unused/unroutable address; run explicitly with \
-        `cargo test -p execkit --features ssh -- --ignored ssh_connect_times_out`"]
-    fn ssh_connect_times_out() {
+    fn ssh_connect_times_out_when_peer_never_speaks_ssh() {
+        use std::net::TcpListener;
         use std::time::{Duration, Instant};
 
         use super::SshTransport;
 
+        let listener = TcpListener::bind("127.0.0.1:0").expect("bind ephemeral loopback port");
+        let port = listener.local_addr().unwrap().port();
+        std::thread::spawn(move || {
+            // Accept the connection and hold it open, silently, well past
+            // the client's connect_timeout below - never sending an SSH
+            // identification string or any protocol bytes.
+            if let Ok((stream, _)) = listener.accept() {
+                std::thread::sleep(Duration::from_secs(5));
+                drop(stream);
+            }
+        });
+
         let mut cfg = SshConfig::new(
-            "10.255.255.1",
+            "127.0.0.1",
             "nobody",
             SshAuth::Password("x".into()),
             HostKeyVerification::AcceptAny,
         );
+        cfg.port = port;
         cfg.connect_timeout = Duration::from_secs(1);
 
         let start = Instant::now();
         let err = match SshTransport::connect(cfg) {
-            Ok(_) => panic!("connect to a black-hole IP must fail"),
+            Ok(_) => panic!("connect to a silent peer must fail"),
             Err(e) => e,
         };
         let elapsed = start.elapsed();
