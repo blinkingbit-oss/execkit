@@ -7,6 +7,7 @@
 - [Installation](./installation.md)
 - [Wiring into an agent](./wiring-into-an-agent.md)
 - [FAQ](./faq.md)
+- [Upgrading to 0.9](./upgrading.md)
 
 # Using execkit
 

@@ -72,11 +72,20 @@ Host-key handling is safe by default:
   first connection to a host records its key; a changed key is rejected as a
   likely man-in-the-middle. Entries are keyed `host` on port 22 and
   `[host]:port` otherwise, so two ports on one host are verified separately.
-- **Not your OpenSSH `~/.ssh/known_hosts`.** Before v0.9 execkit wrote to
-  `~/.ssh/known_hosts`. It now keeps its own file, so after upgrading, the first
-  connection to each host records its key again. If `EXECKIT_MCP_KNOWN_HOSTS`
-  points at an OpenSSH-format file, connecting to a new host fails with an error
-  instead of writing to that file.
+- **Not your OpenSSH `~/.ssh/known_hosts`.** Before v0.9 execkit wrote its pins
+  to `~/.ssh/known_hosts`. It now keeps its own file and does not read the old
+  pins, so after upgrading, the first connection to each host records its key
+  again. To carry your pins over instead, copy execkit's lines (`host SHA256:...`)
+  across:
+
+  ```sh
+  mkdir -p -m 700 ~/.execkit
+  grep -E '^[^ ]+ SHA256:' ~/.ssh/known_hosts >> ~/.execkit/known_hosts
+  ```
+
+  If `EXECKIT_MCP_KNOWN_HOSTS` points at an OpenSSH-format file, connecting to a
+  new host fails with an error saying so, instead of writing to that file. See
+  [Upgrading to 0.9](./upgrading.md) for the other changes.
 - **Pin a key** by passing `fingerprint` (`"SHA256:..."`) for an exact match.
 
 ### Connect timeout

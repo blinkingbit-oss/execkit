@@ -172,6 +172,22 @@ See [`crates/execkit-py/README.md`](./crates/execkit-py/README.md).
 - **Audit log and live viewer**, plus live MCP notifications to the client.
 - **Embeddable, never a service**: `cargo add`, in *your* process; no daemon, no vendor.
 
+## Upgrading to 0.9
+
+Breaking changes from 0.8. The details are in
+[Upgrading to 0.9](https://blinkingbit-oss.github.io/execkit/upgrading.html).
+
+- SSH host keys are pinned in `~/.execkit/known_hosts`, not `~/.ssh/known_hosts`.
+  Old pins are not read. The first connection re-pins, or copy them over with
+  `grep -E '^[^ ]+ SHA256:' ~/.ssh/known_hosts >> ~/.execkit/known_hosts`.
+- stdin is `/dev/null` for every command, and pagers are set to `cat`.
+- The target needs `base64`.
+- A timeout returns exit code 124 with `timed_out: true` and keeps the session,
+  instead of an error that closed it. `ExecResult` has a new `timed_out` field.
+- Session ids look like `a3f9-1_local` instead of `1_local`.
+- `SshConfig` has a new `connect_timeout` field (default 15 s). Use
+  `SshConfig::new`.
+
 ## Limitations
 
 - **Not a sandbox.** The command policy is advisory string matching. It is easy to
@@ -179,8 +195,9 @@ See [`crates/execkit-py/README.md`](./crates/execkit-py/README.md).
   `sh -c curl`. The real control is a least-privilege *environment*: run the agent
   and SSH user with minimal rights.
 - **No interactive input.** stdin is `/dev/null`, so prompts, REPLs and editors do
-  not work. Use non-interactive flags (`sudo -n`, `apt-get -y`). Shell history is
-  off.
+  not work. Use non-interactive flags (`sudo -n`, `apt-get -y`). Pagers default to
+  `cat`, but running `less` or `vim` directly hangs until the timeout and closes
+  the session. Shell history is off.
 - **Timeouts interrupt, they do not kill everything.** execkit sends Ctrl-C. A
   command that ignores Ctrl-C ends the session. For long jobs, run them in the
   background (`nohup CMD > /tmp/job.log 2>&1 &`) and poll the log.
