@@ -42,12 +42,23 @@ pub trait Transport: Send {
 /// tag would never print). `command set` strips the special-builtin status so
 /// the error is just a non-zero status, silenced by `2>/dev/null`. The line
 /// must stay under 1 KB (canonical-mode PTY line limit, see `framing`).
+///
+/// Pagers: stdout is a PTY, so `git log`, `man`, `systemctl status` and
+/// `journalctl` would start `less`, which reads keys from `/dev/tty` (not the
+/// `/dev/null` stdin) and ignores SIGINT - the command runs into its timeout
+/// and the Ctrl-C resync cannot recover. `PAGER`/`GIT_PAGER`/`MANPAGER`/
+/// `SYSTEMD_PAGER` are exported as `cat` so those tools print straight
+/// through; `LESS=FRX` makes a `less` that is still reached (e.g. via a tool
+/// that ignores these variables) quit when output fits on one screen. An
+/// explicit `less FILE` still waits for keys. `export` is a special builtin
+/// (a readonly variable would abort the line on dash/ash), hence `command`.
 pub(crate) fn shell_init(t: &mut dyn Transport) -> Result<()> {
     const READY: &[u8] = b"EXECKITrdy9f3a7cok";
     t.write_all(
         b"stty -echo 2>/dev/null; PS1=''; PS2=''; PROMPT_COMMAND=''; \
 command set +o history 2>/dev/null; command set +H 2>/dev/null; command set +m 2>/dev/null; \
 unset HISTFILE; \
+command export PAGER=cat GIT_PAGER=cat MANPAGER=cat SYSTEMD_PAGER=cat LESS=FRX 2>/dev/null; \
 __ek_dp=$(command -v base64 2>/dev/null); \
 if printf 'YQ==' | \"$__ek_dp\" -d >/dev/null 2>&1; then __ek_df=-d; \
 elif printf 'YQ==' | \"$__ek_dp\" -D >/dev/null 2>&1; then __ek_df=-D; \

@@ -215,3 +215,62 @@ fn posix_sh_noclobber_with_mktemp_file() {
         ("ok", "e", 0)
     );
 }
+
+// Pagers: stdout is a PTY, so git/man/systemctl would spawn `less`.
+
+/// A session whose inherited environment asks for `less` (as a developer's
+/// login environment typically does).
+fn pager_env_session(shell: &str, shell_args: &[&str]) -> Session {
+    let mut args = vec![
+        "PAGER=less",
+        "GIT_PAGER=less",
+        "MANPAGER=less",
+        "LESS=-R",
+        "TERM=xterm-256color",
+        shell,
+    ];
+    args.extend_from_slice(shell_args);
+    Session::local_shell("env", &args)
+        .unwrap()
+        .with_timeout(Duration::from_secs(5))
+}
+
+fn git_log_in_temp_repo(x: &mut Session) {
+    let setup = x
+        .exec(
+            "__t=$(mktemp -d) && cd \"$__t\" && git init -q . && \
+             echo a > a && git add a && \
+             git -c user.name=t -c user.email=t@example.com commit -q -m first && echo ready",
+        )
+        .unwrap();
+    assert_eq!(setup.stdout, "ready", "{setup:?}");
+    let t = std::time::Instant::now();
+    let r = x.exec("git log -1 --format=%s").unwrap();
+    assert!(!r.timed_out, "git log hung in a pager: {r:?}");
+    assert_eq!(r.stdout, "first");
+    assert!(t.elapsed() < Duration::from_secs(3), "{:?}", t.elapsed());
+    assert_eq!(x.exec("echo ok").unwrap().stdout, "ok");
+    x.exec("cd / && rm -rf \"$__t\"").unwrap();
+}
+
+#[test]
+fn git_log_does_not_open_pager_bash() {
+    git_log_in_temp_repo(&mut pager_env_session("bash", &["--norc", "--noprofile"]));
+}
+
+#[test]
+fn git_log_does_not_open_pager_posix_sh() {
+    git_log_in_temp_repo(&mut pager_env_session("sh", &["-i"]));
+}
+
+#[test]
+fn pager_env_defaults_to_cat() {
+    let mut x = pager_env_session("sh", &["-i"]);
+    let r = x
+        .exec("printf '%s ' \"$PAGER\" \"$GIT_PAGER\" \"$MANPAGER\" \"$SYSTEMD_PAGER\" \"$LESS\"")
+        .unwrap();
+    assert_eq!(r.stdout.trim_end(), "cat cat cat cat FRX");
+    // Exported, so child processes (man, systemctl, git) see them too.
+    let r = x.exec("sh -c 'echo \"$PAGER$MANPAGER\"'").unwrap();
+    assert_eq!(r.stdout, "catcat");
+}

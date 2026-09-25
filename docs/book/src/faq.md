@@ -111,7 +111,11 @@ See [Sessions](./sessions.md#timeouts).
 Commands run with stdin set to `/dev/null`, so nothing can wait for keyboard
 input. A prompt gets end-of-file and usually fails at once instead of hanging the
 session. Use non-interactive forms: `sudo -n` (with a NOPASSWD rule for what the
-agent may run), `apt-get -y`, `git --no-pager`, `GIT_EDITOR=true`.
+agent may run), `apt-get -y`, `GIT_EDITOR=true`. Pagers are already off: each
+session exports `PAGER=cat` (and `GIT_PAGER`, `MANPAGER`, `SYSTEMD_PAGER`), so
+`git log` and `man` print straight through. Running `less` or an editor directly
+still hangs until the timeout and closes the session; see
+[Sessions](./sessions.md#what-a-command-can-contain).
 
 ## The agent says "unknown session_id". What happened?
 

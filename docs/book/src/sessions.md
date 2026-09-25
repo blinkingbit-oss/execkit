@@ -62,10 +62,25 @@ reaches the shell exactly as written. Comments, a trailing `&`, heredocs, `!`,
 tabs, very long commands and even syntax errors behave the way they would in a
 terminal; none of them hang the session. The target needs `base64` on its `PATH`.
 
-Commands are **non-interactive**. stdin is `/dev/null`, so anything that waits for
-input (a password prompt, a REPL, an editor, a pager) gets end-of-file instead of
-hanging. Use non-interactive flags: `sudo -n`, `apt-get -y`, `git --no-pager`.
+Commands are **non-interactive**. stdin is `/dev/null`, so a program that reads
+stdin (a password prompt read from stdin, a REPL, `read`) gets end-of-file instead
+of hanging. Use non-interactive flags: `sudo -n`, `apt-get -y`.
 Shell history is off, so commands are never written to a history file.
+
+stdout is still a terminal, though, so tools that page their output would start
+`less`, and `less` reads keys from the terminal itself, not stdin, and ignores
+Ctrl-C. To stop `git log`, `git diff`, `man`, `systemctl status` and `journalctl`
+from hanging, every session exports these defaults when it starts:
+
+| Variable | Value | Effect |
+|----------|-------|--------|
+| `PAGER`, `GIT_PAGER`, `MANPAGER`, `SYSTEMD_PAGER` | `cat` | output is printed straight through |
+| `LESS` | `FRX` | a `less` that still gets started quits when the output fits on one screen |
+
+A command can override them (`export PAGER=...`). Don't run a pager or any other
+full-screen program (`less FILE`, `vim`, `top`) yourself. It waits for keys until the
+timeout, the Ctrl-C does not stop it, and the session is closed. Use `cat`,
+`head` or `tail`, or an [output budget](output-budgets.md), instead.
 
 ## Timeouts
 
