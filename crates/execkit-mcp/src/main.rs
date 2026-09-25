@@ -43,7 +43,7 @@ use rmcp::{
     tool, tool_handler, tool_router, ErrorData, Peer, RoleServer, ServerHandler, ServiceExt,
 };
 use schemars::JsonSchema;
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 
 use execkit::{Budget, Grep, HostKeyVerification, Keep, Policy, Session, SshAuth, SshConfig};
 use execkit_mcp::audit::{self, AuditWriter};
@@ -104,6 +104,10 @@ struct Config {
     max_sessions: usize,
     /// None disables idle reaping; Some(d) reaps sessions idle longer than d.
     session_ttl: Option<Duration>,
+    /// Default per-call exec timeout (seconds) when a call omits
+    /// `timeout_secs`. From EXECKIT_MCP_EXEC_TIMEOUT, default 120, clamped to
+    /// 1..=3600 (same clamp applied to a caller-supplied `timeout_secs`).
+    exec_timeout_secs: u64,
 }
 
 impl Config {
@@ -136,6 +140,11 @@ impl Config {
                 Some(s) => Some(Duration::from_secs(s)), // operator override
                 None => Some(Duration::from_secs(1800)), // default 30 min
             },
+            exec_timeout_secs: std::env::var("EXECKIT_MCP_EXEC_TIMEOUT")
+                .ok()
+                .and_then(|s| s.trim().parse::<u64>().ok())
+                .unwrap_or(120)
+                .clamp(1, 3600),
         }
     }
 }
@@ -167,6 +176,7 @@ struct ExeckitServer {
 #[derive(Deserialize, JsonSchema)]
 struct CreateParams {
     /// Transport: "local" (a local shell), "ssh", or "docker".
+    #[schemars(extend("enum" = ["local", "ssh", "docker"]))]
     transport: String,
     /// Docker container name or id (required for docker).
     #[serde(default)]
@@ -240,6 +250,7 @@ struct GrepParams {
 #[derive(Deserialize, JsonSchema)]
 struct KeepParams {
     /// One of: "all", "tail", "head", "head_tail".
+    #[schemars(extend("enum" = ["all", "tail", "head", "head_tail"]))]
     mode: String,
     /// Line count for tail/head.
     #[serde(default)]
@@ -295,6 +306,21 @@ struct ExecParams {
     /// Shape THIS command's output (overrides the session default).
     #[serde(default)]
     budget: Option<BudgetParams>,
+    /// Timeout for THIS command in seconds (default 120, or
+    /// EXECKIT_MCP_EXEC_TIMEOUT; clamped to 1..=3600). On timeout the command
+    /// is interrupted and the session stays usable.
+    #[serde(default)]
+    timeout_secs: Option<u64>,
+}
+
+/// `session_exec`'s response: the ExecResult fields flattened, plus an
+/// optional truncation hint the MCP layer adds (not part of core execkit).
+#[derive(Serialize)]
+struct ExecResultOut {
+    #[serde(flatten)]
+    result: execkit::ExecResult,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    hint: Option<&'static str>,
 }
 
 #[derive(Deserialize, JsonSchema)]
@@ -345,20 +371,20 @@ impl ExeckitServer {
     }
 
     #[tool(
-        description = "Open a stateful shell session. transport is \"local\", \"ssh\", or \
-                       \"docker\". ssh needs host (a hostname/IP, OR a Host alias from the \
-                       operator's ssh config, <key_dir>/config, default ~/.ssh/config - its \
-                       HostName/User/Port/IdentityFile fill in \
-                       whatever you don't pass) and either password or key_path (or an alias/\
-                       default key resolves auth for you); docker needs \
-                       container (a running container name/id). Optional fingerprint (pin host \
-                       key), allow/deny command lists. Returns a session_id. \
-                       Remote sessions support workspace checkpoints - requires git on \
-                       the remote AND an explicit workspace (set 'workspace'; without it \
-                       checkpoints/auto_snapshot are disabled, never defaulting to the \
-                       home dir). Tune with auto_snapshot, paths, checkpoint_ignores. \
-                       Pass output_budget (same shape as session_exec's budget) to \
-                       default-shape every command's output."
+        description = "Open a stateful shell session. Prefer this over a built-in/inline \
+                       shell when you need: cwd/env kept across calls, a remote host over \
+                       SSH (host may be a hostname/IP or a Host alias from the operator's \
+                       ssh config, <key_dir>/config, default ~/.ssh/config), a Docker \
+                       container, secret-redacted output, or undoable remote file changes \
+                       (checkpoints); local has no checkpoints. transport: \
+                       \"local\"|\"ssh\"|\"docker\". ssh needs host (alias \
+                       HostName/User/Port/IdentityFile fill in what you omit) + password or \
+                       key_path (or an alias/default key). docker needs container. Optional \
+                       fingerprint (pin host key), allow/deny. Returns session_id. Remote \
+                       checkpoints need git on the remote AND an explicit workspace (set \
+                       'workspace'; otherwise off, never defaults to home); tune via \
+                       auto_snapshot/paths/checkpoint_ignores. output_budget default-shapes \
+                       every command's output."
     )]
     async fn session_create(
         &self,
@@ -419,13 +445,21 @@ impl ExeckitServer {
     }
 
     #[tool(
-        description = "Run a command in a session; returns a structured ExecResult JSON \
-                          (stdout, stderr, exit_code, duration_ms, cwd, truncated). \
-                          Optionally pass budget to shape output: {grep:{pattern,context?}, \
-                          keep:{mode:\"all\"|\"tail\"|\"head\"|\"head_tail\",n?|head?+tail?}, max_chars?}. \
-                          Shaping is line-based, client-side, AFTER secret redaction; it never \
-                          changes the exit code or side effects. When applied, the result \
-                          includes a budget report (per-stream mode + lines_total/lines_kept)."
+        description = "Run a command in a session; returns ExecResult JSON (stdout, stderr, \
+                          exit_code, duration_ms, cwd, truncated). Non-interactive: stdin is \
+                          closed - no prompts, REPLs, or editors; use `sudo -n`. Default \
+                          timeout 120s (EXECKIT_MCP_EXEC_TIMEOUT overrides default); \
+                          timeout_secs overrides per call (max 3600). On timeout the command \
+                          is interrupted (exit_code 124, timed_out:true); the session stays \
+                          usable. For long jobs, background: `nohup CMD > /tmp/x.log 2>&1 &` \
+                          then poll `cat /tmp/x.log`. `exit`, or a `set -e` failure, ends the \
+                          shell and closes the session. Optional budget shapes output: \
+                          {grep:{pattern,context?}, \
+                          keep:{mode:\"all\"|\"tail\"|\"head\"|\"head_tail\",n?|head?+tail?}, max_chars?} \
+                          - line-based, after redaction; never changes exit code/side \
+                          effects; adds a report (mode + lines_total/lines_kept). Truncated \
+                          output with no budget passed adds a hint.",
+        annotations(destructive_hint = true, open_world_hint = true)
     )]
     async fn session_exec(
         &self,
@@ -462,11 +496,16 @@ impl ExeckitServer {
             Some(Err(e)) => return Ok(tool_error(e)),
             None => None,
         };
+        let had_budget = budget.is_some();
+        let timeout = Duration::from_secs(
+            p.timeout_secs
+                .unwrap_or(self.config.exec_timeout_secs)
+                .clamp(1, 3600),
+        );
         // Concurrent execs on the SAME session serialize on this lock (the
         // outer map lock is already released). `lock` recovers from poisoning.
-        let outcome = tokio::task::spawn_blocking(move || match budget {
-            Some(b) => lock(&session.session).exec_budgeted(&command, &b),
-            None => lock(&session.session).exec(&command),
+        let outcome = tokio::task::spawn_blocking(move || {
+            lock(&session.session).exec_with_timeout(&command, budget.as_ref(), timeout)
         })
         .await
         .map_err(internal)?;
@@ -485,7 +524,13 @@ impl ExeckitServer {
                     &r,
                 )
                 .await;
-                let json = serde_json::to_string_pretty(&r).map_err(internal)?;
+                // No budget on THIS call and the result was still truncated: hint
+                // the agent that a budget (grep/keep/max_chars) would shape it.
+                let hint = (r.truncated && !had_budget).then_some(
+                    "output was truncated; pass budget (grep/keep/max_chars) to shape it",
+                );
+                let out = ExecResultOut { result: r, hint };
+                let json = serde_json::to_string_pretty(&out).map_err(internal)?;
                 Ok(text(json))
             }
             Err(e) => {
@@ -549,7 +594,10 @@ impl ExeckitServer {
         }
     }
 
-    #[tool(description = "List checkpoints (newest first) for a remote session.")]
+    #[tool(
+        description = "List checkpoints (newest first) for a remote session.",
+        annotations(read_only_hint = true)
+    )]
     async fn session_checkpoints(
         &self,
         Parameters(p): Parameters<SessionIdParams>,
@@ -571,9 +619,12 @@ impl ExeckitServer {
     }
 
     #[tool(
-        description = "Restore a remote session's workspace FILES to a checkpoint \
-                       (omit checkpoint_id to restore the most recent). Does not \
-                       undo side effects."
+        description = "DESTRUCTIVE: restore a remote session's workspace to a checkpoint \
+                       (omit checkpoint_id to restore the most recent). Reverts tracked \
+                       files and DELETES untracked files anywhere under the workspace, \
+                       permanently and without a prompt. Does not undo other side effects \
+                       (DB writes, network calls, installs).",
+        annotations(destructive_hint = true)
     )]
     async fn session_restore(
         &self,
@@ -599,7 +650,12 @@ impl ExeckitServer {
         }
     }
 
-    #[tool(description = "Destroy a session and free its resources.")]
+    #[tool(
+        description = "DESTRUCTIVE: destroy a session and free its resources. The session_id \
+                       becomes invalid immediately; any unsaved shell state (cwd, env, \
+                       background jobs) is lost.",
+        annotations(destructive_hint = true)
+    )]
     async fn session_destroy(
         &self,
         Parameters(p): Parameters<SessionIdParams>,
@@ -619,6 +675,30 @@ impl ExeckitServer {
             tokio::task::spawn_blocking(move || drop(entry));
         }
         Ok(text(format!("{{\"destroyed\":{destroyed}}}")))
+    }
+
+    #[tool(
+        description = "List live sessions: [{session_id, transport, idle_secs}]. Use this to \
+                       recover a session_id you lost track of, or to check whether a session \
+                       is still open (it may have been closed by `exit`, a `set -e` failure, \
+                       or idle-timeout reaping) before calling session_exec again.",
+        annotations(read_only_hint = true)
+    )]
+    async fn session_list(&self) -> Result<CallToolResult, ErrorData> {
+        let now = Instant::now();
+        let list: Vec<serde_json::Value> = lock(&self.sessions)
+            .iter()
+            .map(|(id, e)| {
+                let idle_secs = now.duration_since(*lock(&e.last_used)).as_secs();
+                serde_json::json!({
+                    "session_id": id,
+                    "transport": e.transport,
+                    "idle_secs": idle_secs,
+                })
+            })
+            .collect();
+        let json = serde_json::to_string_pretty(&list).map_err(internal)?;
+        Ok(text(json))
     }
 }
 
@@ -689,8 +769,9 @@ impl ServerHandler for ExeckitServer {
         let mut instructions = String::from(
             "Stateful, structured, safe shell sessions for agents. Call session_create \
              (local, ssh, or docker) to get a session_id, session_exec to run commands \
-             (structured results), and session_destroy when done. State (cwd, env) persists \
-             across execs. Remote (ssh/docker) sessions also support workspace checkpoints \
+             (structured results), session_list to see which sessions are still open, and \
+             session_destroy when done. State (cwd, env) persists across execs. Remote \
+             (ssh/docker) sessions also support workspace checkpoints \
              (session_checkpoint/session_checkpoints/session_restore).",
         );
         instructions.push_str(

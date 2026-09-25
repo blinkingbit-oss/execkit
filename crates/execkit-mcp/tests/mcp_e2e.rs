@@ -140,9 +140,8 @@ fn lists_tools_and_runs_a_command() {
 
     m.send(json!({"jsonrpc":"2.0","id":2,"method":"tools/list","params":{}}));
     let tools = m.recv();
-    let mut names: Vec<String> = tools["result"]["tools"]
-        .as_array()
-        .unwrap()
+    let tool_list = tools["result"]["tools"].as_array().unwrap();
+    let mut names: Vec<String> = tool_list
         .iter()
         .map(|t| t["name"].as_str().unwrap().to_string())
         .collect();
@@ -155,9 +154,43 @@ fn lists_tools_and_runs_a_command() {
             "session_create",
             "session_destroy",
             "session_exec",
+            "session_list",
             "session_restore",
         ]
     );
+
+    let restore = tool_list
+        .iter()
+        .find(|t| t["name"] == "session_restore")
+        .unwrap();
+    assert!(
+        restore["description"]
+            .as_str()
+            .unwrap()
+            .contains("DESTRUCTIVE"),
+        "{restore:?}"
+    );
+
+    let exec_schema = tool_list
+        .iter()
+        .find(|t| t["name"] == "session_exec")
+        .unwrap()["inputSchema"]
+        .clone();
+    assert!(
+        exec_schema["properties"]["timeout_secs"].is_object(),
+        "{exec_schema:?}"
+    );
+
+    let create_schema = tool_list
+        .iter()
+        .find(|t| t["name"] == "session_create")
+        .unwrap()["inputSchema"]
+        .clone();
+    let transport_enum = create_schema["properties"]["transport"]["enum"]
+        .as_array()
+        .unwrap_or_else(|| panic!("transport schema missing enum: {create_schema:?}"));
+    let transport_values: Vec<&str> = transport_enum.iter().map(|v| v.as_str().unwrap()).collect();
+    assert_eq!(transport_values, ["local", "ssh", "docker"]);
 
     let created = m.call(3, "session_create", json!({"transport":"local"}));
     let sid = result_json(&created)["session_id"]
@@ -584,4 +617,82 @@ fn ttl_zero_disables_reaping() {
         json!({"session_id": sid, "command": "echo ok"}),
     );
     assert_eq!(result_json(&alive)["stdout"], "ok", "TTL=0 must not reap");
+}
+
+#[test]
+fn per_call_timeout_interrupts_and_leaves_session_usable() {
+    let mut m = Mcp::start(&[]);
+    let created = m.call(2, "session_create", json!({"transport":"local"}));
+    let sid = result_json(&created)["session_id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+
+    let e = m.call(
+        3,
+        "session_exec",
+        json!({"session_id": sid, "command": "sleep 3", "timeout_secs": 1}),
+    );
+    assert!(!is_error(&e), "{e:?}");
+    let r = result_json(&e);
+    assert_eq!(r["timed_out"], true, "{r:?}");
+    assert_eq!(r["exit_code"], 124, "{r:?}");
+
+    // The session must still answer afterward.
+    let ok = m.call(
+        4,
+        "session_exec",
+        json!({"session_id": sid, "command": "echo ok"}),
+    );
+    assert!(!is_error(&ok), "{ok:?}");
+    assert_eq!(result_json(&ok)["stdout"], "ok");
+}
+
+#[test]
+fn session_list_shows_the_created_session() {
+    let mut m = Mcp::start(&[]);
+    let created = m.call(2, "session_create", json!({"transport":"local"}));
+    let sid = result_json(&created)["session_id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+
+    let listed = m.call(3, "session_list", json!({}));
+    assert!(!is_error(&listed), "{listed:?}");
+    let list = result_json(&listed);
+    let arr = list.as_array().unwrap();
+    assert!(
+        arr.iter().any(|e| e["session_id"] == json!(sid)
+            && e["transport"] == json!("local")
+            && e["idle_secs"].is_u64()),
+        "{list:?}"
+    );
+}
+
+#[test]
+fn truncated_output_without_budget_includes_a_hint() {
+    let mut m = Mcp::start(&[]);
+    let created = m.call(2, "session_create", json!({"transport":"local"}));
+    let sid = result_json(&created)["session_id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+
+    // No budget passed: output exceeds the session's default max_output cap
+    // (100_000 chars), so the server truncates it and must add the hint.
+    let e = m.call(
+        3,
+        "session_exec",
+        json!({"session_id": sid,
+               "command": "head -c 200000 /dev/zero | tr '\\0' 'x'"}),
+    );
+    assert!(!is_error(&e), "{e:?}");
+    let r = result_json(&e);
+    assert_eq!(r["truncated"], true, "{r:?}");
+    assert_eq!(
+        r["hint"], "output was truncated; pass budget (grep/keep/max_chars) to shape it",
+        "{r:?}"
+    );
+
+    let _ = m.call(4, "session_destroy", json!({"session_id": sid}));
 }
