@@ -21,17 +21,34 @@ pub trait Transport: Send {
     fn recv_timeout(&self, dur: Duration) -> Option<Vec<u8>>;
 }
 
-/// Disable echo + prompts, then block until the shell confirms readiness.
+/// Disable echo + prompts + history + job notices, pick a base64 decoder, then
+/// block until the shell confirms readiness.
 ///
 /// Transport-agnostic and race-free: the readiness tag is printed via
 /// `EXECKITrdy''<n>` so the *output* is the contiguous tag while the *echoed
 /// command line* contains the `''` - we match only real output, never the
-/// pre-`stty -echo` echo.
+/// pre-`stty -echo` echo. The tag ends in `ok` only if a decoder was found
+/// (GNU/busybox `base64 -d`, or BSD/macOS `base64 -D`); framing needs one.
+///
+/// SEC: history is turned off (`set +o history`, `unset HISTFILE`) so agent
+/// commands - which may carry secrets - are never written to a history file.
+/// `set +H` stops `!` history expansion; `set +m` stops bash printing job
+/// notices (`[1] pid`, `[1]+ Done`) into later commands' output. dash/busybox
+/// reject some of these options, and `set` is a special builtin: its error
+/// makes an interactive dash/ash drop the REST OF THE LINE (so the readiness
+/// tag would never print). `command set` strips the special-builtin status so
+/// the error is just a non-zero status, silenced by `2>/dev/null`. The line
+/// must stay under 1 KB (canonical-mode PTY line limit, see `framing`).
 pub(crate) fn shell_init(t: &mut dyn Transport) -> Result<()> {
-    const TAG: &[u8] = b"EXECKITrdy9f3a7c";
+    const READY: &[u8] = b"EXECKITrdy9f3a7cok";
     t.write_all(
         b"stty -echo 2>/dev/null; PS1=''; PS2=''; PROMPT_COMMAND=''; \
-          printf '%s\\n' EXECKITrdy''9f3a7c\n",
+command set +o history 2>/dev/null; command set +H 2>/dev/null; command set +m 2>/dev/null; \
+unset HISTFILE; \
+if printf 'YQ==' | base64 -d >/dev/null 2>&1; then __ek_d='base64 -d'; \
+elif printf 'YQ==' | base64 -D >/dev/null 2>&1; then __ek_d='base64 -D'; \
+else __ek_d=''; fi; \
+printf '%s\\n' EXECKITrdy''9f3a7c\"${__ek_d:+ok}\"''\n",
     )?;
     let mut acc = Vec::new();
     let deadline = Instant::now() + Duration::from_secs(8);
@@ -43,8 +60,15 @@ pub(crate) fn shell_init(t: &mut dyn Transport) -> Result<()> {
         match t.recv_timeout(remaining) {
             Some(c) => {
                 acc.extend_from_slice(&c);
-                if contains(&acc, TAG) {
+                if contains(&acc, READY) {
                     return Ok(());
+                }
+                // The bare tag followed by a line end (the PTY may send `\r\n`)
+                // means the shell ran the probe and found no decoder.
+                if contains(&acc, b"EXECKITrdy9f3a7c\n") || contains(&acc, b"EXECKITrdy9f3a7c\r") {
+                    return Err(Error::Transport(
+                        "execkit needs 'base64' on the target shell (coreutils or busybox)".into(),
+                    ));
                 }
             }
             None => return Err(Error::Transport("shell init: disconnected".into())),

@@ -28,6 +28,7 @@ pub mod budget;
 pub mod checkpoint;
 mod error;
 mod exec;
+mod framing;
 mod output;
 mod policy;
 mod redact;

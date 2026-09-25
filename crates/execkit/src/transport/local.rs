@@ -28,6 +28,16 @@ impl LocalPty {
     /// Spawn `shell` with `args` in a fresh PTY. Readiness/echo-off is applied
     /// by the session via `super::shell_init`.
     pub fn spawn(shell: &str, args: &[&str]) -> Result<Self> {
+        Self::spawn_with_env(shell, args, &[])
+    }
+
+    /// Like [`LocalPty::spawn`], but adjust the inherited environment first:
+    /// `(name, Some(v))` sets a variable, `(name, None)` removes it.
+    pub fn spawn_with_env(
+        shell: &str,
+        args: &[&str],
+        env: &[(&str, Option<&str>)],
+    ) -> Result<Self> {
         let pair = native_pty_system()
             .openpty(PtySize {
                 rows: 24,
@@ -39,6 +49,12 @@ impl LocalPty {
 
         let mut cmd = CommandBuilder::new(shell);
         cmd.args(args);
+        for (k, v) in env {
+            match v {
+                Some(v) => cmd.env(k, v),
+                None => cmd.env_remove(k),
+            }
+        }
         let child = pair
             .slave
             .spawn_command(cmd)
