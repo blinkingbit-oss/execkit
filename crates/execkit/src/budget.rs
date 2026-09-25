@@ -168,6 +168,12 @@ mod grep_tests {
         let content = ["a", "b"];
         let re = regex::Regex::new("a").unwrap();
         assert_eq!(grep_keep_indices(&content, &re, usize::MAX), vec![0, 1]);
+        // A match at index 0 can't overflow `i + context` (0 + N never wraps),
+        // so the assertion above alone can't catch a regression to the
+        // unchecked `i + context` form. Match at a NON-ZERO index too: with
+        // the unchecked form this overflow-panics in a debug/test build.
+        let content2 = ["x", "a"];
+        assert_eq!(grep_keep_indices(&content2, &re, usize::MAX), vec![0, 1]);
     }
 }
 
