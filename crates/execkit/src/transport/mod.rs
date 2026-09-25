@@ -35,8 +35,10 @@ pub trait Transport: Send {
 ///
 /// SEC: history is turned off (`set +o history`, `unset HISTFILE`) so agent
 /// commands - which may carry secrets - are never written to a history file.
-/// `set +H` stops `!` history expansion; `set +m` stops bash printing job
-/// notices (`[1] pid`, `[1]+ Done`) into later commands' output. dash/busybox
+/// `set +H` stops `!` history expansion; `set +m` stops bash printing the
+/// later `[1]+ Done` job notices into following commands' output. It does NOT
+/// stop bash's `[1] pid` line when a job is started with `&` (that goes to
+/// the command's own stderr). dash/busybox
 /// reject some of these options, and `set` is a special builtin: its error
 /// makes an interactive dash/ash drop the REST OF THE LINE (so the readiness
 /// tag would never print). `command set` strips the special-builtin status so
