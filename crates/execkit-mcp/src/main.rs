@@ -409,7 +409,6 @@ impl ExeckitServer {
         // Past this point the slot is reserved: EVERY path must either insert a
         // live session (keeping the reservation) or release it (fetch_sub).
         let transport = transport_label(&p);
-        let label = session_label(&p); // captured before `p` moves into the build
         let config = self.config.clone();
         let built = match tokio::task::spawn_blocking(move || build_session(p, &config)).await {
             Ok(built) => built,
@@ -420,7 +419,7 @@ impl ExeckitServer {
             }
         };
         match built {
-            Ok(session) => {
+            Ok((session, label)) => {
                 let id = format!("{}-{}_{}", run_id(), next_num(), label);
                 let audit = self.audit_sink.writer_for(&id);
                 if let Some(a) = &audit {
@@ -944,7 +943,11 @@ fn transport_label(p: &CreateParams) -> String {
     }
 }
 
-fn build_session(p: CreateParams, config: &Config) -> Result<Session, execkit::Error> {
+/// Build the session and its id label. The label is returned from here (not
+/// computed up front) so an ssh session is labelled with the user and port
+/// resolved through `~/.ssh/config`, not only what the call passed.
+fn build_session(p: CreateParams, config: &Config) -> Result<(Session, String), execkit::Error> {
+    let mut label = session_label(&p);
     let mut session = match p.transport.as_str() {
         "ssh" => {
             let host_arg = p
@@ -963,7 +966,7 @@ fn build_session(p: CreateParams, config: &Config) -> Result<Session, execkit::E
                     sshconfig::lookup(&text, &host_arg, &execkit_mcp::paths::home_dir())
                 });
             let (host, port, user, auth) = resolve_ssh(
-                host_arg,
+                host_arg.clone(),
                 p.user,
                 p.port,
                 p.password,
@@ -971,6 +974,7 @@ fn build_session(p: CreateParams, config: &Config) -> Result<Session, execkit::E
                 alias.as_ref(),
                 &config.key_dir,
             )?;
+            label = ssh_label(&host_arg, &user, port);
             // Host-key policy: pin if a fingerprint is supplied (safe - no file
             // I/O on a caller path); otherwise verify against the operator's
             // known_hosts; AcceptAny ONLY via explicit insecure opt-in.
@@ -1020,7 +1024,7 @@ fn build_session(p: CreateParams, config: &Config) -> Result<Session, execkit::E
             deny: p.deny,
         });
     }
-    Ok(session)
+    Ok((session, label))
 }
 
 /// Resolve a caller-supplied key path and require it to live under `key_dir`.
@@ -1178,6 +1182,19 @@ fn session_label(p: &CreateParams) -> String {
         p.host.as_deref(),
         p.port,
         p.container.as_deref(),
+    )
+}
+
+/// Label for an ssh session after alias resolution: the resolved user and port,
+/// with the host part kept as the name the agent passed (an alias such as
+/// `etlstage` stays `etlstage`, it is not replaced by its HostName).
+fn ssh_label(host_arg: &str, resolved_user: &str, resolved_port: Option<u16>) -> String {
+    label_for(
+        "ssh",
+        Some(resolved_user),
+        Some(host_arg),
+        resolved_port,
+        None,
     )
 }
 
@@ -1393,7 +1410,7 @@ async fn run_server() -> anyhow::Result<()> {
 
 #[cfg(test)]
 mod tests {
-    use super::{label_for, resolve_ssh, sanitize};
+    use super::{label_for, resolve_ssh, sanitize, ssh_label};
     use execkit::SshAuth;
     use execkit_mcp::sshconfig::HostEntry;
     use std::path::{Path, PathBuf};
@@ -1640,5 +1657,50 @@ mod tests {
             label_for("ssh", Some("u"), Some("../x"), None, None),
             "ssh_u@.._x"
         );
+    }
+
+    #[test]
+    fn ssh_label_uses_alias_user_and_port_but_keeps_alias_as_host() {
+        // A session opened with only `host: "etlstage"` must be labelled with
+        // the User/Port from ~/.ssh/config, not the "user" placeholder.
+        let kd = empty_key_dir();
+        let alias = HostEntry {
+            hostname: Some("10.1.2.3".into()),
+            user: Some("ec2-user".into()),
+            port: Some(2222),
+            identity_files: vec![],
+        };
+        let (host, port, user, _auth) = resolve_ssh(
+            "etlstage".into(),
+            None,
+            None,
+            Some("pw".into()),
+            None,
+            Some(&alias),
+            kd.path(),
+        )
+        .unwrap();
+        assert_eq!(host, "10.1.2.3");
+        assert_eq!(
+            ssh_label("etlstage", &user, port),
+            "ssh_ec2-user@etlstage:2222"
+        );
+
+        // Alias with the default port: no port suffix.
+        let alias22 = HostEntry {
+            port: None,
+            ..alias
+        };
+        let (_h, port, user, _a) = resolve_ssh(
+            "etlstage".into(),
+            None,
+            None,
+            Some("pw".into()),
+            None,
+            Some(&alias22),
+            kd.path(),
+        )
+        .unwrap();
+        assert_eq!(ssh_label("etlstage", &user, port), "ssh_ec2-user@etlstage");
     }
 }
