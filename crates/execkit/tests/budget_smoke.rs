@@ -71,3 +71,24 @@ fn grep_finds_middle_of_large_output() {
     assert!(r.stdout.contains("100000"));
     assert_eq!(r.budget.unwrap().stdout.lines_kept, 1);
 }
+
+// Budgeted output past the 8 MiB in-memory window used to cost
+// O(total x window): every chunk re-copied ~8 MiB during compaction and
+// re-scanned the whole buffer for the end marker. ~38.9 MB took 153 s in a
+// release build. Accumulation is now linear.
+#[test]
+fn budgeted_40mb_tail_is_linear_time() {
+    let mut s = execkit::Session::local()
+        .unwrap()
+        .with_timeout(std::time::Duration::from_secs(120));
+    let t = std::time::Instant::now();
+    let r = s
+        .exec_budgeted("seq 1 5000000", &execkit::Budget::tail(1))
+        .unwrap();
+    let dt = t.elapsed();
+    assert!(!r.timed_out);
+    assert_eq!(r.exit_code, 0);
+    assert!(r.stdout.ends_with("5000000"), "{:?}", r.stdout);
+    assert!(r.truncated);
+    assert!(dt < std::time::Duration::from_secs(20), "took {dt:?}");
+}

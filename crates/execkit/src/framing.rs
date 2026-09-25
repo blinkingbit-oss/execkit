@@ -196,6 +196,91 @@ pub(crate) fn parse(acc: &[u8], m: &Markers) -> Option<Parsed> {
     })
 }
 
+/// Accumulates one command's raw output until its trailer arrives.
+///
+/// Linear in the output size, however large: each chunk is searched for the
+/// end marker only in its own bytes plus `end.len() - 1` bytes of overlap
+/// (so a marker split across chunks is still found), and the full [`parse`]
+/// runs only once an end-marker candidate shows up. Past `cap` the buffer is
+/// allowed to grow to `2 * cap` before [`compact`] cuts it back to `cap`, so
+/// each compaction's copy is paid for by `cap` bytes of new input.
+pub(crate) struct Accumulator {
+    buf: Vec<u8>,
+    cap: usize,
+    /// `buf[..scanned]` has been searched: any end marker in it was already
+    /// seen by `parse` and rejected (an invalid END never becomes valid, since
+    /// its validity depends only on the bytes before it).
+    scanned: usize,
+    /// Total bytes dropped by compaction so far.
+    elided: usize,
+}
+
+impl Accumulator {
+    pub fn new(cap: usize) -> Self {
+        Self {
+            buf: Vec::new(),
+            cap,
+            scanned: 0,
+            elided: 0,
+        }
+    }
+
+    /// Append a chunk; return the parsed result once the trailer is complete.
+    pub fn push(&mut self, chunk: &[u8], m: &Markers) -> Option<Parsed> {
+        self.buf.extend_from_slice(chunk);
+        let end = m.end.as_bytes();
+        let from = self.scanned.saturating_sub(end.len().saturating_sub(1));
+        // Search before compacting, so a trailer in this chunk is never cut.
+        if find(&self.buf[from..], end).is_some() {
+            if let Some(p) = parse(&self.buf, m) {
+                return Some(p);
+            }
+        }
+        if self.buf.len() > self.cap.saturating_mul(2) {
+            compact(&mut self.buf, self.cap / 2, &mut self.elided);
+        }
+        // Everything now in the buffer has been searched; after a compaction
+        // the tail (and so the overlap window) is unchanged.
+        self.scanned = self.buf.len();
+        None
+    }
+
+    /// Whether any output was dropped by compaction.
+    pub fn overflowed(&self) -> bool {
+        self.elided > 0
+    }
+
+    /// The raw bytes accumulated so far (for a timed-out command).
+    pub fn bytes(&self) -> &[u8] {
+        &self.buf
+    }
+}
+
+fn elision_marker(elided: usize) -> String {
+    format!("\n[execkit: {elided} bytes elided]\n")
+}
+
+/// Mid-stream anti-flood compaction: keep the first and last `keep` bytes,
+/// joined by a `\n[execkit: {n} bytes elided]\n` separator where `n` is the
+/// running total of `*elided` (updated here).
+///
+/// The separator stops a secret straddling the cut from being rejoined into
+/// something redaction (which matches on the final text) fails to recognize:
+/// head and tail bytes are never adjacent. On a later compaction the previous
+/// separator sits right after the head and is dropped with the middle; it is
+/// not counted as elided output.
+fn compact(buf: &mut Vec<u8>, keep: usize, elided: &mut usize) {
+    let old_sep = if *elided > 0 {
+        elision_marker(*elided).len()
+    } else {
+        0
+    };
+    let tail_start = buf.len().saturating_sub(keep).max(keep + old_sep);
+    *elided += tail_start - keep - old_sep;
+    let sep = elision_marker(*elided);
+    buf.splice(keep..tail_start, sep.into_bytes());
+}
+
 fn find(hay: &[u8], needle: &[u8]) -> Option<usize> {
     if needle.is_empty() || hay.len() < needle.len() {
         return None;
@@ -261,6 +346,114 @@ mod tests {
         assert_eq!(p.exit_code, 0);
         assert_eq!(p.cwd, "/tmp");
         assert!(p.stdout.ends_with("ok"), "{:?}", p.stdout);
+    }
+
+    fn trailer(m: &Markers, rc: u8) -> String {
+        format!("\n{}\x1f{rc}\x1f/tmp\x1ferr{}\n", m.start, m.end)
+    }
+
+    #[test]
+    fn accumulator_finds_end_marker_split_across_chunks() {
+        let m = Markers::new("split");
+        let full = format!("out{}", trailer(&m, 0));
+        let cut = full.find(&m.end).unwrap() + 5; // mid-END
+        for split in [cut, full.len() - 2, 1] {
+            let mut a = Accumulator::new(1 << 20);
+            assert!(a.push(&full.as_bytes()[..split], &m).is_none());
+            let p = a.push(&full.as_bytes()[split..], &m).expect("found");
+            assert_eq!((p.stdout.as_str(), p.exit_code), ("out", 0));
+        }
+    }
+
+    #[test]
+    fn accumulator_byte_at_a_time() {
+        let m = Markers::new("bytes");
+        let full = format!("hello{}", trailer(&m, 3));
+        // The result is complete exactly when the END marker's last byte lands.
+        let done = full.find(&m.end).unwrap() + m.end.len();
+        let mut a = Accumulator::new(1 << 20);
+        let mut got = None;
+        for (i, b) in full.bytes().enumerate().take(done) {
+            let r = a.push(&[b], &m);
+            if i + 1 < done {
+                assert!(r.is_none(), "early result at byte {i}");
+            }
+            got = r;
+        }
+        let p = got.expect("found on the END's last byte");
+        assert_eq!((p.stdout.as_str(), p.exit_code), ("hello", 3));
+    }
+
+    #[test]
+    fn accumulator_skips_invalid_end_then_finds_valid_one_later() {
+        // `set -v`: an invalid END (literal `\037`) arrives first, alone.
+        let m = Markers::new("sv");
+        let mut a = Accumulator::new(1 << 20);
+        let echo = format!("{s}\\037%d\\037' x '{e}'\n", s = m.start, e = m.end);
+        assert!(a.push(echo.as_bytes(), &m).is_none());
+        assert!(a.push(b"ok", &m).is_none());
+        let p = a.push(trailer(&m, 0).as_bytes(), &m).expect("found");
+        assert!(p.stdout.ends_with("ok"), "{:?}", p.stdout);
+    }
+
+    #[test]
+    fn accumulator_compacts_lazily_and_counts_all_elided_bytes() {
+        let m = Markers::new("big");
+        let cap = 1000;
+        let mut a = Accumulator::new(cap);
+        let mut sent = 0usize;
+        for i in 0..500 {
+            let line = format!("{i:07}\n"); // 8 bytes
+            sent += line.len();
+            assert!(a.push(line.as_bytes(), &m).is_none());
+            assert!(a.bytes().len() <= 2 * cap + 64, "buffer grew past 2x cap");
+        }
+        assert!(a.overflowed());
+        let raw_len = a.bytes().len();
+        let p = a.push(trailer(&m, 0).as_bytes(), &m).expect("found");
+        // Head and tail survive; the elided count is the true running total.
+        assert!(p.stdout.starts_with("0000000\n"), "{:?}", &p.stdout[..20]);
+        assert!(p.stdout.ends_with("0000499"));
+        let n: usize = p
+            .stdout
+            .split("[execkit: ")
+            .nth(1)
+            .and_then(|r| r.split(' ').next())
+            .and_then(|n| n.parse().ok())
+            .expect("one elision marker");
+        assert_eq!(p.stdout.matches("bytes elided]").count(), 1);
+        let kept = raw_len - elision_marker(n).len();
+        assert_eq!(n + kept, sent, "elided + kept == total");
+    }
+
+    #[test]
+    fn compact_separates_head_and_tail_with_elision_marker() {
+        // A secret whose first half ends the head and second half starts the
+        // tail must never be rejoined.
+        let head = format!("{}SECRET_PREFIX", "h".repeat(100));
+        let tail = format!("SECRET_SUFFIX{}", "t".repeat(100));
+        let mut buf = format!("{head}{}{tail}", "m".repeat(1000)).into_bytes();
+        let mut elided = 0;
+        compact(&mut buf, head.len(), &mut elided);
+        let text = String::from_utf8(buf).unwrap();
+        assert!(text.contains("SECRET_PREFIX") && text.contains("SECRET_SUFFIX"));
+        assert!(!text.contains("SECRET_PREFIXSECRET_SUFFIX"));
+        assert!(text.contains("[execkit: 1000 bytes elided]"), "{text}");
+        assert_eq!(elided, 1000);
+    }
+
+    #[test]
+    fn compact_twice_accumulates_elided_count() {
+        let mut buf = vec![b'x'; 1000];
+        let mut elided = 0;
+        compact(&mut buf, 50, &mut elided); // 900 elided
+        buf.extend_from_slice(&[b'y'; 500]);
+        compact(&mut buf, 50, &mut elided); // old sep + 500 more (tail 50 kept)
+        let text = String::from_utf8(buf).unwrap();
+        assert_eq!(elided, 1400);
+        assert!(text.contains("[execkit: 1400 bytes elided]"), "{text}");
+        assert_eq!(text.matches("elided").count(), 1);
+        assert!(text.starts_with(&"x".repeat(50)) && text.ends_with(&"y".repeat(50)));
     }
 
     #[test]
