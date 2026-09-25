@@ -172,19 +172,22 @@ struct CreateParams {
     #[serde(default)]
     container: Option<String>,
     /// SSH host (required for ssh). May be a raw hostname/IP, or a Host alias
-    /// defined in the operator's ~/.ssh/config - HostName/User/Port/IdentityFile
-    /// from a matching alias fill in whatever isn't given below.
+    /// defined in the operator's ssh config (<key_dir>/config, default
+    /// ~/.ssh/config) - HostName/User/Port/IdentityFile from a matching
+    /// alias fill in whatever isn't given below.
     #[serde(default)]
     host: Option<String>,
     /// SSH port (default 22, or the alias's Port).
     #[serde(default)]
     port: Option<u16>,
-    /// SSH user (required for ssh, unless the ~/.ssh/config Host alias sets User).
+    /// SSH user (required for ssh, unless the operator's ssh config
+    /// (<key_dir>/config, default ~/.ssh/config) Host alias sets User).
     #[serde(default)]
     user: Option<String>,
     /// SSH password auth. If omitted along with key_path, the resolved
-    /// ~/.ssh/config alias's IdentityFile(s) are tried, then id_ed25519,
-    /// id_ecdsa, id_rsa in the operator's key dir.
+    /// ssh config (<key_dir>/config, default ~/.ssh/config) alias's
+    /// IdentityFile(s) are tried, then id_ed25519, id_ecdsa, id_rsa in the
+    /// operator's key dir.
     #[serde(default)]
     password: Option<String>,
     /// SSH private-key path (must live under the operator's key dir).
@@ -344,7 +347,8 @@ impl ExeckitServer {
     #[tool(
         description = "Open a stateful shell session. transport is \"local\", \"ssh\", or \
                        \"docker\". ssh needs host (a hostname/IP, OR a Host alias from the \
-                       operator's ~/.ssh/config - its HostName/User/Port/IdentityFile fill in \
+                       operator's ssh config, <key_dir>/config, default ~/.ssh/config - its \
+                       HostName/User/Port/IdentityFile fill in \
                        whatever you don't pass) and either password or key_path (or an alias/\
                        default key resolves auth for you); docker needs \
                        container (a running container name/id). Optional fingerprint (pin host \

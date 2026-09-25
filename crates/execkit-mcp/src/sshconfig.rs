@@ -6,12 +6,15 @@
 //! Deliberately NOT a full ssh_config implementation: `Host` patterns are
 //! matched by EXACT name only (a pattern containing `*`, `?`, or `!` is never
 //! treated as a match for anything, including a literal alias that happens to
-//! contain those characters - OpenSSH pattern semantics are out of scope), and
-//! `Include`/`Match` directives are ignored entirely (skipped like any other
-//! unrecognized keyword). This is deliberate: the file is operator-owned, but
-//! still a config an untrusted agent can influence indirectly (via the alias
-//! it picks), so the parser stays small and easy to audit rather than pulling
-//! in a full ssh_config crate.
+//! contain those characters - OpenSSH pattern semantics are out of scope).
+//! `Match` is never evaluated (its condition is out of scope), but per
+//! OpenSSH semantics a `Match` line still ENDS the current `Host` scope, so
+//! its body can never be mistaken for the fields of the `Host` block above
+//! it. `Include` is an ignored keyword and does NOT close the scope.
+//! This is deliberate: the file is operator-owned, but still a config an
+//! untrusted agent can influence indirectly (via the alias it picks), so the
+//! parser stays small and easy to audit rather than pulling in a full
+//! ssh_config crate.
 
 use std::path::{Path, PathBuf};
 
@@ -29,12 +32,14 @@ pub struct HostEntry {
 /// `Host` lines are matched by exact name only: a pattern containing `*`,
 /// `?`, or `!` is skipped (never matched). Keywords are matched
 /// case-insensitively and accept both `Key value` and `Key=value` forms.
-/// `~/`-prefixed `IdentityFile` values are expanded against `home`. Per
+/// `IdentityFile` values are resolved against `home`: `~/`-prefixed and bare
+/// relative paths expand against it, an absolute path is kept as-is. Per
 /// OpenSSH semantics, the FIRST value seen wins for a given single-valued
 /// keyword (later `Host` blocks matching the same alias cannot override an
-/// already-set field); `IdentityFile` accumulates in file order instead.
-/// `Include` and `Match` lines are ignored. Returns `None` if no `Host` block
-/// matches `alias`.
+/// already-set field); `IdentityFile` accumulates in file order instead. A
+/// `Match` line ends the current `Host` scope (its body is skipped until the
+/// next `Host` line); `Include` is ignored and does NOT end the scope.
+/// Returns `None` if no `Host` block matches `alias`.
 pub fn lookup(config_text: &str, alias: &str, home: &Path) -> Option<HostEntry> {
     let mut in_block = false;
     let mut matched = false;
@@ -55,6 +60,14 @@ pub fn lookup(config_text: &str, alias: &str, home: &Path) -> Option<HostEntry> 
             if in_block {
                 matched = true;
             }
+            continue;
+        }
+        if key.eq_ignore_ascii_case("match") {
+            // A `Match` line ends the current `Host` scope (OpenSSH
+            // semantics). Its body is conditional, so this parser never
+            // applies it: it is skipped until the next `Host` line. `Include`
+            // falls through to the ignored-keyword case and keeps the scope.
+            in_block = false;
             continue;
         }
         if !in_block {
@@ -107,17 +120,24 @@ fn unquote(v: &str) -> &str {
     }
 }
 
-/// Expand a leading `~/` (or bare `~`) against `home`; anything else is
-/// returned as-is (relative paths are left relative - `build_session`
-/// resolves them the same way `validated_key_path` resolves any relative
-/// `key_path`: via canonicalize against the current directory).
+/// Resolve an `IdentityFile` value against `home`, matching OpenSSH: a
+/// leading `~/` (or bare `~`) expands against `home`; an absolute path is
+/// kept as-is; anything else (a bare relative path, with no leading `/` or
+/// `~/`) is ALSO resolved against `home` - never against the server
+/// process's current working directory, which has no defined meaning here.
+/// Callers still run the result through `validated_key_path` before use.
 fn expand_tilde(value: &str, home: &Path) -> PathBuf {
     if let Some(rest) = value.strip_prefix("~/") {
         home.join(rest)
     } else if value == "~" {
         home.to_path_buf()
     } else {
-        PathBuf::from(value)
+        let p = Path::new(value);
+        if p.is_absolute() {
+            p.to_path_buf()
+        } else {
+            home.join(p)
+        }
     }
 }
 
@@ -249,5 +269,62 @@ Host myalias
         let e = lookup(cfg, "myalias", &home()).unwrap();
         assert_eq!(e.hostname.as_deref(), Some("10.0.0.5"));
         assert_eq!(e.user.as_deref(), Some("deploy"));
+    }
+
+    #[test]
+    fn match_line_closes_the_current_host_block() {
+        // A `Match` block following a matched `Host` block must NOT have its fields merged into that alias.
+        let cfg = "Host bastion\n User deploy\n\nMatch host \"192.168.*\"\n IdentityFile ~/.ssh/id_internal\n HostName leaked.example\n";
+        let e = lookup(cfg, "bastion", &home()).unwrap();
+        assert_eq!(e.hostname, None, "Match block must not leak HostName");
+        assert_eq!(e.user.as_deref(), Some("deploy"));
+        assert!(
+            e.identity_files.is_empty(),
+            "Match block must not leak IdentityFile"
+        );
+    }
+
+    #[test]
+    fn host_block_after_match_block_still_resolves_normally() {
+        let cfg = "\
+Match host \"192.168.*\"
+    HostName leaked.example
+
+Host myalias
+    HostName 10.0.0.5
+";
+        let e = lookup(cfg, "myalias", &home()).unwrap();
+        assert_eq!(e.hostname.as_deref(), Some("10.0.0.5"));
+    }
+
+    #[test]
+    fn include_inside_a_matched_host_block_does_not_drop_later_fields() {
+        let cfg = "\
+Host myalias
+    HostName 10.0.0.5
+    Include other.conf
+    User deploy
+";
+        let e = lookup(cfg, "myalias", &home()).unwrap();
+        assert_eq!(e.hostname.as_deref(), Some("10.0.0.5"));
+        assert_eq!(
+            e.user.as_deref(),
+            Some("deploy"),
+            "Include must not close the Host scope"
+        );
+    }
+
+    #[test]
+    fn relative_identity_file_resolves_against_home_not_cwd() {
+        let cfg = "Host myalias\n    IdentityFile id_deploy\n";
+        let e = lookup(cfg, "myalias", &home()).unwrap();
+        assert_eq!(e.identity_files, vec![PathBuf::from("/home/op/id_deploy")]);
+    }
+
+    #[test]
+    fn absolute_identity_file_is_kept_as_is() {
+        let cfg = "Host myalias\n    IdentityFile /opt/keys/id_deploy\n";
+        let e = lookup(cfg, "myalias", &home()).unwrap();
+        assert_eq!(e.identity_files, vec![PathBuf::from("/opt/keys/id_deploy")]);
     }
 }
