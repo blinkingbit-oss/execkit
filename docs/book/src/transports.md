@@ -56,7 +56,8 @@ execkit uses the first of these that applies:
 2. `key_path`, if given.
 3. The alias's `IdentityFile` entries, in order, then `id_ed25519`, `id_ecdsa` and
    `id_rsa` in the key directory. The first file that exists inside the key
-   directory is used.
+   directory is used. If the server rejects it, execkit does not try the next
+   one; pass `key_path` to choose a different key.
 
 Every key must live inside the key directory (`~/.ssh` by default, or
 `EXECKIT_MCP_KEY_DIR`). Out-of-bounds or traversal paths are rejected with a

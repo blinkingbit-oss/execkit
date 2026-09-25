@@ -194,10 +194,11 @@ struct CreateParams {
     /// (<key_dir>/config, default ~/.ssh/config) Host alias sets User).
     #[serde(default)]
     user: Option<String>,
-    /// SSH password auth. If omitted along with key_path, the resolved
-    /// ssh config (<key_dir>/config, default ~/.ssh/config) alias's
-    /// IdentityFile(s) are tried, then id_ed25519, id_ecdsa, id_rsa in the
-    /// operator's key dir.
+    /// SSH password auth. If omitted along with key_path, one key is picked:
+    /// the first that exists (inside the operator's key dir) of the ssh
+    /// config (<key_dir>/config, default ~/.ssh/config) alias's
+    /// IdentityFile entries, then id_ed25519, id_ecdsa, id_rsa in the key
+    /// dir. If the server rejects that key, no other key is tried.
     #[serde(default)]
     password: Option<String>,
     /// SSH private-key path (must live under the operator's key dir).
@@ -1039,8 +1040,10 @@ fn validated_key_path(raw: &str, key_dir: &Path) -> Result<PathBuf, execkit::Err
 ///
 /// Auth: `password` first, then `key_path` (validated against `key_dir`),
 /// then - only when NEITHER was given - the alias's `IdentityFile` entries in
-/// order, then `id_ed25519`/`id_ecdsa`/`id_rsa` in `key_dir`, each checked
-/// with `validated_key_path` so an alias pointing outside `key_dir` is
+/// order, then `id_ed25519`/`id_ecdsa`/`id_rsa` in `key_dir`. The FIRST one
+/// that passes `validated_key_path` (exists, inside `key_dir`) is used; there
+/// is no fallback to the next candidate if authentication with it fails.
+/// The check means an alias pointing outside `key_dir` is
 /// rejected exactly like an explicit out-of-bounds `key_path` (same generic
 /// error, nothing leaked). Falls through to the existing
 /// "password or key_path required" error if nothing usable is found.
