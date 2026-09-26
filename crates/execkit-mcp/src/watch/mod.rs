@@ -53,10 +53,20 @@ pub fn follow(path: PathBuf) -> anyhow::Result<()> {
     let mut out = std::io::stdout();
     // Runs until interrupted: SIGINT (Ctrl+C) terminates via the default
     // handler; a broken pipe (e.g. piped to `head`) returns Err from writeln!.
+    let mut dates = render::DateSeparators::default();
     loop {
         for ev in src.poll() {
             let sid = ev.session().to_string();
-            for line in render::render_event(&ev) {
+            // One date line for the whole stream (not per session): the
+            // events are interleaved in time order.
+            if let Some(sep) = dates.before("", &ev) {
+                if color {
+                    writeln!(out, "\x1b[{}m{}\x1b[0m", ansi(sep.kind), sep.text)?;
+                } else {
+                    writeln!(out, "{}", sep.text)?;
+                }
+            }
+            for line in render::render_event_stamped(&ev) {
                 if color {
                     writeln!(out, "[{sid}] \x1b[{}m{}\x1b[0m", ansi(line.kind), line.text)?;
                 } else {

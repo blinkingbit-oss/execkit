@@ -313,3 +313,70 @@ fn closed_stdout_is_a_clean_exit_not_a_panic() {
         assert_eq!(out.status.code(), Some(0), "{args:?}: {stderr}");
     }
 }
+
+/// `watch --follow` stamps prompts and markers with local time (TZ=UTC here)
+/// and prints a date line before the first event and when the date changes.
+#[test]
+fn follow_prints_times_and_a_date_line_across_midnight() {
+    let dir = std::env::temp_dir().join(format!("ek_follow_midnight_{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let path = dir.join("audit.jsonl");
+    // 2026-01-01 23:59:50 UTC: opened. A 5 s command recorded at 00:00:15
+    // on 2026-01-02 (so it started at 00:00:10), then closed at 00:00:20.
+    let t0: u64 = 1_767_311_990_000;
+    let lines = [
+        format!(r#"{{"event":"open","ts":{t0},"session":"local_1","transport":"local"}}"#),
+        format!(
+            r#"{{"event":"exec","ts":{},"session":"local_1","transport":"local","command":"echo hi","stdout":"hi\n","stderr":"","exit_code":0,"duration_ms":5000,"cwd":"/tmp","truncated":false}}"#,
+            t0 + 25_000
+        ),
+        format!(
+            r#"{{"event":"close","ts":{},"session":"local_1","reason":"destroyed"}}"#,
+            t0 + 30_000
+        ),
+    ];
+    std::fs::write(&path, lines.join("\n") + "\n").unwrap();
+
+    let mut child = Command::new(env!("CARGO_BIN_EXE_execkit-mcp"))
+        .args(["watch", "--follow", path.to_str().unwrap()])
+        .env("TZ", "UTC")
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::null())
+        .spawn()
+        .expect("spawn watch --follow");
+    let mut stdout = child.stdout.take().unwrap();
+    let (tx, rx) = std::sync::mpsc::channel::<String>();
+    std::thread::spawn(move || {
+        let mut buf = [0u8; 4096];
+        let mut acc = String::new();
+        while let Ok(n) = stdout.read(&mut buf) {
+            if n == 0 {
+                break;
+            }
+            acc.push_str(&String::from_utf8_lossy(&buf[..n]));
+            if tx.send(acc.clone()).is_err() {
+                break;
+            }
+        }
+    });
+    let deadline = std::time::Instant::now() + Duration::from_secs(5);
+    let mut got = String::new();
+    while std::time::Instant::now() < deadline && !got.contains("closed") {
+        if let Ok(acc) = rx.recv_timeout(Duration::from_millis(200)) {
+            got = acc;
+        }
+    }
+    let _ = child.kill();
+    let _ = child.wait();
+    let _ = std::fs::remove_dir_all(&dir);
+    assert_eq!(
+        got,
+        "-- 2026-01-01 --\n\
+         [local_1] [23:59:50] -- opened: local --\n\
+         -- 2026-01-02 --\n\
+         [local_1] [00:00:10] /tmp $ echo hi\n\
+         [local_1] hi\n\
+         [local_1] ok exit 0  (5000ms)\n\
+         [local_1] [00:00:20] -- closed (destroyed) --\n"
+    );
+}

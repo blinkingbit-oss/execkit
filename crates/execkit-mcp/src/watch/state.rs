@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 //! In-memory viewer state: one transcript per session, plus selection.
 use crate::audit::AuditEvent;
-use crate::watch::render::{render_event, StyledLine};
+use crate::watch::render::{render_event, render_event_stamped, DateSeparators, StyledLine};
 
 pub struct SessionView {
     pub id: String,
@@ -43,6 +43,20 @@ impl AppState {
     }
 
     pub fn apply(&mut self, ev: AuditEvent) {
+        let lines = render_event(&ev);
+        self.push(ev, lines);
+    }
+
+    /// [`AppState::apply`] for the TUI: lines carry their local time, and a
+    /// date line goes before an event from another day (see
+    /// [`DateSeparators`], tracked per session).
+    pub fn apply_dated(&mut self, ev: AuditEvent, dates: &mut DateSeparators) {
+        let mut lines: Vec<StyledLine> = dates.before(ev.session(), &ev).into_iter().collect();
+        lines.extend(render_event_stamped(&ev));
+        self.push(ev, lines);
+    }
+
+    fn push(&mut self, ev: AuditEvent, mut lines: Vec<StyledLine>) {
         let (id, transport) = match &ev {
             AuditEvent::Open {
                 session, transport, ..
@@ -62,7 +76,6 @@ impl AppState {
             AuditEvent::Close { .. } => self.sessions[i].closed = true,
             AuditEvent::Blocked { .. } => {}
         }
-        let mut lines = render_event(&ev);
         self.sessions[i].transcript.append(&mut lines);
     }
 
@@ -170,5 +183,35 @@ mod tests {
         assert_eq!(s.sessions.len(), 1);
         assert_eq!(s.sessions[0].id, "ghost");
         assert_eq!(s.sessions[0].cmd_count, 1);
+    }
+
+    #[test]
+    fn apply_dated_stamps_and_separates_dates_per_session() {
+        let day1 = 1_767_268_800_000; // 2026-01-01 12:00 UTC
+        let mut st = AppState::new();
+        let mut seps = DateSeparators::default();
+        let at = |id: &str, ts: u64| AuditEvent::Open {
+            ts,
+            session: id.into(),
+            transport: "local".into(),
+        };
+        st.apply_dated(at("a", day1), &mut seps);
+        st.apply_dated(at("a", day1 + 1_000), &mut seps);
+        st.apply_dated(at("b", day1), &mut seps);
+        let text = |i: usize| -> Vec<String> {
+            st.sessions[i]
+                .transcript
+                .iter()
+                .map(|l| l.text.clone())
+                .collect()
+        };
+        let a = text(0);
+        assert_eq!(a.len(), 3, "{a:?}");
+        assert!(a[0].starts_with("-- 20") && a[0].ends_with(" --"), "{a:?}");
+        assert!(a[1].starts_with('[') && a[1].ends_with("] -- opened: local --"));
+        assert!(a[2].ends_with("] -- opened: local --"));
+        let b = text(1);
+        assert_eq!(b.len(), 2, "each session gets its own separator: {b:?}");
+        assert_eq!(b[0], a[0]);
     }
 }

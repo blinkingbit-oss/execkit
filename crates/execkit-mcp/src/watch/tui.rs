@@ -16,7 +16,7 @@ use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, List, ListItem, Paragraph};
 use ratatui::{Frame, Terminal};
 
-use crate::watch::render::LineKind;
+use crate::watch::render::{DateSeparators, LineKind};
 use crate::watch::source::Source;
 use crate::watch::state::AppState;
 
@@ -32,6 +32,7 @@ pub fn run_loop(path: PathBuf) -> anyhow::Result<()> {
     let res = (|| -> anyhow::Result<()> {
         let mut term = Terminal::new(CrosstermBackend::new(std::io::stdout()))?;
         let mut state = AppState::new();
+        let mut dates = DateSeparators::default();
         let mut source = Source::new(path);
         // u16::MAX means "pinned to the bottom"; draw() clamps it to the real
         // last line. Manual scrolling replaces it with a bounded offset.
@@ -39,7 +40,7 @@ pub fn run_loop(path: PathBuf) -> anyhow::Result<()> {
         let mut follow = true;
         loop {
             for ev in source.poll() {
-                state.apply(ev);
+                state.apply_dated(ev, &mut dates);
             }
             let mut max_scroll = 0u16;
             term.draw(|f| max_scroll = draw(f, &state, scroll))?;

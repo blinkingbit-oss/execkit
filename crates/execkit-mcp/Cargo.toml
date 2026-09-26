@@ -29,3 +29,5 @@ crossterm = "0.28"
 home = "0.5"
 regex = "1"
 getrandom = "0.4"
+# localtime_r for the terminal viewers' local timestamps (std has no local time).
+libc = "0.2"

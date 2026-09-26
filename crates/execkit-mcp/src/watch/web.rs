@@ -16,7 +16,7 @@ use tokio::sync::broadcast;
 
 use crate::audit::AuditEvent;
 use crate::watch::meta;
-use crate::watch::render::{render_event, LineKind, StyledLine};
+use crate::watch::render::{display_ts, render_event, LineKind, StyledLine};
 use crate::watch::source::Source;
 
 /// Per-connection context: everything `handle_conn` needs, cheaply cloned.
@@ -90,21 +90,6 @@ fn kind_str(k: LineKind) -> &'static str {
         LineKind::ExitOk => "exit_ok",
         LineKind::ExitErr => "exit_err",
         LineKind::Marker => "marker",
-    }
-}
-
-/// The time (unix ms) the viewer shows for an event's lines. An exec event's
-/// `ts` is written when the result is recorded, i.e. after the command
-/// finished, so the command's start time is `ts - duration_ms`; every other
-/// event uses its own `ts`.
-fn display_ts(ev: &AuditEvent) -> u64 {
-    match ev {
-        AuditEvent::Exec {
-            ts, duration_ms, ..
-        } => ts.saturating_sub(*duration_ms),
-        AuditEvent::Open { ts, .. }
-        | AuditEvent::Close { ts, .. }
-        | AuditEvent::Blocked { ts, .. } => *ts,
     }
 }
 
