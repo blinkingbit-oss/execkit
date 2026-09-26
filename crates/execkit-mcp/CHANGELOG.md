@@ -18,6 +18,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - *(mcp)* label ssh sessions with the user and port resolved from ssh config
 
+### Notes
+
+- This is a minor release because `watch::meta::UiPrefs` gained a public field
+  (`history_open`), which breaks code that builds `UiPrefs` with a struct literal.
+- SSH session ids and audit file names now carry the user and port resolved from
+  ssh config (the port only when it is not 22), for example
+  `ssh_ec2-user@etlstage:2222` instead of `ssh_user@etlstage`.
+
 ## [0.9.0](https://github.com/blinkingbit-oss/execkit/compare/v0.8.0...v0.9.0) - 2026-09-25
 
 ### Added
