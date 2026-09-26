@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.10.1](https://github.com/blinkingbit-oss/execkit/compare/execkit-v0.10.0...execkit-v0.10.1) - 2026-09-26
+
+### Fixed
+
+- *(redact)* scan balanced-paren values in one linear pass
+- *(redact)* redact values with balanced parens in full and learn authorization names
+
 ## [0.10.0](https://github.com/blinkingbit-oss/execkit/compare/execkit-v0.9.0...execkit-v0.10.0) - 2026-09-25
 
 ### Other
