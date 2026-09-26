@@ -14,6 +14,7 @@ use std::io::{IsTerminal, Write};
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
+use crate::audit::AuditEvent;
 use crate::watch::render::LineKind;
 use crate::watch::source::Source;
 
@@ -55,28 +56,42 @@ pub fn follow(path: PathBuf) -> anyhow::Result<()> {
     // handler; a broken pipe (e.g. piped to `head`) returns Err from writeln!.
     let mut dates = render::DateSeparators::default();
     loop {
-        for ev in src.poll() {
-            let sid = ev.session().to_string();
-            // One date line for the whole stream (not per session): the
-            // events are interleaved in time order.
-            if let Some(sep) = dates.before("", &ev) {
-                if color {
-                    writeln!(out, "\x1b[{}m{}\x1b[0m", ansi(sep.kind), sep.text)?;
-                } else {
-                    writeln!(out, "{}", sep.text)?;
-                }
-            }
-            for line in render::render_event_stamped(&ev) {
-                if color {
-                    writeln!(out, "[{sid}] \x1b[{}m{}\x1b[0m", ansi(line.kind), line.text)?;
-                } else {
-                    writeln!(out, "[{sid}] {}", line.text)?;
-                }
-            }
+        for line in follow_lines(src.poll(), &mut dates, color) {
+            writeln!(out, "{line}")?;
         }
         out.flush()?;
         std::thread::sleep(Duration::from_millis(300));
     }
+}
+
+/// The `--follow` output lines for one poll batch. A single date line is
+/// tracked for the whole stream (not per session). A directory source
+/// returns a batch file by file, not in time order, so the batch is sorted
+/// by display time first (stable, so one session's events keep their order).
+fn follow_lines(
+    mut events: Vec<AuditEvent>,
+    dates: &mut render::DateSeparators,
+    color: bool,
+) -> Vec<String> {
+    let paint = |kind: LineKind, text: &str| {
+        if color {
+            format!("\x1b[{}m{}\x1b[0m", ansi(kind), text)
+        } else {
+            text.to_string()
+        }
+    };
+    events.sort_by_key(render::display_ts);
+    let mut out = Vec::new();
+    for ev in events {
+        let sid = ev.session().to_string();
+        if let Some(sep) = dates.before("", &ev) {
+            out.push(paint(sep.kind, &sep.text));
+        }
+        for line in render::render_event_stamped(&ev) {
+            out.push(format!("[{sid}] {}", paint(line.kind, &line.text)));
+        }
+    }
+    out
 }
 
 fn ansi(kind: LineKind) -> &'static str {
@@ -93,6 +108,38 @@ fn ansi(kind: LineKind) -> &'static str {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A directory source polls file by file, so one batch can hold a later
+    /// day's session before an earlier one. `--follow` prints them in time
+    /// order, so the date lines come out in order too.
+    #[test]
+    fn follow_orders_a_directory_batch_by_time() {
+        let dir = std::env::temp_dir().join(format!("ek_follow_order_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        // Noon UTC on 2026-01-02 and 2026-01-01: distinct local dates in
+        // every zone. The later day is in the file polled first.
+        let day1: u64 = 1_767_268_800_000;
+        let day2 = day1 + 86_400_000;
+        let open = |sid: &str, ts: u64| {
+            format!(r#"{{"event":"open","ts":{ts},"session":"{sid}","transport":"local"}}"#) + "\n"
+        };
+        std::fs::write(dir.join("a_2_local-1.jsonl"), open("2_local", day2)).unwrap();
+        std::fs::write(dir.join("b_1_local-1.jsonl"), open("1_local", day1)).unwrap();
+        let events = Source::new(dir.clone()).poll();
+        let _ = std::fs::remove_dir_all(&dir);
+        assert_eq!(events.len(), 2);
+
+        let lines = follow_lines(events, &mut render::DateSeparators::default(), false);
+        assert_eq!(lines.len(), 4, "{lines:?}");
+        assert!(
+            lines[0].starts_with("-- ") && lines[2].starts_with("-- "),
+            "{lines:?}"
+        );
+        assert!(lines[0] < lines[2], "date lines out of order: {lines:?}");
+        assert!(lines[1].starts_with("[1_local] "), "{lines:?}");
+        assert!(lines[3].starts_with("[2_local] "), "{lines:?}");
+    }
 
     #[test]
     fn warns_when_parent_dir_is_missing() {
