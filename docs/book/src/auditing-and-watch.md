@@ -31,7 +31,10 @@ execkit-mcp watch /var/log/execkit/        # a directory; uses $EXECKIT_MCP_AUDI
 
 It is a live, read-only TUI: the agent's sessions on the left, the selected
 session's shell transcript on the right (prompt, command, stdout, stderr in red,
-exit status), rendered like a normal shell rather than JSON. Switch sessions with
+exit status), rendered like a normal shell rather than JSON. Command, opened,
+closed and blocked lines start with their local time (`[HH:MM:SS]`, following
+`$TZ`), with a `-- YYYY-MM-DD --` line when the date changes, as in the browser
+viewer. Switch sessions with
 `1`-`9` or the arrow keys, scroll with PgUp/PgDn, quit with `q`. It only ever
 reads the log. Because the data comes from the server, it works the same under
 any MCP client.
@@ -77,9 +80,11 @@ session, a command, or your files. What you get:
   Click a legend item to show or hide that line type.
 - **Search**: press `/` to find within the transcript, step matches with `Enter`
   / `Shift+Enter`, and press `e` to jump to the next error or blocked line.
-- **History** of past sessions (newest first, with relative times) when
-  `EXECKIT_MCP_AUDIT_DIR` is set. It sits at the bottom of the sidebar, collapsed
-  to a `History (N)` header; click the header to expand it (the viewer remembers
+- **History** of past sessions, with relative times, when
+  `EXECKIT_MCP_AUDIT_DIR` is set. Sessions are grouped by transport, then by
+  host, and listed newest first within each host. It shows the 20 newest sessions
+  plus any you kept. It sits at the bottom of the sidebar, collapsed to a
+  `History (N)` header, or `History (20 of 57)` when not every session is listed; click the header to expand it (the viewer remembers
   your choice), then click a session to read its transcript. With a single
   `EXECKIT_MCP_AUDIT` file there is no per-session history.
 - **Per-session actions** from a 3-dots menu: rename (a display alias), pin, keep,
@@ -98,13 +103,16 @@ only, never able to affect a session, a command, or the audit log.
 ### Headless follow mode
 
 For a pipeable, no-TTY view, use `--follow` instead of the TUI. It prints each
-command and its output as a line prefixed with the session id, as it happens:
+command and its output as a line prefixed with the session id, as it happens.
+Command, opened, closed and blocked lines carry their local time, and a
+`-- YYYY-MM-DD --` line appears first when the events are not from today and
+again whenever the date changes:
 
 ```bash
 execkit-mcp watch --follow /var/log/execkit/
-# [a3f9-1_local] /home/u $ npm run build
+# [a3f9-1_local] [14:02:11] /home/u $ npm run build
 # [a3f9-1_local] x exit 1  (3420ms)
-# [a3f9-2_ssh_deploy@web-01] /srv $ systemctl restart app
+# [a3f9-2_ssh_deploy@web-01] [14:02:40] /srv $ systemctl restart app
 ```
 
 ## Live notifications in the client
