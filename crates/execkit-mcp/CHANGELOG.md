@@ -7,6 +7,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.10.1](https://github.com/blinkingbit-oss/execkit/compare/v0.10.0...v0.10.1) - 2026-09-26
+
+### Fixed
+
+- *(watch)* print each --follow batch in time order
+- *(viewer)* count shown History sessions and sort sessions with no start time last
+- *(watch)* show local times and date lines in the terminal viewers
+- *(cli)* exit cleanly when stdout is closed early
+
+### Other
+
+- *(changelog)* explain the 0.10.0 minor bump and the new ssh session ids
+
 ## [0.10.0](https://github.com/blinkingbit-oss/execkit/compare/v0.9.0...v0.10.0) - 2026-09-25
 
 ### Added
