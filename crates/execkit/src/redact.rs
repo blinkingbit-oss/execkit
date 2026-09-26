@@ -9,13 +9,13 @@
 //! no recognizable shape (e.g. a locally-generated password) still gets
 //! redacted once it has been seen.
 
-use regex::{Captures, Regex};
+use regex::Regex;
 use std::sync::OnceLock;
 
 /// A compiled pattern plus how to replace a match. Plain shape matches use
 /// the template `"[REDACTED]"`; patterns that capture context to keep (URL
 /// scheme/user, `Bearer`) use `${1}` etc. The key/value pattern needs logic
-/// the regex cannot express (no look-around), so it uses a function.
+/// the regex cannot express (no look-around), so it has its own pass.
 struct Pattern {
     re: Regex,
     replacement: Replacement,
@@ -23,7 +23,8 @@ struct Pattern {
 
 enum Replacement {
     Template(&'static str),
-    Func(fn(&Captures) -> String),
+    /// The key/value pattern, applied by `redact_key_values`.
+    KeyValue,
 }
 
 fn simple(re: &str) -> Pattern {
@@ -37,59 +38,86 @@ fn templated(re: &str, replacement: &'static str) -> Pattern {
     }
 }
 
-/// Replacement for the key/value pattern: group 1 is the `name=` prefix,
+/// Apply the key/value pattern to `text`. Group 1 is the `name=` prefix,
 /// then one of: a double-quoted value (group 2), a single-quoted value
 /// (group 3) - each may hold the other kind of quote - or an unquoted one
 /// (group 5) with an optional unmatched opening quote (group 4, e.g. a
-/// value whose closing quote is on a later line) and the quote right after
-/// it (group 6, consumed so it can be seen here and put back). Quoted
+/// value whose closing quote is on a later line) and the quote or `)` right
+/// after it (group 6, consumed so it can be seen here and put back). Quoted
 /// values are always redacted, keeping their quotes. An unquoted value is
 /// left alone when it is code.
 ///
-/// The regex lets an unquoted value run through `)`; the value really ends
-/// at its first `)` that has no `(` before it inside the value (see
-/// `split_at_unmatched_paren`), so `(API_KEY=v)&& y` keeps its `)` while
-/// `password=Pass(word)!` is redacted in full. What follows that `)` is
-/// matched again on its own.
-fn key_value_replace(c: &Captures) -> String {
-    let prefix = &c[1];
-    if c.get(2).is_some() {
-        return format!("{prefix}\"[REDACTED]\"");
+/// The regex stops an unquoted value at `)`. When the value has an unclosed
+/// `(`, it runs on through the matching `)` (see `balanced_end`), so
+/// `password=Pass(word)!` is redacted in full while `(API_KEY=v)&& y` keeps
+/// its `)`. This is one left-to-right pass over `text`: each match resumes
+/// where the previous one ended, so the work stays linear.
+fn redact_key_values(text: &str) -> String {
+    const STOP: &str = "\"';&|";
+    let re = key_value_pattern();
+    let mut out = String::with_capacity(text.len());
+    let mut pos = 0;
+    while let Some(c) = re.captures_at(text, pos) {
+        let m = c.get(0).unwrap();
+        out.push_str(&text[pos..m.start()]);
+        pos = m.end();
+        let prefix = &c[1];
+        if c.get(2).is_some() {
+            out.push_str(&format!("{prefix}\"[REDACTED]\""));
+            continue;
+        }
+        if c.get(3).is_some() {
+            out.push_str(&format!("{prefix}'[REDACTED]'"));
+            continue;
+        }
+        let open = c.get(4).map_or("", |m| m.as_str());
+        let value = c.get(5).unwrap();
+        let after = c.get(6).map_or("", |m| m.as_str());
+        if looks_like_code(value.as_str(), after.chars().next()) {
+            out.push_str(m.as_str());
+            continue;
+        }
+        out.push_str(&format!("{prefix}{open}[REDACTED]"));
+        if after == ")" {
+            let end = balanced_end(text, value.as_str(), value.end(), |ch| {
+                ch.is_whitespace() || STOP.contains(ch)
+            });
+            if end > value.end() {
+                // The `)` belonged to the value; resume after the whole value.
+                pos = end;
+                continue;
+            }
+        }
+        out.push_str(after);
     }
-    if c.get(3).is_some() {
-        return format!("{prefix}'[REDACTED]'");
-    }
-    let open = c.get(4).map_or("", |m| m.as_str());
-    let full = c.get(5).map_or("", |m| m.as_str());
-    let after = c.get(6).map_or("", |m| m.as_str());
-    let (value, rest) = split_at_unmatched_paren(full);
-    let rest = key_value_pattern().replace_all(rest, key_value_replace);
-    // The code check sees the value cut at its first `)`, with that `)` as
-    // the next character (`self.tokens.first(` then `)`).
-    let (code_value, code_next) = match full.find(')') {
-        Some(i) => (&full[..i], Some(')')),
-        None => (full, after.chars().next()),
-    };
-    if value.chars().count() < 4 || looks_like_code(code_value, code_next) {
-        return format!("{prefix}{open}{value}{rest}{after}");
-    }
-    format!("{prefix}{open}[REDACTED]{rest}{after}")
+    out.push_str(&text[pos..]);
+    out
 }
 
-/// Split `value` at its first `)` that closes nothing opened inside it: that
-/// `)` closes a group opened before the value (`(TOKEN=v)`), so it and
-/// everything after it are not part of the value.
-fn split_at_unmatched_paren(value: &str) -> (&str, &str) {
-    let mut depth = 0usize;
-    for (i, ch) in value.char_indices() {
+/// Where a bare value that stopped at a `)` really ends. `value` (holding
+/// no `)`) ends at byte `at` of `text`; while it has an unclosed `(`, the
+/// value continues through `text`, stopping at a `stop` character or at a
+/// `)` that closes nothing opened in the value (that one closes a group
+/// opened before the name, as in `(TOKEN=v)`). Returns `at` when there is
+/// nothing to add. Linear in the added length.
+fn balanced_end(text: &str, value: &str, at: usize, stop: impl Fn(char) -> bool) -> usize {
+    let mut depth = value.matches('(').count();
+    if depth == 0 {
+        return at;
+    }
+    let mut end = at;
+    for (i, ch) in text[at..].char_indices() {
+        if stop(ch) || (ch == ')' && depth == 0) {
+            break;
+        }
         match ch {
             '(' => depth += 1,
-            ')' if depth == 0 => return value.split_at(i),
             ')' => depth -= 1,
             _ => {}
         }
+        end = at + i + ch.len_utf8();
     }
-    (value, "")
+    end
 }
 
 /// An unquoted value is code, not a secret, only in these narrow shapes -
@@ -204,7 +232,7 @@ fn patterns() -> &'static [Pattern] {
             // identifier value (TS `password: string`) still matches.
             Pattern {
                 re: key_value_pattern().clone(),
-                replacement: Replacement::Func(key_value_replace),
+                replacement: Replacement::KeyValue,
             },
         ]
     })
@@ -215,7 +243,7 @@ fn key_value_pattern() -> &'static Regex {
     static RE: OnceLock<Regex> = OnceLock::new();
     RE.get_or_init(|| {
         Regex::new(
-            r#"(?i)\b((?:[a-z0-9_]*_)?(?:password|passwd|secret[_-]?key|secret|token|api[_-]?key|access[_-]?key|private[_-]?key)["']?\s*[:=]\s*)(?:"([^"\r\n]{4,})"|'([^'\r\n]{4,})'|(["']?)([^\s"';&|]{4,})(["'])?)"#,
+            r#"(?i)\b((?:[a-z0-9_]*_)?(?:password|passwd|secret[_-]?key|secret|token|api[_-]?key|access[_-]?key|private[_-]?key)["']?\s*[:=]\s*)(?:"([^"\r\n]{4,})"|'([^'\r\n]{4,})'|(["']?)([^\s"';&|)]{4,})(["')])?)"#,
         )
         .unwrap()
     })
@@ -228,7 +256,7 @@ pub fn redact(text: &str) -> String {
     for p in patterns() {
         out = match p.replacement {
             Replacement::Template(t) => p.re.replace_all(&out, t),
-            Replacement::Func(f) => p.re.replace_all(&out, f),
+            Replacement::KeyValue => redact_key_values(&out).into(),
         }
         .into_owned();
     }
@@ -237,13 +265,13 @@ pub fn redact(text: &str) -> String {
 
 /// Matches a shell assignment: optional `export `, `NAME=value`, where
 /// `value` is a double- or single-quoted string or a bare run up to
-/// whitespace/`;`/`&`/`|`. A bare run is cut at its first unmatched `)` by
-/// the caller. An assignment may follow `(` (a subshell).
+/// whitespace/`;`/`&`/`|`/`)`; the caller extends a bare run through a `)`
+/// that closes a `(` inside it. An assignment may follow `(` (a subshell).
 fn assignment_pattern() -> &'static Regex {
     static RE: OnceLock<Regex> = OnceLock::new();
     RE.get_or_init(|| {
         Regex::new(
-            r#"(?:^|[\s;&|(])(?:export\s+)?([A-Za-z_][A-Za-z0-9_]*)=("[^"]*"|'[^']*'|[^\s;&|]+)"#,
+            r#"(?:^|[\s;&|(])(?:export\s+)?([A-Za-z_][A-Za-z0-9_]*)=("[^"]*"|'[^']*'|[^\s;&|)]+)"#,
         )
         .unwrap()
     })
@@ -293,16 +321,20 @@ impl Redactor {
     /// shorter than 6 characters are ignored - too easy to appear by
     /// coincidence in unrelated output.
     pub fn learn_from_command(&mut self, cmd: &str) {
-        for caps in assignment_pattern().captures_iter(cmd) {
-            let raw = &caps[2];
-            let stripped = strip_quotes(raw);
-            let value = if stripped.len() != raw.len() {
+        let mut pos = 0;
+        while let Some(caps) = assignment_pattern().captures_at(cmd, pos) {
+            let raw = caps.get(2).unwrap();
+            pos = caps.get(0).unwrap().end();
+            let stripped = strip_quotes(raw.as_str());
+            let value = if stripped.len() != raw.as_str().len() {
                 stripped
             } else {
-                let (value, rest) = split_at_unmatched_paren(raw);
-                // `(A_TOKEN=x)(B_TOKEN=y)`: the rest may hold more assignments.
-                self.learn_from_command(rest);
-                value
+                // `X_TOKEN=a(b)c`: the value runs through the `)` that closes
+                // its own `(`. One pass, resuming after the value.
+                pos = balanced_end(cmd, raw.as_str(), raw.end(), |ch| {
+                    ch.is_whitespace() || ";&|".contains(ch)
+                });
+                &cmd[raw.start()..pos]
             };
             if !secret_name_pattern().is_match(&caps[1]) {
                 continue;
@@ -1016,5 +1048,28 @@ mod tests {
             r.learn_from_command(cmd);
             assert_eq!(r.redact("v opaquevalue123"), "v opaquevalue123", "{cmd}");
         }
+    }
+
+    /// Many `(name=value)` groups in one line must be handled in linear time
+    /// and without deep recursion (the MCP server redacts on 2 MB stacks).
+    #[test]
+    fn many_paren_groups_are_linear_and_do_not_overflow() {
+        let input = "(a_token=abcd)".repeat(20_000);
+        let handle = std::thread::Builder::new()
+            .stack_size(2 * 1024 * 1024)
+            .spawn(move || {
+                let start = std::time::Instant::now();
+                let out = redact(&input);
+                let mut r = Redactor::default();
+                r.learn_from_command(&"(a_token=abcdef)".repeat(20_000));
+                let learned = r.redact("abcdef");
+                (start.elapsed(), out, learned)
+            })
+            .unwrap();
+        let (elapsed, out, learned) = handle.join().expect("no stack overflow");
+        eprintln!("20k paren groups: {elapsed:?}");
+        assert_eq!(out, "(a_token=[REDACTED])".repeat(20_000));
+        assert_eq!(learned, "[REDACTED]");
+        assert!(elapsed < std::time::Duration::from_secs(2), "{elapsed:?}");
     }
 }
