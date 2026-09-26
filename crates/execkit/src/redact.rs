@@ -41,10 +41,16 @@ fn templated(re: &str, replacement: &'static str) -> Pattern {
 /// then one of: a double-quoted value (group 2), a single-quoted value
 /// (group 3) - each may hold the other kind of quote - or an unquoted one
 /// (group 5) with an optional unmatched opening quote (group 4, e.g. a
-/// value whose closing quote is on a later line) and the quote or `)` right
-/// after it (group 6, consumed so it can be seen here and put back). Quoted
+/// value whose closing quote is on a later line) and the quote right after
+/// it (group 6, consumed so it can be seen here and put back). Quoted
 /// values are always redacted, keeping their quotes. An unquoted value is
 /// left alone when it is code.
+///
+/// The regex lets an unquoted value run through `)`; the value really ends
+/// at its first `)` that has no `(` before it inside the value (see
+/// `split_at_unmatched_paren`), so `(API_KEY=v)&& y` keeps its `)` while
+/// `password=Pass(word)!` is redacted in full. What follows that `)` is
+/// matched again on its own.
 fn key_value_replace(c: &Captures) -> String {
     let prefix = &c[1];
     if c.get(2).is_some() {
@@ -54,12 +60,36 @@ fn key_value_replace(c: &Captures) -> String {
         return format!("{prefix}'[REDACTED]'");
     }
     let open = c.get(4).map_or("", |m| m.as_str());
-    let value = c.get(5).map_or("", |m| m.as_str());
+    let full = c.get(5).map_or("", |m| m.as_str());
     let after = c.get(6).map_or("", |m| m.as_str());
-    if looks_like_code(value, after.chars().next()) {
-        return c[0].to_string();
+    let (value, rest) = split_at_unmatched_paren(full);
+    let rest = key_value_pattern().replace_all(rest, key_value_replace);
+    // The code check sees the value cut at its first `)`, with that `)` as
+    // the next character (`self.tokens.first(` then `)`).
+    let (code_value, code_next) = match full.find(')') {
+        Some(i) => (&full[..i], Some(')')),
+        None => (full, after.chars().next()),
+    };
+    if value.chars().count() < 4 || looks_like_code(code_value, code_next) {
+        return format!("{prefix}{open}{value}{rest}{after}");
     }
-    format!("{prefix}{open}[REDACTED]{after}")
+    format!("{prefix}{open}[REDACTED]{rest}{after}")
+}
+
+/// Split `value` at its first `)` that closes nothing opened inside it: that
+/// `)` closes a group opened before the value (`(TOKEN=v)`), so it and
+/// everything after it are not part of the value.
+fn split_at_unmatched_paren(value: &str) -> (&str, &str) {
+    let mut depth = 0usize;
+    for (i, ch) in value.char_indices() {
+        match ch {
+            '(' => depth += 1,
+            ')' if depth == 0 => return value.split_at(i),
+            ')' => depth -= 1,
+            _ => {}
+        }
+    }
+    (value, "")
 }
 
 /// An unquoted value is code, not a secret, only in these narrow shapes -
@@ -160,8 +190,9 @@ fn patterns() -> &'static [Pattern] {
             // without also matching `OLDPWD` or `tokenizer`. `pwd` is
             // deliberately not a keyword: `PWD` is an ordinary,
             // non-secret shell env var (current working directory). The value
-            // stops at `;`, `&`, `|` and `)`, so in `X_TOKEN=v&&echo ok` only
-            // `v` is redacted and the rest of the command stays readable. A
+            // stops at `;`, `&`, `|` and at a `)` with no matching `(` in the
+            // value, so in `X_TOKEN=v&&echo ok` only `v` is redacted and the
+            // rest of the command stays readable. A
             // comma does NOT end it: `password=abcd,efg` must not leak `efg`
             // (losing a trailing `,` after a redacted value is the price).
             // A quoted value runs to the next quote and may hold anything
@@ -172,13 +203,21 @@ fn patterns() -> &'static [Pattern] {
             // look-around. A bare
             // identifier value (TS `password: string`) still matches.
             Pattern {
-                re: Regex::new(
-                    r#"(?i)\b((?:[a-z0-9_]*_)?(?:password|passwd|secret[_-]?key|secret|token|api[_-]?key|access[_-]?key|private[_-]?key)["']?\s*[:=]\s*)(?:"([^"\r\n]{4,})"|'([^'\r\n]{4,})'|(["']?)([^\s"';&|)]{4,})(["')])?)"#,
-                )
-                .unwrap(),
+                re: key_value_pattern().clone(),
                 replacement: Replacement::Func(key_value_replace),
             },
         ]
+    })
+}
+
+/// The `name=value` / `name: value` pattern (see [`patterns`]).
+fn key_value_pattern() -> &'static Regex {
+    static RE: OnceLock<Regex> = OnceLock::new();
+    RE.get_or_init(|| {
+        Regex::new(
+            r#"(?i)\b((?:[a-z0-9_]*_)?(?:password|passwd|secret[_-]?key|secret|token|api[_-]?key|access[_-]?key|private[_-]?key)["']?\s*[:=]\s*)(?:"([^"\r\n]{4,})"|'([^'\r\n]{4,})'|(["']?)([^\s"';&|]{4,})(["'])?)"#,
+        )
+        .unwrap()
     })
 }
 
@@ -198,12 +237,13 @@ pub fn redact(text: &str) -> String {
 
 /// Matches a shell assignment: optional `export `, `NAME=value`, where
 /// `value` is a double- or single-quoted string or a bare run up to
-/// whitespace/`;`/`&`/`|`/`)`. An assignment may follow `(` (a subshell).
+/// whitespace/`;`/`&`/`|`. A bare run is cut at its first unmatched `)` by
+/// the caller. An assignment may follow `(` (a subshell).
 fn assignment_pattern() -> &'static Regex {
     static RE: OnceLock<Regex> = OnceLock::new();
     RE.get_or_init(|| {
         Regex::new(
-            r#"(?:^|[\s;&|(])(?:export\s+)?([A-Za-z_][A-Za-z0-9_]*)=("[^"]*"|'[^']*'|[^\s;&|)]+)"#,
+            r#"(?:^|[\s;&|(])(?:export\s+)?([A-Za-z_][A-Za-z0-9_]*)=("[^"]*"|'[^']*'|[^\s;&|]+)"#,
         )
         .unwrap()
     })
@@ -214,12 +254,13 @@ fn assignment_pattern() -> &'static Regex {
 /// `auth` counts only as its own `_`-delimited word (`AUTH`, `MY_AUTH`,
 /// `BASIC_AUTH_PASS`, `OAUTH_...`) or run into `KEY`/`TOKEN`/`PASS`
 /// (`AUTHKEY`), never inside another word: `GIT_AUTHOR_NAME` and
-/// `AUTHORITY_URL` are not secrets.
+/// `AUTHORITY_URL` are not secrets. `authoriz` and `authent` match anywhere
+/// (`HTTP_AUTHORIZATION`, `AUTHENTICATION_TOKEN`).
 fn secret_name_pattern() -> &'static Regex {
     static RE: OnceLock<Regex> = OnceLock::new();
     RE.get_or_init(|| {
         Regex::new(
-            r"(?i)(token|secret|passw|api_?key|private_?key|credential|(?:^|_)o?auth(?:$|_|key|token|pass))",
+            r"(?i)(token|secret|passw|api_?key|private_?key|credential|authoriz|authent|(?:^|_)o?auth(?:$|_|key|token|pass))",
         )
         .unwrap()
     })
@@ -253,11 +294,19 @@ impl Redactor {
     /// coincidence in unrelated output.
     pub fn learn_from_command(&mut self, cmd: &str) {
         for caps in assignment_pattern().captures_iter(cmd) {
-            let name = &caps[1];
-            if !secret_name_pattern().is_match(name) {
+            let raw = &caps[2];
+            let stripped = strip_quotes(raw);
+            let value = if stripped.len() != raw.len() {
+                stripped
+            } else {
+                let (value, rest) = split_at_unmatched_paren(raw);
+                // `(A_TOKEN=x)(B_TOKEN=y)`: the rest may hold more assignments.
+                self.learn_from_command(rest);
+                value
+            };
+            if !secret_name_pattern().is_match(&caps[1]) {
                 continue;
             }
-            let value = strip_quotes(&caps[2]);
             if value.chars().count() < 6 {
                 continue;
             }
@@ -799,7 +848,7 @@ mod tests {
     fn ambiguous_bracket_values_are_redacted() {
         for (input, want) in [
             ("let secret = vec[0];", "let secret = [REDACTED];"),
-            ("token = load(x);", "token = [REDACTED]);"),
+            ("token = load(x);", "token = [REDACTED];"),
             ("api_key = build{x}", "api_key = [REDACTED]"),
         ] {
             assert_eq!(redact(input), want);
@@ -903,6 +952,69 @@ mod tests {
             "the bearer of news",
         ] {
             assert_eq!(redact(benign), benign);
+        }
+    }
+
+    #[test]
+    fn close_paren_inside_a_value_does_not_leak_its_tail() {
+        for (input, want) in [
+            (
+                "SECRET_KEY=django-insecure-(abc)xyz123",
+                "SECRET_KEY=[REDACTED]",
+            ),
+            ("password=Pass(word)!", "password=[REDACTED]"),
+            ("token=getX(y)z12", "token=[REDACTED]"),
+            ("(API_KEY=abcdef123)&& y", "(API_KEY=[REDACTED])&& y"),
+            (
+                "(a_token=abcdef123)password=ghijkl99",
+                "(a_token=[REDACTED])password=[REDACTED]",
+            ),
+        ] {
+            assert_eq!(redact(input), want, "{input}");
+        }
+        for line in [
+            "pub token: Option<String>,",
+            r#"let access_key = cfg.get("x");"#,
+            r#"let token = get("abcdef");"#,
+            "token: self.tokens.first()",
+        ] {
+            assert_eq!(redact(line), line);
+        }
+    }
+
+    #[test]
+    fn learned_value_keeps_balanced_parens() {
+        let mut r = Redactor::default();
+        r.learn_from_command(
+            "export SECRET_KEY=django-insecure-(abc)xyz123; (MY_TOKEN=abcdef123)(B_TOKEN=zyxwvu987)",
+        );
+        assert_eq!(
+            r.redact("key django-insecure-(abc)xyz123 end"),
+            "key [REDACTED] end"
+        );
+        assert_eq!(r.redact("abcdef123 zyxwvu987 )"), "[REDACTED] [REDACTED] )");
+    }
+
+    #[test]
+    fn authorization_and_authentication_names_are_learned() {
+        for cmd in [
+            "export AUTHORIZATION=opaquevalue123",
+            "HTTP_AUTHORIZATION=opaquevalue123",
+            "export AUTHENTICATION_TOKEN=opaquevalue123",
+            "export X_AUTHENTICATE=opaquevalue123",
+        ] {
+            let mut r = Redactor::default();
+            r.learn_from_command(cmd);
+            assert_eq!(r.redact("v opaquevalue123"), "v [REDACTED]", "{cmd}");
+        }
+        for cmd in [
+            "export GIT_AUTHOR_NAME=opaquevalue123",
+            "export AUTHORITY_URL=opaquevalue123",
+            "export GIT_AUTHOR_EMAIL=opaquevalue123",
+        ] {
+            let mut r = Redactor::default();
+            r.learn_from_command(cmd);
+            assert_eq!(r.redact("v opaquevalue123"), "v opaquevalue123", "{cmd}");
         }
     }
 }
