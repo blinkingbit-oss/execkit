@@ -287,3 +287,29 @@ fn watch_serve_without_path_shows_usage() {
         "usage should mention --serve, got {err:?}"
     );
 }
+
+/// `execkit-mcp setup claude | head -1`: once the reader is gone, a write to
+/// stdout fails with a broken pipe. That is a clean exit, not a panic.
+#[cfg(unix)]
+#[test]
+fn closed_stdout_is_a_clean_exit_not_a_panic() {
+    for args in [
+        &["setup", "claude"][..],
+        &["--help"][..],
+        &["watch", "--help"][..],
+        &["--version"][..],
+        &["doctor"][..],
+    ] {
+        let (reader, writer) = std::io::pipe().expect("pipe");
+        // Close the read end first, so the very first write hits EPIPE.
+        drop(reader);
+        let out = Command::new(env!("CARGO_BIN_EXE_execkit-mcp"))
+            .args(args)
+            .stdout(writer)
+            .output()
+            .expect("spawn execkit-mcp");
+        let stderr = String::from_utf8_lossy(&out.stderr);
+        assert!(!stderr.contains("panicked"), "{args:?}: {stderr}");
+        assert_eq!(out.status.code(), Some(0), "{args:?}: {stderr}");
+    }
+}

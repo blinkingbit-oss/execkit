@@ -5,15 +5,48 @@
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
+/// `print!` for these commands: a closed stdout (`execkit-mcp setup claude |
+/// head -1`) ends the process with exit 0 instead of the panic `print!`
+/// raises on a broken pipe.
+macro_rules! out {
+    ($($arg:tt)*) => {
+        $crate::cli::write_stdout(format_args!($($arg)*))
+    };
+}
+
+/// `println!` counterpart of [`out!`].
+macro_rules! outln {
+    () => {
+        out!("\n")
+    };
+    ($($arg:tt)*) => {
+        out!("{}\n", format_args!($($arg)*))
+    };
+}
+
+/// A broken pipe means the reader has gone away and wants no more output:
+/// exit 0. Any other stdout error is a real failure.
+fn write_stdout(args: std::fmt::Arguments) {
+    use std::io::Write;
+    let mut stdout = std::io::stdout().lock();
+    if let Err(e) = stdout.write_fmt(args).and_then(|()| stdout.flush()) {
+        if e.kind() == std::io::ErrorKind::BrokenPipe {
+            std::process::exit(0);
+        }
+        eprintln!("execkit-mcp: error writing to stdout: {e}");
+        std::process::exit(1);
+    }
+}
+
 const VERSION: &str = env!("CARGO_PKG_VERSION");
 const REPO: &str = "https://github.com/blinkingbit-oss/execkit";
 
 pub fn version() {
-    println!("execkit-mcp {VERSION}");
+    outln!("execkit-mcp {VERSION}");
 }
 
 pub fn help() {
-    print!(
+    out!(
         "execkit-mcp {VERSION}
 An MCP (stdio) server exposing stateful, structured, safe shell sessions to AI agents.
 
@@ -53,7 +86,7 @@ Docs: {REPO}
 /// `watch --help`: just the watch section, for someone who already knows the
 /// rest and wants the flags/env vars for this one subcommand.
 pub fn watch_help() {
-    print!(
+    out!(
         "execkit-mcp watch [--follow|--serve [--open]] <path>
 
 Live, read-only viewer over the audit log (EXECKIT_MCP_AUDIT / EXECKIT_MCP_AUDIT_DIR).
@@ -130,35 +163,35 @@ pub fn setup(client: Option<&str>) -> anyhow::Result<()> {
     let block = config_block(&bin);
     match client {
         Some("claude") => {
-            println!("Wire execkit into Claude Code with one command:\n");
-            println!("  claude mcp add execkit -- {bin}");
-            println!("    (add `-s user` to enable it in every project)\n");
-            println!("Or add this to your config by hand:\n\n{block}");
+            outln!("Wire execkit into Claude Code with one command:\n");
+            outln!("  claude mcp add execkit -- {bin}");
+            outln!("    (add `-s user` to enable it in every project)\n");
+            outln!("Or add this to your config by hand:\n\n{block}");
         }
         Some("cursor") => {
-            println!("Add execkit to Cursor. Edit this file:\n");
-            println!("  ~/.cursor/mcp.json   (project-scoped: .cursor/mcp.json in the repo)\n");
-            println!("and merge in:\n\n{block}");
+            outln!("Add execkit to Cursor. Edit this file:\n");
+            outln!("  ~/.cursor/mcp.json   (project-scoped: .cursor/mcp.json in the repo)\n");
+            outln!("and merge in:\n\n{block}");
         }
         Some("gemini") => {
-            println!("Add execkit to Gemini CLI. Edit this file:\n");
-            println!("  ~/.gemini/settings.json\n");
-            println!("and merge in:\n\n{block}");
+            outln!("Add execkit to Gemini CLI. Edit this file:\n");
+            outln!("  ~/.gemini/settings.json\n");
+            outln!("and merge in:\n\n{block}");
         }
         Some("codex") => {
-            println!("Add execkit to Codex CLI. Edit this file:\n");
-            println!("  ~/.codex/config.toml\n");
-            println!("and add:\n\n{}", codex_block(&bin));
+            outln!("Add execkit to Codex CLI. Edit this file:\n");
+            outln!("  ~/.codex/config.toml\n");
+            outln!("and add:\n\n{}", codex_block(&bin));
         }
         Some("vscode") => {
-            println!("Add execkit to VS Code (workspace-scoped). Edit this file:\n");
-            println!("  .vscode/mcp.json\n");
-            println!("and merge in:\n\n{}", vscode_block(&bin));
+            outln!("Add execkit to VS Code (workspace-scoped). Edit this file:\n");
+            outln!("  .vscode/mcp.json\n");
+            outln!("and merge in:\n\n{}", vscode_block(&bin));
         }
         Some("windsurf") => {
-            println!("Add execkit to Windsurf. Edit this file:\n");
-            println!("  ~/.codeium/windsurf/mcp_config.json\n");
-            println!("and merge in:\n\n{block}");
+            outln!("Add execkit to Windsurf. Edit this file:\n");
+            outln!("  ~/.codeium/windsurf/mcp_config.json\n");
+            outln!("and merge in:\n\n{block}");
         }
         Some(other) => {
             eprintln!(
@@ -188,7 +221,7 @@ fn line(status: Status, label: &str, detail: &str) {
         Status::Warn => "[warn]",
         Status::Info => "[ -- ]",
     };
-    println!("{tag} {label}: {detail}");
+    outln!("{tag} {label}: {detail}");
 }
 
 /// True if we can create + remove a temp file inside `dir` (creating `dir` if
@@ -210,9 +243,9 @@ fn dir_writable(dir: &Path) -> bool {
 /// `doctor`: print a friendly report of the local environment so an operator can
 /// see, before wiring an agent in, what is configured and what is missing.
 pub fn doctor() -> anyhow::Result<()> {
-    println!("execkit-mcp {VERSION}");
+    outln!("execkit-mcp {VERSION}");
     line(Status::Info, "binary", &binary_path());
-    println!();
+    outln!();
 
     // Audit destination.
     if let Some(dir) = std::env::var_os("EXECKIT_MCP_AUDIT_DIR") {

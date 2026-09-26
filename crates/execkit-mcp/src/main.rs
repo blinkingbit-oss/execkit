@@ -1277,7 +1277,11 @@ fn main() -> anyhow::Result<()> {
                         });
                     }
                     return if follow {
-                        watch::follow(p)
+                        // Piped to `head`: the reader closing is a clean exit.
+                        watch::follow(p).or_else(|e| match e.downcast_ref::<std::io::Error>() {
+                            Some(io) if io.kind() == std::io::ErrorKind::BrokenPipe => Ok(()),
+                            _ => Err(e),
+                        })
                     } else {
                         watch::run(p)
                     };
