@@ -549,7 +549,8 @@
     if (existing) existing.remove();
 
     // The section sits at the bottom of the sidebar, collapsed by default:
-    // only a "History (N)" header until clicked. The open state is kept in
+    // only a "History (N)" header until clicked ("History (20 of 57)" when
+    // not every session is listed). The open state is kept in
     // meta.ui.history_open, so it survives re-renders and reloads. Collapsing
     // never touches the selection, so an open history transcript stays shown.
     const section = document.createElement("div");
@@ -594,6 +595,9 @@
     const nonKept = histSessions.filter(e => !(mds[e.id] || {}).keep);
     // Non-kept capped at N, kept always shown
     const visible = nonKept.slice(0, HIST_N).concat(kept.filter(e => !nonKept.slice(0, HIST_N).includes(e)));
+    if (visible.length < histSessions.length) {
+      lbl.textContent = "History (" + visible.length + " of " + histSessions.length + ")";
+    }
     // Pinned float to top
     visible.sort((a, b) => {
       const pa = !!(mds[a.id] || {}).pinned;
@@ -835,13 +839,15 @@
     const mds = meta.sessions || {};
     const items = [];
     for (const [id, s] of sessions) items.push({ id: id, transport: s.transport, host: s.host });
-    // Inside a host group: pinned first, then by start time (insertion order
-    // when a start time is missing).
+    // Inside a host group: pinned first, then by start time. Sessions with no
+    // start time go last. Ties are broken by id, so the order is consistent.
     function liveSort(a, b) {
       const pa = !!(mds[a.id] || {}).pinned, pb = !!(mds[b.id] || {}).pinned;
       if (pa !== pb) return pa ? -1 : 1;
-      const ta = sessions.get(a.id).firstTs, tb = sessions.get(b.id).firstTs;
-      return (ta && tb) ? ta - tb : 0;
+      const ta = sessions.get(a.id).firstTs || 0, tb = sessions.get(b.id).firstTs || 0;
+      if (!ta !== !tb) return ta ? -1 : 1;
+      if (ta !== tb) return ta - tb;
+      return a.id < b.id ? -1 : a.id > b.id ? 1 : 0;
     }
     // Detach history section before clearing so we can reattach it cheaply.
     const histNode = document.getElementById("hist-section");
